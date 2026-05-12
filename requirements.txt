@@ -1,0 +1,10 @@
+aiohttp>=3.9.0
+aiofiles>=23.2.1
+web3>=6.11.0
+solana>=0.30.0
+base58>=2.1.1
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+requests>=2.31.0
+python-dateutil>=2.8.2
+google-genai>=0.8.0S

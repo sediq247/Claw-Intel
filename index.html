@@ -1,0 +1,1088 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="ClawIntel — Real-time multi-chain AI agent swarm for crypto intelligence">
+  <meta name="theme-color" content="#0a0a0f">
+  <title>ClawIntel — Detectives Room</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <!-- External Styles -->
+  <link rel="stylesheet" href="frontend/style.css">
+
+  <!-- Critical Inline Styles (Boot + Layout) -->
+  <style>
+    :root {
+      --bg-primary: #0a0a0f;
+      --bg-secondary: #111118;
+      --bg-tertiary: #1a1a24;
+      --bg-glass: rgba(17, 17, 24, 0.85);
+      --border-color: rgba(255, 255, 255, 0.06);
+      --border-glow: rgba(0, 229, 255, 0.15);
+      --text-primary: #e8e8f0;
+      --text-secondary: #8a8a9a;
+      --text-muted: #5a5a6a;
+      --nova: #00e5ff;
+      --atlas: #00c853;
+      --vega: #d500f9;
+      --echo: #ffd600;
+      --orion: #ff1744;
+      --safe: #00c853;
+      --warning: #ffb300;
+      --danger: #ff1744;
+      --font-mono: 'JetBrains Mono', monospace;
+      --font-sans: 'Inter', sans-serif;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      width: 100%; height: 100%;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ═══════════════════════════════════════
+       BOOT SEQUENCE
+    ═══════════════════════════════════════ */
+    #boot-screen {
+      position: fixed; inset: 0;
+      background: var(--bg-primary);
+      z-index: 9999;
+      display: flex; flex-direction: column;
+      justify-content: center; align-items: center;
+      font-family: var(--font-mono);
+      transition: opacity 0.8s ease, visibility 0.8s ease;
+    }
+    #boot-screen.done { opacity: 0; visibility: hidden; pointer-events: none; }
+
+    .boot-logo {
+      font-size: 3rem; font-weight: 700;
+      letter-spacing: 0.3em;
+      background: linear-gradient(135deg, var(--nova), var(--vega));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 2rem;
+      animation: bootPulse 2s ease-in-out infinite;
+    }
+    @keyframes bootPulse {
+      0%, 100% { opacity: 0.6; filter: blur(0px); }
+      50% { opacity: 1; filter: blur(0.5px); }
+    }
+
+    .boot-terminal {
+      width: min(600px, 90vw);
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 1.5rem;
+      font-size: 0.8rem;
+      line-height: 1.8;
+      color: var(--text-secondary);
+    }
+    .boot-line {
+      opacity: 0;
+      transform: translateX(-10px);
+      animation: bootLineIn 0.3s ease forwards;
+    }
+    @keyframes bootLineIn {
+      to { opacity: 1; transform: translateX(0); }
+    }
+    .boot-line.ok { color: var(--atlas); }
+    .boot-line.warn { color: var(--warning); }
+    .boot-line.error { color: var(--danger); }
+    .boot-cursor {
+      display: inline-block;
+      width: 8px; height: 16px;
+      background: var(--nova);
+      animation: blink 1s step-end infinite;
+      vertical-align: middle;
+      margin-left: 4px;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    /* ═══════════════════════════════════════
+       PARTICLE CANVAS
+    ═══════════════════════════════════════ */
+    #particle-canvas {
+      position: fixed; inset: 0;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    /* ═══════════════════════════════════════
+       MAIN LAYOUT
+    ═══════════════════════════════════════ */
+    #app {
+      position: relative; z-index: 1;
+      width: 100%; height: 100%;
+      display: grid;
+      grid-template-rows: 56px 1fr;
+      grid-template-columns: 260px 1fr;
+      grid-template-areas:
+        "header header"
+        "sidebar main";
+      opacity: 0;
+      transition: opacity 0.6s ease;
+    }
+    #app.ready { opacity: 1; }
+
+    @media (max-width: 900px) {
+      #app {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+          "header"
+          "main";
+      }
+      #sidebar { display: none; }
+    }
+
+    /* Header */
+    #header {
+      grid-area: header;
+      display: flex; align-items: center;
+      justify-content: space-between;
+      padding: 0 1.5rem;
+      background: var(--bg-glass);
+      backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border-color);
+      position: relative;
+    }
+    .header-left {
+      display: flex; align-items: center; gap: 1rem;
+    }
+    .logo-mark {
+      width: 32px; height: 32px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--nova), var(--vega));
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 0.9rem;
+      color: var(--bg-primary);
+      box-shadow: 0 0 20px rgba(0, 229, 255, 0.3);
+    }
+    .logo-text {
+      font-size: 1.1rem; font-weight: 700;
+      letter-spacing: 0.05em;
+      background: linear-gradient(135deg, var(--text-primary), var(--text-secondary));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .header-nav {
+      display: flex; gap: 0.25rem;
+    }
+    .nav-btn {
+      padding: 0.4rem 0.9rem;
+      border-radius: 6px;
+      border: none;
+      background: transparent;
+      color: var(--text-secondary);
+      font-family: var(--font-sans);
+      font-size: 0.8rem; font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-decoration: none;
+      display: inline-flex; align-items: center; gap: 0.4rem;
+    }
+    .nav-btn:hover {
+      background: rgba(255,255,255,0.05);
+      color: var(--text-primary);
+    }
+    .nav-btn.active {
+      background: rgba(0, 229, 255, 0.1);
+      color: var(--nova);
+      box-shadow: inset 0 0 0 1px rgba(0, 229, 255, 0.2);
+    }
+
+    .header-right {
+      display: flex; align-items: center; gap: 1rem;
+    }
+    .live-indicator {
+      display: flex; align-items: center; gap: 0.4rem;
+      font-size: 0.7rem; font-weight: 600;
+      color: var(--atlas);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+    .live-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--atlas);
+      box-shadow: 0 0 8px var(--atlas);
+      animation: livePulse 2s ease-in-out infinite;
+    }
+    @keyframes livePulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.8); }
+    }
+    .live-indicator.offline .live-dot {
+      background: var(--danger);
+      box-shadow: 0 0 8px var(--danger);
+      animation: none;
+    }
+    .live-indicator.offline { color: var(--danger); }
+    .live-indicator.connecting .live-dot {
+      background: var(--warning);
+      box-shadow: 0 0 8px var(--warning);
+      animation: livePulse 0.5s ease-in-out infinite;
+    }
+    .live-indicator.connecting { color: var(--warning); }
+
+    .stats-ticker {
+      display: flex; gap: 1.2rem;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+    .ticker-item { display: flex; align-items: center; gap: 0.3rem; }
+    .ticker-value { color: var(--text-secondary); font-weight: 500; }
+
+    /* Sidebar */
+    #sidebar {
+      grid-area: sidebar;
+      background: var(--bg-glass);
+      backdrop-filter: blur(20px);
+      border-right: 1px solid var(--border-color);
+      display: flex; flex-direction: column;
+      padding: 1rem 0;
+      overflow-y: auto;
+    }
+    .sidebar-section {
+      padding: 0 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .sidebar-title {
+      font-size: 0.65rem; font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--text-muted);
+      margin-bottom: 0.75rem;
+      padding: 0 0.5rem;
+    }
+    .agent-card {
+      display: flex; align-items: center; gap: 0.75rem;
+      padding: 0.6rem 0.75rem;
+      border-radius: 8px;
+      margin-bottom: 0.25rem;
+      cursor: default;
+      transition: all 0.2s ease;
+      position: relative;
+    }
+    .agent-card:hover {
+      background: rgba(255,255,255,0.03);
+    }
+    .agent-avatar {
+      width: 36px; height: 36px;
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1rem;
+      position: relative;
+      flex-shrink: 0;
+    }
+    .agent-avatar.nova { background: rgba(0, 229, 255, 0.1); box-shadow: 0 0 0 1px rgba(0, 229, 255, 0.2); }
+    .agent-avatar.atlas { background: rgba(0, 200, 83, 0.1); box-shadow: 0 0 0 1px rgba(0, 200, 83, 0.2); }
+    .agent-avatar.vega { background: rgba(213, 0, 249, 0.1); box-shadow: 0 0 0 1px rgba(213, 0, 249, 0.2); }
+    .agent-avatar.echo { background: rgba(255, 214, 0, 0.1); box-shadow: 0 0 0 1px rgba(255, 214, 0, 0.2); }
+    .agent-avatar.orion { background: rgba(255, 23, 68, 0.1); box-shadow: 0 0 0 1px rgba(255, 23, 68, 0.2); }
+
+    .agent-status {
+      position: absolute;
+      bottom: -1px; right: -1px;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      border: 2px solid var(--bg-secondary);
+      background: var(--atlas);
+      transition : 0.3s ease;}
+    .agent-status.typing { background: var(--warning); animation: statusBlink 1s ease-in-out infinite; }
+    .agent-status.offline { background: var(--text-muted); }
+    @keyframes statusBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+    .agent-info { flex: 1; min-width: 0; }
+    .agent-name {
+      font-size: 0.85rem; font-weight: 600;
+      color: var(--text-primary);
+      display: flex; align-items: center; gap: 0.3rem;
+    }
+    .agent-role {
+      font-size: 0.7rem; color: var(--text-muted);
+      margin-top: 0.1rem;
+    }
+    .agent-typing-text {
+      font-size: 0.65rem; color: var(--warning);
+      font-style: italic;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+      height: 0;
+    }
+    .agent-card.typing .agent-typing-text { opacity: 1; height: auto; margin-top: 0.15rem; }
+
+    /* Main Chat Area */
+    #main {
+      grid-area: main;
+      display: flex; flex-direction: column;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #chat-container {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 1.5rem;
+      scroll-behavior: smooth;
+    }
+    #chat-container::-webkit-scrollbar { width: 5px; }
+    #chat-container::-webkit-scrollbar-track { background: transparent; }
+    #chat-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+    #chat-container::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+    .chat-date-divider {
+      display: flex; align-items: center;
+      gap: 1rem;
+      margin: 1.5rem 0;
+      color: var(--text-muted);
+      font-size: 0.7rem;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+    .chat-date-divider::before,
+    .chat-date-divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border-color);
+    }
+
+    /* Messages */
+    .message {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 1.25rem;
+      opacity: 0;
+      transform: translateY(12px);
+      animation: messageIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+    @keyframes messageIn {
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .message-avatar {
+      width: 36px; height: 36px;
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1rem;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+    .message-avatar.nova { background: rgba(0, 229, 255, 0.1); border: 1px solid rgba(0, 229, 255, 0.2); }
+    .message-avatar.atlas { background: rgba(0, 200, 83, 0.1); border: 1px solid rgba(0, 200, 83, 0.2); }
+    .message-avatar.vega { background: rgba(213, 0, 249, 0.1); border: 1px solid rgba(213, 0, 249, 0.2); }
+    .message-avatar.echo { background: rgba(255, 214, 0, 0.1); border: 1px solid rgba(255, 214, 0, 0.2); }
+    .message-avatar.orion { background: rgba(255, 23, 68, 0.1); border: 1px solid rgba(255, 23, 68, 0.2); }
+    .message-avatar.system { background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); }
+
+    .message-content { flex: 1; min-width: 0; }
+    .message-header {
+      display: flex; align-items: baseline;
+      gap: 0.5rem;
+      margin-bottom: 0.3rem;
+    }
+    .message-author {
+      font-size: 0.85rem; font-weight: 600;
+      color: var(--text-primary);
+    }
+    .message-author.nova { color: var(--nova); }
+    .message-author.atlas { color: var(--atlas); }
+    .message-author.vega { color: var(--vega); }
+    .message-author.echo { color: var(--echo); }
+    .message-author.orion { color: var(--orion); }
+    .message-time {
+      font-size: 0.65rem; color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+    .message-body {
+      font-size: 0.9rem;
+      line-height: 1.65;
+      color: var(--text-primary);
+      word-wrap: break-word;
+    }
+    .message-body strong { color: var(--text-primary); font-weight: 600; }
+    .message-body em { color: var(--text-secondary); }
+
+    /* Verdict badges inside messages */
+    .verdict-badge {
+      display: inline-flex; align-items: center;
+      gap: 0.3rem;
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.75rem; font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin: 0 0.2rem;
+    }
+    .verdict-badge.safe { background: rgba(0, 200, 83, 0.15); color: var(--safe); border: 1px solid rgba(0, 200, 83, 0.3); }
+    .verdict-badge.warning { background: rgba(255, 179, 0, 0.15); color: var(--warning); border: 1px solid rgba(255, 179, 0, 0.3); }
+    .verdict-badge.danger { background: rgba(255, 23, 68, 0.15); color: var(--danger); border: 1px solid rgba(255, 23, 68, 0.3); }
+
+    /* Typing indicator in chat */
+    .typing-indicator {
+      display: flex; align-items: center;
+      gap: 0.75rem;
+      padding: 0.5rem 0;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: all 0.3s ease;
+    }
+    .typing-indicator.visible {
+      opacity: 1; transform: translateY(0);
+    }
+    .typing-bubbles {
+      display: flex; gap: 3px;
+      padding: 0.6rem 0.8rem;
+      background: var(--bg-tertiary);
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+    }
+    .typing-bubble {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      animation: typingBounce 1.4s ease-in-out infinite;
+    }
+    .typing-bubble:nth-child(1) { animation-delay: 0s; }
+    .typing-bubble:nth-child(2) { animation-delay: 0.2s; }
+    .typing-bubble:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes typingBounce {
+      0%, 60%, 100% { transform: translateY(0); }
+      30% { transform: translateY(-5px); }
+    }
+    .typing-label {
+      font-size: 0.75rem; color: var(--text-muted);
+      font-style: italic;
+    }
+
+    /* Input Area */
+    #input-area {
+      padding: 1rem 1.5rem;
+      background: var(--bg-glass);
+      backdrop-filter: blur(20px);
+      border-top: 1px solid var(--border-color);
+      display: flex; align-items: center; gap: 0.75rem;
+    }
+    .input-wrapper {
+      flex: 1;
+      position: relative;
+    }
+    #message-input {
+      width: 100%;
+      padding: 0.7rem 1rem;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 0.9rem;
+      outline: none;
+      transition: all 0.2s ease;
+    }
+    #message-input:focus {
+      border-color: var(--border-glow);
+      box-shadow: 0 0 0 3px rgba(0, 229, 255, 0.08);
+    }
+    #message-input::placeholder { color: var(--text-muted); }
+    .input-hint {
+      position: absolute;
+      right: 1rem; top: 50%;
+      transform: translateY(-50%);
+      font-size: 0.65rem; color: var(--text-muted);
+      font-family: var(--font-mono);
+      pointer-events: none;
+    }
+    .send-btn {
+      width: 40px; height: 40px;
+      border-radius: 10px;
+      border: none;
+      background: linear-gradient(135deg, var(--nova), var(--vega));
+      color: var(--bg-primary);
+      font-size: 1rem;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.2s ease;
+      flex-shrink: 0;
+    }
+    .send-btn:hover {
+      transform: scale(1.05);
+      box-shadow: 0 0 20px rgba(0, 229, 255, 0.3);
+    }
+    .send-btn:disabled {
+      opacity: 0.5; cursor: not-allowed;
+      transform: none; box-shadow: none;
+    }
+
+    /* Toast Notifications */
+    #toast-container {
+      position: fixed;
+      top: 70px; right: 1.5rem;
+      z-index: 1000;
+      display: flex; flex-direction: column;
+      gap: 0.5rem;
+      pointer-events: none;
+    }
+    .toast {
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      background: var(--bg-glass);
+      backdrop-filter: blur(20px);
+      border: 1px solid var(--border-color);
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+      font-size: 0.8rem;
+      color: var(--text-primary);
+      max-width: 320px;
+      pointer-events: auto;
+      opacity: 0;
+      transform: translateX(20px);
+      animation: toastIn 0.3s ease forwards;
+      display: flex; align-items: center; gap: 0.5rem;
+    }
+    @keyframes toastIn {
+      to { opacity: 1; transform: translateX(0); }
+    }
+    .toast.out {
+      animation: toastOut 0.3s ease forwards;
+    }
+    @keyframes toastOut {
+      to { opacity: 0; transform: translateX(20px); }
+    }
+    .toast-icon { font-size: 1rem; }
+
+    /* Command Palette */
+    #command-palette {
+      position: fixed;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%) scale(0.95);
+      width: min(500px, 90vw);
+      background: var(--bg-glass);
+      backdrop-filter: blur(30px);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+      z-index: 2000;
+      opacity: 0; visibility: hidden;
+      transition: all 0.2s ease;
+      overflow: hidden;
+    }
+    #command-palette.open {
+      opacity: 1; visibility: visible;
+      transform: translate(-50%, -50%) scale(1);
+    }
+    #command-palette input {
+      width: 100%;
+      padding: 1rem 1.25rem;
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid var(--border-color);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 1rem;
+      outline: none;
+    }
+    #command-palette input::placeholder { color: var(--text-muted); }
+    .palette-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 1999;
+      opacity: 0; visibility: hidden;
+      transition: all 0.2s ease;
+    }
+    .palette-overlay.open { opacity: 1; visibility: visible; }
+
+    /* Token Popup */
+    #token-popup {
+      position: fixed;
+      z-index: 1500;
+      background: var(--bg-glass);
+      backdrop-filter: blur(20px);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 1rem;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+      opacity: 0; visibility: hidden;
+      transform: translateY(8px);
+      transition: all 0.2s ease;
+      min-width: 240px;
+    }
+    #token-popup.open { opacity: 1; visibility: visible; transform: translateY(0); }
+
+    /* Scroll to bottom button */
+    #scroll-bottom {
+      position: fixed;
+      bottom: 80px; right: 1.5rem;
+      width: 40px; height: 40px;
+      border-radius: 50%;
+      background: var(--bg-glass);
+      backdrop-filter: blur(10px);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+         display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    opacity: 0; visibility:
+hidden;
+        transition: all 0.2s
+ease;
+        z-index: 100;
+        font-size: 1rem;
+    }
+    #scroll-bottom.visible
+{ opacity: 1; visibility:
+visible; }
+    #scroll-bottom:hover {
+        background:
+var(--bg-tertiary);
+        border-color:
+var(--border-glow);
+    }
+
+#scroll-bottom .unread-count
+{
+        position: absolute;
+        top: -4px; right: -4px;
+        width: 18px; height:
+18px;
+        border-radius: 50%;
+        background:
+var(--danger);
+        color: white;
+        font-size: 0.6rem;
+font-weight: 700;
+        display: flex;
+align-items: center;
+justify-content: center;
+        }
+
+    /* Empty state */
+    .empty-state {
+        display: flex;
+flex-direction: column;
+        align-items: center;
+justify-content: center;
+        height: 100%;
+        color:var(--text-muted);
+        text-align: center;
+        padding: 2rem;
+    }
+    .empty-state-icon {
+        font-size: 3rem;
+        margin-bottom: 1rem;
+        opacity: 0.3;
+    }
+    .empty-state-title {
+        font-size: 1.1rem;
+font-weight: 600;
+        color:
+var(--text-secondary);
+        margin-bottom: 0.5rem;
+    }
+    .empty-state-desc {
+        font-size: 0.85rem;
+        max-width: 300px;
+    }
+</style>
+</head>
+<body>
+    <div id="boot-screen">
+        <div
+class="boot-logo">CLAW
+INTEL</div>
+        <div
+class="boot-terminal"
+id="boot-terminal">
+            <div class="boot-line"
+style="animation-delay:0.1s">
+Initializing neural
+network...</div>
+            <div class="boot-line
+ok"
+style="animation-delay:0.4s">
+✓ Core systems online</div>
+            <div class="boot-line
+ok"
+style="animation-delay:0.7s">
+✓ WebSocket bridge
+connected</div>
+            <div class="boot-line
+ok"
+style="animation-delay:1.0s">
+
+✓ Agent swarm standing by</div>
+            <div class="boot-line
+ok"
+style="animation-delay:1.3s">
+✓ Market feeds synchronized</div>
+            <div class="boot-line"
+style="animation-delay:1.6s">
+Loading Detectives Room
+interface<span
+class="boot-cursor"></span></div>
+        </div>
+    </div>
+
+       <canvas
+id="particle-canvas"></canvas>
+
+    <div id="app">
+
+        <header id="header">
+            <div
+class="header-left">
+                <div
+class="logo-mark">CI</div>
+                <div
+class="logo-text">CLAW
+INTEL</div>
+            <navclass="header-nav">
+                <a href="/"
+class="nav-btn active">💬
+Room</a>
+                <a href="frontend/
+markets.html"
+class="nav-btn">📊 Markets</a>
+                <a href="frontend/
+analysis.html"
+class="nav-btn">🔬 Analyze</a>
+            </nav>
+        </div>
+        <div
+class="header-right">
+            <div
+class="stats-ticker"
+id="stats-ticker">
+                <div
+class="ticker-item"><span>Tokens:</span>
+                    <span
+class="ticker-value"
+id="stat-tokens">0</span>
+                </div>
+                <div
+class="ticker-item">
+                    <span>Scanned:</span>
+                    <span
+class="ticker-value"
+id="stat-scanned">0</span>
+                </div>
+                <div
+class="ticker-item">
+                    <span>Safe:</span>
+                    <span
+class="ticker-value"
+id="stat-safe"
+style="color:var(--safe)">0</span>
+                </div>
+                <div class="ticker-item">
+                    <span>Risk:</span>
+                    <span
+class="ticker-value"
+id="stat-risk"
+style="color:var(--danger)">0
+</span>
+                </div>
+            </div>
+            <div
+class="live-indicator"
+id="connection-status">
+                <div
+class="live-dot"></div>
+                <span
+id="connection-text">Live</span>
+            </div>
+        </div>
+    </header>
+
+        <aside id="sidebar">
+            <div
+class="sidebar-section">
+                <div
+class="sidebar-title">Active
+Agents</div>
+
+                <div
+class="agent-card"
+data-agent="Nova"
+id="agent-nova">
+                    <div
+class="agent-avatar nova">
+                        👁️
+                        <div
+class="agent-status"
+id="status-nova"></div>
+                    </div>
+                    <div
+class="agent-info">
+                        <div
+class="agent-name"
+style="color:var(--nova)">Nova</div>
+                    <div
+class="agent-role">The
+Scout</div>
+                    <div
+class="agent-typing-text">Sca
+nning chains...</div>
+                </div>
+            </div>
+
+            <div
+class="agent-card"
+data-agent="Atlas"
+id="agent-atlas">
+                <div
+class="agent-avatar atlas">
+                    🧪
+                    <div
+class="agent-status"
+id="status-atlas"></div>
+                </div>
+                <div
+class="agent-info">
+
+                    <div
+class="agent-name"
+style="color:var(--atlas)">At
+las</div>
+                    <div
+class="agent-role">The
+Tester</div>
+                    <div
+class="agent-typing-text">Run
+ning simulation...</div>
+                </div>
+            </div>
+
+            <div
+class="agent-card"
+data-agent="Vega"
+id="agent-vega">
+                <div
+class="agent-avatar vega">
+                    ⚖️
+                    <div
+class="agent-status"
+id="status-vega"></div>
+                               <div
+class="agent-info">
+                    <div
+class="agent-name"
+style="color:var(--vega)">Veg
+a</div>
+                    <div
+class="agent-role">The
+Skeptic</div>
+                    <div
+class="agent-typing-text">Ana
+lyzing risks...</div>
+                </div>
+            </div>
+
+            <div
+class="agent-card"
+data-agent="Echo"
+id="agent-echo">
+                <div
+class="agent-avatar echo">
+                    🧠                     <div
+class="agent-status"
+id="status-echo"></div>
+                </div>
+                <div
+class="agent-info">
+                    <div
+class="agent-name"
+style="color:var(--echo)">Ech
+o</div>
+                    <div
+class="agent-role">The
+Archivist</div>
+                    <div
+class="agent-typing-text">Che
+cking archives...</div>
+                </div>
+            </div>
+
+            <div
+class="agent-card"
+data-agent="Orion"  id="agent-orion">
+                <div
+class="agent-avatar orion">
+                    🎯
+                    <div
+class="agent-status"
+id="status-orion"></div>
+                </div>
+                <div
+class="agent-info">
+                    <div
+class="agent-name"
+style="color:var(--orion)">Or
+ion</div>
+                    <div
+class="agent-role">The
+Judge</div>
+                    <div
+class="agent-typing-text">Syn
+thesizing verdict...</div>
+                </div>
+            </div>
+        </div>
+                <div
+class="sidebar-section">
+                <div
+class="sidebar-title">System</div>
+                <div
+class="agent-card"
+style="cursor:pointer"
+onclick="app.toggleSound()"
+id="sound-toggle">
+                    <div
+class="agent-avatar system"
+id="sound-icon">🔊</div>
+<div class="agent-info">
+<div class="agent-name">Sound FX</div>
+         <div class="agent-role"
+id="sound-status">Enabled</div>
+                    </div>
+                                </div>
+            </div>
+            <div
+class="agent-card"
+style="cursor:pointer"
+onclick="app.clearChat()">
+                <div
+class="agent-avatar system">
+                    🗑️</div>
+                <div
+class="agent-info">
+                    <div
+class="agent-name">Clear
+Chat</div>
+                    <div
+class="agent-role">Reset
+conversation</div>
+                </div>
+            </div>
+        </div>
+
+        <div
+class="sidebar-section"
+style="margin-top:auto;">
+            <div
+class="sidebar-title">Shortcu
+ts</div>
+            <div style="padding:0
+0.5rem;
+font-family:var(--font-mono);
+font-size:0.65rem;
+color:var(--text-muted);
+line-height:2;">
+                <div><kbd
+style="background:var(--bg-te
+rtiary); padding:0.1rem
+0.4rem; border-radius:3px;
+border:1px solid
+var(--border-color);">Ctrl+K</kbd> Command</div>
+                <div><kbd
+style="background:var(--bg-te
+rtiary); padding:0.1rem
+0.4rem; border-radius:3px;
+border:1px solid
+var(--border-color);">/</kbd>Quick search</div>
+                <div><kbd
+style="background:var(--bg-te
+rtiary); padding:0.1rem
+0.4rem; border-radius:3px;
+border:1px solid
+var(--border-color);">Esc</kbd> Close</div>
+            </div>
+        </div>
+    </aside>
+
+    <main id="main">
+        <div
+id="chat-container">
+            <div
+class="empty-state"
+id="empty-state">
+                <div
+class="empty-state-icon">🕵️</div>
+                                    <div
+class="empty-state-title">Det
+ectives Room</div>
+                    <div>
+class="empty-state-desc">
+                        The agent swarm
+is standing by. When Nova
+spots a new token,
+                        the team will
+begin their investigation
+right here.
+                    </div>
+                </div>
+            </div>
+
+            <div id="input-area">
+                <div>
+class="input-wrapper">
+                    <input
+                        type="text"
+id="message-input"
+                        placeholder="Type
+a command or press / for quick actions..."
+                        autocomplete="off"
+                    >
+                    <span
+class="input-hint"
+id="input-hint">Ctrl+K</span>
+                </div>
+                <button
+class="send-btn"
+id="send-btn"
+onclick="app.sendMessage()">
+                    ➤
+                </button>
+            </div>
+        </div>
+    </main>
+</div>
+
+    <div id="toast-container"></div>
+    <div
+class="palette-overlay"
+id="palette-overlay"></div>
+    <div id="command-palette">
+        <input type="text"
+id="palette-input"
+placeholder="Type a
+command..."
+autocomplete="off">
+        <div id="palette-results"
+style="max-height:300px;
+overflow-y:auto;"></div>
+    </div>
+    <div id="token-popup"></div>
+    <button id="scroll-bottom"
+onclick="app.scrollToBottom(true)">
+       <span class="unread-count"
+id="unread-count"
+style="display:none;"></span>
+    </button>
+
+    <script src="frontend/
+app.js" type="module"></script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+{
+  "name": "claw-intel",
+  "version": "1.0.0",
+  "type": "modules",
+  "description": "Real-time multi-chain AI agent swarm for crypto intelligence",
+  "main": "runtime/server.js",
+  "scripts": {
+    "start": "node runtime/server.js",
+    "dev": "nodemon runtime/server.js",
+    "agents": "python3 -m agents.watcher & python3 -m agents.simulator & python3 -m agents.analyzer & python3 -m agents.memory & python3 -m agents.decision",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["crypto","ai-agent","blockchain","defi","intelligence","mantle"],
+  "author": "ClawIntel Team",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.14.2",
+    "dotenv": "^16.3.1",
+    "cors": "^2.8.5",
+    "helmet": "^7.1.0",
+    "compression": "^1.7.4",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
