@@ -456,9 +456,9 @@
       background: var(--text-muted);
       animation: typingBounce 1.4s ease-in-out infinite;
     }
-    .typing-bubble:nth-child(1) { animation-delay: 0s; }
-    .typing-bubble:nth-child(2) { animation-delay: 0.2s; }
-    .typing-bubble:nth-child(3) { animation-delay: 0.4s; }
+    .typing-bubble:nth-child(1) { animation-delay: 4s; }
+    .typing-bubble:nth-child(2) { animation-delay: 6s; }
+    .typing-bubble:nth-child(3) { animation-delay: 10.4s; }
     @keyframes typingBounce {
       0%, 60%, 100% { transform: translateY(0); }
       30% { transform: translateY(-5px); }
@@ -702,22 +702,18 @@ var(--text-secondary);
         <div
 class="boot-logo">CLAW
 INTEL</div>
-        <div
-class="boot-terminal"
+        <div class="boot-terminal"
 id="boot-terminal">
             <div class="boot-line"
 style="animation-delay:0.1s">
 Initializing neural
 network...</div>
-            <div class="boot-line
-ok"
-style="animation-delay:0.4s">
+            <div class="boot-line ok" style="animation-delay:0.4s">
 ✓ Core systems online</div>
             <div class="boot-line
 ok"
 style="animation-delay:0.7s">
-✓ WebSocket bridge
-connected</div>
+✓ WebSocket bridge connected</div>
             <div class="boot-line
 ok"
 style="animation-delay:1.0s">
@@ -748,7 +744,7 @@ class="logo-mark">CI</div>
                 <div
 class="logo-text">CLAW
 INTEL</div>
-            <navclass="header-nav">
+            <nav class="header-nav">
                 <a href="/"
 class="nav-btn active">💬
 Room</a>
@@ -760,15 +756,13 @@ analysis.html"
 class="nav-btn">🔬 Analyze</a>
             </nav>
         </div>
-        <div
-class="header-right">
+        <div class="header-right">
             <div
 class="stats-ticker"
 id="stats-ticker">
                 <div
 class="ticker-item"><span>Tokens:</span>
-                    <span
-class="ticker-value"
+                    <span class="ticker-value"
 id="stat-tokens">0</span>
                 </div>
                 <div
@@ -813,25 +807,17 @@ class="sidebar-section">
 class="sidebar-title">Active
 Agents</div>
 
-                <div
-class="agent-card"
-data-agent="Nova"
+    <div class="agent-card" data-agent="Nova"
 id="agent-nova">
-                    <div
-class="agent-avatar nova">
+   <div class="agent-avatar nova">
                         👁️
-                        <div
-class="agent-status"
+           <div class="agent-status"
 id="status-nova"></div>
                     </div>
-                    <div
-class="agent-info">
-                        <div
-class="agent-name"
+                    <div class="agent-info">
+                        <div class="agent-name"
 style="color:var(--nova)">Nova</div>
-                    <div
-class="agent-role">The
-Scout</div>
+                    <div class="agent-role">The Scout</div>
                     <div
 class="agent-typing-text">Sca
 nning chains...</div>
@@ -842,8 +828,7 @@ nning chains...</div>
 class="agent-card"
 data-agent="Atlas"
 id="agent-atlas">
-                <div
-class="agent-avatar atlas">
+                <div class="agent-avatar atlas">
                     🧪
                     <div
 class="agent-status"
@@ -854,8 +839,7 @@ class="agent-info">
 
                     <div
 class="agent-name"
-style="color:var(--atlas)">At
-las</div>
+style="color:var(--atlas)">Atlas</div>
                     <div
 class="agent-role">The
 Tester</div>
@@ -879,11 +863,9 @@ id="status-vega"></div>
 class="agent-info">
                     <div
 class="agent-name"
-style="color:var(--vega)">Veg
-a</div>
+style="color:var(--vega)">Vega</div>
                     <div
-class="agent-role">The
-Skeptic</div>
+class="agent-role">The Skeptic</div>
                     <div
 class="agent-typing-text">Ana
 lyzing risks...</div>
@@ -904,8 +886,7 @@ id="status-echo"></div>
 class="agent-info">
                     <div
 class="agent-name"
-style="color:var(--echo)">Ech
-o</div>
+style="color:var(--echo)">Echo</div>
                     <div
 class="agent-role">The
 Archivist</div>
@@ -929,8 +910,7 @@ id="status-orion"></div>
 class="agent-info">
                     <div
 class="agent-name"
-style="color:var(--orion)">Or
-ion</div>
+style="color:var(--orion)">Orion</div>
                     <div
 class="agent-role">The
 Judge</div>
@@ -972,8 +952,7 @@ class="agent-info">
 class="agent-name">Clear
 Chat</div>
                     <div
-class="agent-role">Reset
-conversation</div>
+class="agent-role">Reset conversation</div>
                 </div>
             </div>
         </div>
@@ -982,28 +961,24 @@ conversation</div>
 class="sidebar-section"
 style="margin-top:auto;">
             <div
-class="sidebar-title">Shortcu
-ts</div>
+class="sidebar-title">Shortcuts</div>
             <div style="padding:0
 0.5rem;
 font-family:var(--font-mono);
 font-size:0.65rem;
 color:var(--text-muted);
 line-height:2;">
-                <div><kbd
-style="background:var(--bg-te
+                <div><kbd style="background:var(--bg-te
 rtiary); padding:0.1rem
 0.4rem; border-radius:3px;
 border:1px solid
 var(--border-color);">Ctrl+K</kbd> Command</div>
-                <div><kbd
-style="background:var(--bg-te
+                <div><kbd style="background:var(--bg-te
 rtiary); padding:0.1rem
 0.4rem; border-radius:3px;
 border:1px solid
 var(--border-color);">/</kbd>Quick search</div>
-                <div><kbd
-style="background:var(--bg-te
+                <div><kbd style="background:var(--bg-te
 rtiary); padding:0.1rem
 0.4rem; border-radius:3px;
 border:1px solid
@@ -1020,14 +995,11 @@ class="empty-state"
 id="empty-state">
                 <div
 class="empty-state-icon">🕵️</div>
-                                    <div
-class="empty-state-title">Forensic Room</div>
-                    <div>
-class="empty-state-desc">
+       <div class="empty-state-title">Forensic Room</div>
+          <div class="empty-state-desc">
                         The Agents
 are standing by. When Nova
-spots a new token,
-                        the team will
+spots a new token,the team will
 begin their investigation
 right here.
                     </div>
@@ -1035,8 +1007,7 @@ right here.
             </div>
 
             <div id="input-area">
-                <div>
-class="input-wrapper">
+                <div class="input-wrapper">
                     <input
                         type="text"
 id="message-input"
@@ -1044,12 +1015,10 @@ id="message-input"
 a command or press / for quick actions..."
                         autocomplete="off"
                     >
-                    <span
-class="input-hint"
+                    <span class="input-hint"
 id="input-hint">Ctrl+K</span>
                 </div>
-                <button
-class="send-btn"
+                <button class="send-btn"
 id="send-btn"
 onclick="app.sendMessage()">
                     ➤
