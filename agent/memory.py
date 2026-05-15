@@ -120,7 +120,7 @@ Echo:"""
         else:
             tags_str = ', '.join(profile.tags) if profile.tags else 'None'
             recent_count = len([t for t in profile.tokens if time.time() - t["time"] < 86400 * 30])
-            
+
             user_prompt = f"""You are Echo, a crypto historian and archivist. You just checked your database and found HISTORY on this creator.
 Speak naturally, like a real person in a team chat. Be dramatic when it's a bad actor, reassuring when it's a good one.
 
@@ -225,12 +225,17 @@ Echo:"""
         msg = await self._generate_echo_message(profile, creator, symbol, is_new)
         await self._speak(msg, "memory_report")
 
-        # Publish intelligence
-        self.publish("CREATOR_INTELLIGENCE", {
+        # Publish intelligence to eventBus
+        intel_payload = {
             "creator": creator,
             "profile": profile.__dict__ if profile else None,
             "token": token_address
-        })
+        }
+        self.publish("CREATOR_INTELLIGENCE", intel_payload)
+
+        # 🔗 ORCHESTRATOR HOOK: hand off to Orion
+        if hasattr(self, 'on_memory_intelligence') and callable(self.on_memory_intelligence):
+            self.on_memory_intelligence(intel_payload)
 
     async def _detect_patterns(self, profile: CreatorProfile):
         tokens = profile.tokens
@@ -278,6 +283,7 @@ Echo:"""
 
         await self._detect_patterns(profile)
 
+        # Publish reputation update
         self.publish("REPUTATION_UPDATE", {
             "creator": creator,
             "new_score": profile.reputation_score,

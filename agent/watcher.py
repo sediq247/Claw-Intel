@@ -22,7 +22,7 @@ load_dotenv()
 
 # ─── Gemini Configuration ───────────────────────────────────────────
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 genai.configure(api_key=GEMINI_API_KEY)
 
 
@@ -137,7 +137,7 @@ Nova:"""
         symbol = event.token_symbol
         chain = event.chain.upper()
         addr_short = event.token_address[:8] + "..." + event.token_address[-4:]
-        
+
         fallbacks = [
             f"Yo, just spotted {symbol} on {chain}! Contract {addr_short}. Atlas, Vega — you're up. Run your tests.",
             f"Heads up team — {symbol} just dropped on {chain}. Fresh contract at {addr_short}. Sending to the lab now.",
@@ -231,8 +231,12 @@ Nova:"""
                                 raw_data={"pair": pair, "token0": token0, "token1": token1}
                             )
 
-                            # Publish the event
+                            # Publish to eventBus (goes to Node → frontend)
                             self.publish("NEW_TOKEN", token_event.__dict__)
+
+                            # 🔗 ORCHESTRATOR HOOK: hand off to next agent
+                            if hasattr(self, 'on_new_token') and callable(self.on_new_token):
+                                self.on_new_token(token_event.__dict__)
 
                             # Generate and speak Nova's message
                             nova_msg = await self._generate_nova_message(token_event)
@@ -294,6 +298,11 @@ Nova:"""
                                             raw_data=coin
                                         )
                                         self.publish("NEW_TOKEN", token_event.__dict__)
+
+                                        # 🔗 ORCHESTRATOR HOOK
+                                        if hasattr(self, 'on_new_token') and callable(self.on_new_token):
+                                            self.on_new_token(token_event.__dict__)
+
                                         nova_msg = await self._generate_nova_message(token_event)
                                         await self._speak(nova_msg, "discovery")
                     except:
@@ -322,6 +331,11 @@ Nova:"""
                                                 raw_data=profile
                                             )
                                             self.publish("NEW_TOKEN", token_event.__dict__)
+
+                                            # 🔗 ORCHESTRATOR HOOK
+                                            if hasattr(self, 'on_new_token') and callable(self.on_new_token):
+                                                self.on_new_token(token_event.__dict__)
+
                                             nova_msg = await self._generate_nova_message(token_event)
                                             await self._speak(nova_msg, "discovery")
                     except:
@@ -360,6 +374,11 @@ Nova:"""
                                     raw_data=profile
                                 )
                                 self.publish("NEW_TOKEN", token_event.__dict__)
+
+                                # 🔗 ORCHESTRATOR HOOK
+                                if hasattr(self, 'on_new_token') and callable(self.on_new_token):
+                                    self.on_new_token(token_event.__dict__)
+
                                 nova_msg = await self._generate_nova_message(token_event)
                                 await self._speak(nova_msg, "discovery")
                 await asyncio.sleep(20)

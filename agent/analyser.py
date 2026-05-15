@@ -20,7 +20,7 @@ load_dotenv()
 
 # ─── Gemini Configuration ───────────────────────────────────────────
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
 
 @dataclass
@@ -144,7 +144,7 @@ Vega:"""
     def _fallback_message(self, analysis: AnalysisResult, sim_data: dict, symbol: str) -> str:
         """Template fallback when Gemini is unavailable."""
         parts = []
-        
+
         if sim_data.get("honeypot_risk"):
             parts.append(f"Atlas called it — honeypot. I concur. {symbol} blocks sells. This is a trap.")
         elif sim_data.get("mint_function"):
@@ -153,7 +153,7 @@ Vega:"""
             parts.append(f"Atlas spotted the blacklist — I verified it independently. Full wallet freezing capability.")
         else:
             parts.append(f"Atlas gave it a clean bill on trades, but I'm finding some contract-level concerns.")
-        
+
         score_templates = {
             "HIGH_RISK": [
                 f"My risk score: {analysis.risk_score}/100. HIGH RISK. This thing is a disaster waiting to happen.",
@@ -169,17 +169,17 @@ Vega:"""
             ],
         }
         parts.append(random.choice(score_templates.get(analysis.risk_level, score_templates["WARNING"])))
-        
+
         if analysis.red_flags:
             parts.append(f"Red flags: {'; '.join(analysis.red_flags[:3])}.")
-        
+
         outro = random.choice([
             "Echo, any history on this creator?",
             "Orion, I'm recommending caution here.",
             "That's my analysis. Over to Echo for the history check.",
         ])
         parts.append(outro)
-        
+
         return " ".join(parts)
 
     async def _deep_analysis(self, sim_data: dict):
@@ -271,7 +271,13 @@ Vega:"""
         )
 
         self.analysis_cache[token_address] = analysis
+
+        # Publish to eventBus
         self.publish("ANALYSIS_COMPLETE", analysis.__dict__)
+
+        # 🔗 ORCHESTRATOR HOOK: hand off to Echo
+        if hasattr(self, 'on_analysis_complete') and callable(self.on_analysis_complete):
+            self.on_analysis_complete(analysis.__dict__)
 
         # Generate and speak Vega's full report
         report = await self._generate_vega_message(analysis, sim_data, symbol)

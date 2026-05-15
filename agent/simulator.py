@@ -21,7 +21,7 @@ load_dotenv()
 
 # ─── Gemini Configuration ───────────────────────────────────────────
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 genai.configure(api_key=GEMINI_API_KEY)
 
 
@@ -140,17 +140,17 @@ Atlas:"""
     def _fallback_message(self, sim: SimulationResult, symbol: str) -> str:
         """Template fallback when Gemini is unavailable."""
         parts = []
-        
+
         if sim.honeypot_risk or not sim.can_sell:
             parts.append(f"Damn. {symbol} is a honeypot — sells are blocked. This is a trap, Nova.")
         else:
             parts.append(f"Good news — buy and sell paths are both open on {symbol}. No honeypot behavior.")
-        
+
         if sim.mint_function:
             parts.append("But the contract has a MINT function. The dev can print infinite tokens anytime.")
         if sim.blacklist_function:
             parts.append("Also found BLACKLIST. They can freeze wallets at will.")
-        
+
         liq = sim.liquidity_usd
         if liq == 0:
             parts.append("Liquidity is basically ZERO. Ghost token.")
@@ -158,7 +158,7 @@ Atlas:"""
             parts.append(f"Low liquidity warning: only ${liq:,.0f}.")
         elif liq >= 10000:
             parts.append(f"Solid liquidity: ${liq:,.0f}. Good sign.")
-        
+
         parts.append("Vega, over to you for the deep dive.")
         return " ".join(parts)
 
@@ -208,8 +208,12 @@ Atlas:"""
 
         self.results_cache[token_address] = simulation
 
-        # Publish results
+        # Publish results to eventBus
         self.publish("SIMULATION_COMPLETE", simulation.__dict__)
+
+        # 🔗 ORCHESTRATOR HOOK: hand off to Vega
+        if hasattr(self, 'on_simulation_complete') and callable(self.on_simulation_complete):
+            self.on_simulation_complete(simulation.__dict__)
 
         # Generate and speak Atlas's full report
         context = f"Token discovered by Nova on {chain}. Running trade simulation."

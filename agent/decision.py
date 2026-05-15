@@ -302,7 +302,7 @@ Orion:"""
         report = await self._generate_orion_message(result, sim, analysis, memory)
         await self._speak(report, "decision")
 
-        # Publish results
+        # Publish results to eventBus
         self.publish("DECISION_COMPLETE", result.__dict__)
         self.publish("SIGNAL", {
             "token": token,

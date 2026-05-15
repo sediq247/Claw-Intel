@@ -30,9 +30,20 @@ class MarketsApp {
   init() {
     this.connectWebSocket();
     this.fetchInitialData();
+    this.setupTabListeners();
 
     // Auto-refresh every 30s
     setInterval(() => this.fetchInitialData(), CONFIG.REFRESH_INTERVAL);
+  }
+
+  // ── Tab Listeners ──
+  setupTabListeners() {
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tab = btn.dataset.tab;
+        if (tab) this.switchTab(tab);
+      });
+    });
   }
 
   // ── WebSocket ──
@@ -90,18 +101,22 @@ class MarketsApp {
         const res = await fetch(`/api/markets/${tab}`);
         if (res.ok) {
           const data = await res.json();
-          // The API returns via eventBus, so we might get data differently
-          // For now, try to parse whatever we get
+          // Store the fetched data
+          if (Array.isArray(data)) {
+            this.data[tab] = data;
+          } else if (data && typeof data === 'object') {
+            // Handle nested response structures
+            this.data[tab] = data.trending || data.gainers || data.losers || data['ai-verified'] || [];
+          }
+          this.loading = false;
         }
       } catch (e) {
-        // Fallback: use mock data or wait for WS
+        console.error(`[Markets] Failed to fetch ${tab}:`, e);
       }
     }
 
-    // If no data yet, show loading
-    if (this.loading && Object.values(this.data).every(arr => arr.length === 0)) {
-      // Will show loading state
-    }
+    this.updateBadgeCounts();
+    this.render();
   }
 
   handleMarketUpdate(payload) {
@@ -165,6 +180,8 @@ class MarketsApp {
     const tableView = document.getElementById('table-view');
     const cardView = document.getElementById('card-view');
 
+    if (!loadingEl || !emptyEl || !tableView || !cardView) return;
+
     if (this.loading) {
       loadingEl.style.display = 'flex';
       emptyEl.style.display = 'none';
@@ -197,12 +214,14 @@ class MarketsApp {
 
   renderTable(data) {
     const tbody = document.getElementById('market-table-body');
+    if (!tbody) return;
 
     tbody.innerHTML = data.map((token, i) => {
       const changeClass = this.getChangeClass(token.price_change_24h);
-      const changeSign = token.price_change_24h > 0 ? '+' : '';
-      const aiBadge = token.ai_verified 
-        ? `<span class="badge badge-ai">🤖 ${token.ai_verdict}</span>` 
+      const changeSign = (typeof token.price_change_24h === 'number' && token.price_change_24h > 0) ? '+' : '';
+      const changeVal = token.price_change_24h || '0.00';
+      const aiBadge = token.ai_verified
+        ? `<span class="badge badge-ai">🤖 ${token.ai_verdict}</span>`
         : '';
 
       return `
@@ -214,13 +233,13 @@ class MarketsApp {
                 ${token.image ? `<img src="${token.image}" alt="" onerror="this.style.display='none';this.parentElement.textContent='💎'">` : '💎'}
               </div>
               <div>
-                <div class="col-token-name">${token.name}</div>
-                <div class="col-token-symbol">${token.symbol} · ${token.chain || 'Multi'}</div>
+                <div class="col-token-name">${token.name || 'Unknown'}</div>
+                <div class="col-token-symbol">${token.symbol || '???'} · ${token.chain || 'Multi'}</div>
               </div>
             </div>
           </td>
           <td class="col-price">${token.price || '$0.00'}</td>
-          <td class="col-change ${changeClass}">${changeSign}${token.price_change_24h || '0.00'}%</td>
+          <td class="col-change ${changeClass}">${changeSign}${changeVal}%</td>
           <td class="col-mcap">${token.market_cap || '$0'}</td>
           <td class="col-volume">${token.volume_24h || '$0'}</td>
           <td class="col-liquidity">${token.liquidity || '$0'}</td>
@@ -232,10 +251,11 @@ class MarketsApp {
 
   renderCards(data) {
     const container = document.getElementById('card-view');
+    if (!container) return;
 
     container.innerHTML = data.map((token, i) => {
       const verdictClass = token.ai_verdict?.toLowerCase() || 'neutral';
-      const confidence = token.ai_confidence 
+      const confidence = token.ai_confidence
         ? (typeof token.ai_confidence === 'string' ? token.ai_confidence : `${(token.ai_confidence * 100).toFixed(0)}%`)
         : 'N/A';
 
@@ -250,10 +270,10 @@ class MarketsApp {
             </div>
             <div class="token-card-info">
               <div class="token-card-symbol">
-                ${token.symbol}
+                ${token.symbol || '???'}
                 <span class="token-card-chain">${token.chain || 'Multi'}</span>
               </div>
-              <div class="token-card-name">${token.name}</div>
+              <div class="token-card-name">${token.name || 'Unknown'}</div>
             </div>
           </div>
           <div class="token-card-price">${token.price || '$0.00'}</div>
@@ -261,7 +281,7 @@ class MarketsApp {
             <div class="token-card-stat">
               <span class="token-card-stat-label">24h Change</span>
               <span class="token-card-stat-value ${this.getChangeClass(token.price_change_24h)}">
-                ${token.price_change_24h > 0 ? '+' : ''}${token.price_change_24h || '0.00'}%
+                ${(typeof token.price_change_24h === 'number' && token.price_change_24h > 0) ? '+' : ''}${token.price_change_24h || '0.00'}%
               </span>
             </div>
             <div class="token-card-stat">
@@ -283,7 +303,7 @@ class MarketsApp {
   }
 
   getChangeClass(value) {
-    if (!value || value === 0) return '';
+    if (!value || value === 0 || value === '0.00') return '';
     const num = parseFloat(value);
     if (num > 0) return 'positive';
     if (num < 0) return 'negative';
@@ -291,10 +311,15 @@ class MarketsApp {
   }
 
   updateBadgeCounts() {
-    document.getElementById('badge-trending').textContent = this.data.trending.length || '—';
-    document.getElementById('badge-gainers').textContent = this.data.gainers.length || '—';
-    document.getElementById('badge-losers').textContent = this.data.losers.length || '—';
-    document.getElementById('badge-ai').textContent = this.data['ai-verified'].length || '—';
+    const badgeTrending = document.getElementById('badge-trending');
+    const badgeGainers = document.getElementById('badge-gainers');
+    const badgeLosers = document.getElementById('badge-losers');
+    const badgeAi = document.getElementById('badge-ai');
+
+    if (badgeTrending) badgeTrending.textContent = this.data.trending.length || '—';
+    if (badgeGainers) badgeGainers.textContent = this.data.gainers.length || '—';
+    if (badgeLosers) badgeLosers.textContent = this.data.losers.length || '—';
+    if (badgeAi) badgeAi.textContent = this.data['ai-verified'].length || '—';
   }
 
   updateLastUpdated() {

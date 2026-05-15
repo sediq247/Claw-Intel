@@ -1,3 +1,10 @@
+/**
+ * 📡 runtime/stream.js
+ * WebSocket Stream Manager.
+ * Bridges eventBus ↔ frontend. Controls message timing for natural conversation flow.
+ * Formats agent outputs into UI-friendly messages.
+ */
+
 import { WebSocketServer } from 'ws';
 
 class StreamManager {
@@ -8,13 +15,16 @@ class StreamManager {
     this.messageQueue = [];
     this.isProcessing = false;
     this.minDelayMs = 800;
-    this.maxDelayMs = 2500; 
+    this.maxDelayMs = 2500;
+
+    // Track pending market requests by requestId
+    this.pendingMarketRequests = new Map();
+    this.marketRequestId = 0;
 
     this._init();
   }
 
   _init() {
-    // Listen for all agent events and queue them
     const eventTypes = [
       'AGENT_MESSAGE',
       'NEW_TOKEN',
@@ -34,12 +44,10 @@ class StreamManager {
       });
     });
 
-    // Handle WebSocket connections
     this.wss.on('connection', (ws, req) => {
       console.log(`[stream] Client connected from ${req.socket.remoteAddress}`);
       this.clients.add(ws);
 
-      // Send connection confirmation
       ws.send(JSON.stringify({
         type: 'SYSTEM',
         payload: {
@@ -48,7 +56,6 @@ class StreamManager {
         },
       }));
 
-      // Send recent chat history
       const recentChat = this.eventBus.getHistory('AGENT_MESSAGE', 20);
       if (recentChat.length > 0) {
         ws.send(JSON.stringify({
@@ -77,20 +84,13 @@ class StreamManager {
       });
     });
 
-    // Start the message processor
     this._processQueue();
   }
 
-  /**
-   * Queue a message for timed delivery
-   */
   _queueMessage(eventType, payload) {
     this.messageQueue.push({ eventType, payload, queuedAt: Date.now() });
   }
 
-  /**
-   * Process queued messages with natural timing
-   */
   async _processQueue() {
     this.isProcessing = true;
 
@@ -111,33 +111,28 @@ class StreamManager {
     }
   }
 
-  /**
-   * Calculate delay based on message type for natural conversation pacing
-   */
   _calculateDelay(item) {
     const { eventType, payload } = item;
+
     if (eventType === 'AGENT_MESSAGE') {
       const msgLength = payload.message?.length || 0;
       const baseDelay = Math.min(this.maxDelayMs, this.minDelayMs + msgLength * 15);
       return baseDelay + Math.random() * 500;
     }
+
     if (eventType === 'SYSTEM' || eventType === 'SIGNAL') {
       return 200;
     }
 
-    // Data events (simulation, analysis) get medium delay
     return this.minDelayMs + Math.random() * 800;
   }
 
-  /**
-   * Broadcast to all connected WebSocket
-   */
   _broadcast(eventType, payload) {
     const message = JSON.stringify({ type: eventType, payload });
     const deadClients = [];
 
     this.clients.forEach((ws) => {
-      if (ws.readyState === 1) { // WebSocket.OPEN
+      if (ws.readyState === 1) {
         try {
           ws.send(message);
         } catch (err) {
@@ -148,19 +143,14 @@ class StreamManager {
       }
     });
 
-    // Clean up dead connections
     deadClients.forEach((ws) => this.clients.delete(ws));
   }
 
-  /**
-   * Handle messages FROM the frontend (e.g., manual investigation request)
-   */
   _handleClientMessage(ws, msg) {
     const { type, payload } = msg;
 
     switch (type) {
       case 'MANUAL_INVESTIGATE': {
-        // Forward to eventBus — agents will pick this up
         this.eventBus.publish('MANUAL_INVESTIGATE', payload);
         break;
       }
@@ -171,8 +161,18 @@ class StreamManager {
       }
 
       case 'GET_MARKETS': {
-        // Request for market data — handled by marketEngine
-        this.eventBus.publish('REQUEST_MARKET_DATA', { client: ws, ...payload });
+        // Use requestId instead of passing ws object through eventBus
+        const reqId = ++this.marketRequestId;
+        this.pendingMarketRequests.set(reqId, ws);
+
+        this.eventBus.publish('REQUEST_MARKET_DATA', { requestId: reqId, ...payload });
+
+        // Timeout cleanup
+        setTimeout(() => {
+          if (this.pendingMarketRequests.has(reqId)) {
+            this.pendingMarketRequests.delete(reqId);
+          }
+        }, 5000);
         break;
       }
 
@@ -186,16 +186,10 @@ class StreamManager {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  /**
-   * Get active client count
-   */
   getClientCount() {
     return this.clients.size;
   }
 
-  /**
-   * Graceful shutdown
-   */
   shutdown() {
     this.isProcessing = false;
     this.clients.forEach((ws) => {

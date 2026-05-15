@@ -2,6 +2,7 @@
  * 🔬 frontend/analysis.js
  * ClawIntel — Forensic Lab
  * User pastes token → Agents investigate → Chat their findings → Final verdict
+ * PURE BACKEND: All messages come from WebSocket. No demo simulation.
  */
 
 const CONFIG = {
@@ -44,9 +45,11 @@ class ForensicLab {
     this.connectWebSocket();
 
     // Enter key on input
-    this.tokenInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') this.startInvestigation();
-    });
+    if (this.tokenInput) {
+      this.tokenInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') this.startInvestigation();
+      });
+    }
   }
 
   connectWebSocket() {
@@ -91,7 +94,7 @@ class ForensicLab {
   // ── Start Investigation ──
   async startInvestigation() {
     const address = this.tokenInput.value.trim();
-    const chain = this.chainSelect.value;
+    const chain = this.chainSelect ? this.chainSelect.value : 'bsc';
 
     if (!address) {
       this.tokenInput.focus();
@@ -105,65 +108,75 @@ class ForensicLab {
 
     // Reset UI
     this.resetInvestigation();
-    this.emptyState.style.display = 'none';
+    if (this.emptyState) this.emptyState.style.display = 'none';
 
     // Update button
-    this.scanBtn.disabled = true;
-    this.scanBtnText.innerHTML = '<span class="spinner spinner-sm" style="display:inline-block;vertical-align:middle;margin-right:0.4rem;"></span> Scanning...';
+    if (this.scanBtn) this.scanBtn.disabled = true;
+    if (this.scanBtnText) {
+      this.scanBtnText.innerHTML = '<span class="spinner spinner-sm" style="display:inline-block;vertical-align:middle;margin-right:0.4rem;"></span> Scanning...';
+    }
 
     // Show progress
-    this.progressContainer.classList.add('active');
+    if (this.progressContainer) this.progressContainer.classList.add('active');
     this.updateProgress(5, 'Initializing investigation...');
-    this.investigationStatus.innerHTML = '<span class="spinner spinner-sm" style="display:inline-block;vertical-align:middle;margin-right:0.4rem;"></span> Investigating...';
+    if (this.investigationStatus) {
+      this.investigationStatus.innerHTML = '<span class="spinner spinner-sm" style="display:inline-block;vertical-align:middle;margin-right:0.4rem;"></span> Investigating...';
+    }
 
-    // Send to backend
+    // Send to backend via WebSocket (preferred) or HTTP fallback
+    let sent = false;
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({
         type: 'MANUAL_INVESTIGATE',
         payload: { tokenAddress: address, chain: chain }
       }));
-    } else {
-      // Fallback: POST to API
-      try {
-        const res = await fetch('/api/analyze', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tokenAddress: address, chain: chain })
-        });
-        if (!res.ok) throw new Error('API error');
-      } catch (e) {
-        console.error('[Lab] API error:', e);
+      sent = true;
+    }
+
+    // Always also POST to API for reliability
+    try {
+      const res = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tokenAddress: address, chain: chain })
+      });
+      if (!res.ok) throw new Error('API error');
+      sent = true;
+    } catch (e) {
+      console.error('[Lab] API error:', e);
+      if (!sent) {
         this.addSystemMessage('Failed to start investigation. Please check your connection.');
         this.endInvestigation();
         return;
       }
     }
 
-    // Also simulate the agent conversation for demo/development
-    // In production, this comes from the backend via WebSocket
-    this.simulateInvestigation(address, chain);
+    // NO DEMO — we wait for real backend messages via WebSocket
+    // Progress updates come from handleMessage as agents complete
   }
 
   resetInvestigation() {
-    this.messagesContainer.innerHTML = '';
-    this.tokenSummary.classList.remove('visible');
-    this.verdictContainer.innerHTML = '';
+    if (this.messagesContainer) this.messagesContainer.innerHTML = '';
+    if (this.tokenSummary) this.tokenSummary.classList.remove('visible');
+    if (this.verdictContainer) this.verdictContainer.innerHTML = '';
     this.updateProgress(0, '');
     this.currentInvestigation = { messages: [] };
   }
 
   endInvestigation() {
     this.isInvestigating = false;
-    this.scanBtn.disabled = false;
-    this.scanBtnText.textContent = '🔍 Scan';
-    this.progressContainer.classList.remove('active');
-    this.investigationStatus.innerHTML = '<span>Investigation complete</span>';
+    if (this.scanBtn) this.scanBtn.disabled = false;
+    if (this.scanBtnText) this.scanBtnText.textContent = '🔍 Scan';
+    if (this.progressContainer) this.progressContainer.classList.remove('active');
+    if (this.investigationStatus) {
+      this.investigationStatus.innerHTML = '<span>Investigation complete</span>';
+    }
   }
 
   updateProgress(percent, step) {
-    this.progressFill.style.width = percent + '%';
-    this.progressPercent.textContent = percent + '%';
-    if (step) this.progressStep.textContent = step;
+    if (this.progressFill) this.progressFill.style.width = percent + '%';
+    if (this.progressPercent) this.progressPercent.textContent = percent + '%';
+    if (step && this.progressStep) this.progressStep.textContent = step;
   }
 
   // ── Message Handling ──
@@ -187,9 +200,11 @@ class ForensicLab {
         this.endInvestigation();
         break;
       case 'NEW_TOKEN':
-        // Nova found the token data
         this.updateTokenSummary(payload);
         this.updateProgress(20, 'Token data retrieved');
+        break;
+      case 'SYSTEM':
+        if (payload.message) this.addSystemMessage(payload.message);
         break;
     }
   }
@@ -200,8 +215,7 @@ class ForensicLab {
     const message = payload.message || '';
     const msgType = payload.type || 'chat';
 
-    // Hide empty state
-    this.emptyState.style.display = 'none';
+    if (this.emptyState) this.emptyState.style.display = 'none';
 
     // Show typing first, then message
     this.showTyping(agent);
@@ -213,13 +227,12 @@ class ForensicLab {
 
       const el = document.createElement('div');
       el.className = 'agent-msg';
-      el.style.animationDelay = '2s';
+      el.style.animationDelay = '0s';
 
       const color = this.agentColors[agent] || '#8a8a9a';
       const emoji = this.agentEmojis[agent] || '🤖';
       const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-      // Process message text
       const processed = this.processMessageText(message);
 
       el.innerHTML = `
@@ -231,8 +244,10 @@ class ForensicLab {
         </div>
       `;
 
-      this.messagesContainer.appendChild(el);
-      this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+      if (this.messagesContainer) {
+        this.messagesContainer.appendChild(el);
+        this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+      }
 
       if (this.currentInvestigation) {
         this.currentInvestigation.messages.push(payload);
@@ -265,8 +280,10 @@ class ForensicLab {
       <span style="font-size:0.7rem;color:var(--text-muted);font-style:italic;">${agent} is investigating...</span>
     `;
 
-    this.messagesContainer.appendChild(el);
-    this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+    if (this.messagesContainer) {
+      this.messagesContainer.appendChild(el);
+      this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+    }
   }
 
   hideTyping(agent) {
@@ -313,7 +330,14 @@ class ForensicLab {
     if (data.liquidity_usd) set('sum-liquidity', '$' + this.formatNumber(data.liquidity_usd));
     if (data.market_cap) set('sum-mcap', '$' + this.formatNumber(data.market_cap));
 
-    this.tokenSummary.classList.add('visible');
+    if (this.tokenSummary) this.tokenSummary.classList.add('visible');
+  }
+
+  formatNumber(num) {
+    if (num >= 1_000_000_000) return (num / 1_000_000_000).toFixed(2) + 'B';
+    if (num >= 1_000_000) return (num / 1_000_000).toFixed(2) + 'M';
+    if (num >= 1_000) return (num / 1_000).toFixed(2) + 'K';
+    return num.toLocaleString();
   }
 
   // ── Verdict ──
@@ -325,51 +349,58 @@ class ForensicLab {
 
     const verdictClass = verdict.toLowerCase();
     const icons = { SAFE: '✅', WARNING: '⚠️', HIGH_RISK: '🚨' };
-    const titles = { SAFE: 'SAFE — Approved by the Swarm', WARNING: 'WARNING — Proceed with Caution', HIGH_RISK: 'HIGH RISK — Avoid at All Costs' };
+    const titles = {
+      SAFE: 'SAFE — Approved by the Swarm',
+      WARNING: 'WARNING — Proceed with Caution',
+      HIGH_RISK: 'HIGH RISK — Avoid at All Costs'
+    };
 
     const confidencePct = typeof confidence === 'number' ? Math.round(confidence * 100) : confidence;
 
-    this.verdictContainer.innerHTML = `
-      <div class="verdict-panel ${verdictClass}">
-        <div class="verdict-header">
-          <div class="verdict-icon ${verdictClass}">${icons[verdict] || '❓'}</div>
-          <div>
-            <div class="verdict-title ${verdictClass}">${titles[verdict] || verdict}</div>
-            <div class="verdict-confidence">Confidence: ${confidencePct}% · Swarm Consensus</div>
+    if (this.verdictContainer) {
+      this.verdictContainer.innerHTML = `
+        <div class="verdict-panel ${verdictClass}">
+          <div class="verdict-header">
+            <div class="verdict-icon ${verdictClass}">${icons[verdict] || '❓'}</div>
+            <div>
+              <div class="verdict-title ${verdictClass}">${titles[verdict] || verdict}</div>
+              <div class="verdict-confidence">Confidence: ${confidencePct}% · Swarm Consensus</div>
+            </div>
+          </div>
+          <div class="verdict-body">${this.processMessageText(reasoning)}</div>
+          <div class="verdict-factors">
+            <div class="verdict-factor">
+              <span class="verdict-factor-label">Simulation Score</span>
+              <span class="verdict-factor-value" style="color:${factors.simulation_score > 30 ? 'var(--danger)' : 'var(--text-secondary)'}">${factors.simulation_score || 'N/A'}/100</span>
+            </div>
+            <div class="verdict-factor">
+              <span class="verdict-factor-label">Risk Analysis</span>
+              <span class="verdict-factor-value" style="color:${factors.analysis_risk > 50 ? 'var(--danger)' : factors.analysis_risk > 30 ? 'var(--warning)' : 'var(--safe)'}">${factors.analysis_risk || 'N/A'}/100</span>
+            </div>
+            <div class="verdict-factor">
+              <span class="verdict-factor-label">Creator Rep</span>
+              <span class="verdict-factor-value" style="color:${factors.creator_reputation < 30 ? 'var(--danger)' : factors.creator_reputation < 60 ? 'var(--warning)' : 'var(--safe)'}">${factors.creator_reputation || 'N/A'}/100</span>
+            </div>
+            <div class="verdict-factor">
+              <span class="verdict-factor-label">Liquidity</span>
+              <span class="verdict-factor-value">${factors.liquidity_usd ? '$' + this.formatNumber(factors.liquidity_usd) : 'N/A'}</span>
+            </div>
+            <div class="verdict-factor">
+              <span class="verdict-factor-label">Honeypot</span>
+              <span class="verdict-factor-value" style="color:${factors.honeypot ? 'var(--danger)' : 'var(--safe)'}">${factors.honeypot ? 'YES' : 'No'}</span>
+            </div>
+            <div class="verdict-factor">
+              <span class="verdict-factor-label">Can Sell</span>
+              <span class="verdict-factor-value" style="color:${factors.can_sell ? 'var(--safe)' : 'var(--danger)'}">${factors.can_sell ? 'Yes' : 'BLOCKED'}</span>
+            </div>
           </div>
         </div>
-        <div class="verdict-body">${this.processMessageText(reasoning)}</div>
-        <div class="verdict-factors">
-          <div class="verdict-factor">
-            <span class="verdict-factor-label">Simulation Score</span>
-            <span class="verdict-factor-value" style="color:${factors.simulation_score > 30 ? 'var(--danger)' : 'var(--text-secondary)'}">${factors.simulation_score || 'N/A'}/100</span>
-          </div>
-          <div class="verdict-factor">
-            <span class="verdict-factor-label">Risk Analysis</span>
-            <span class="verdict-factor-value" style="color:${factors.analysis_risk > 50 ? 'var(--danger)' : factors.analysis_risk > 30 ? 'var(--warning)' : 'var(--safe)'}">${factors.analysis_risk || 'N/A'}/100</span>
-          </div>
-          <div class="verdict-factor">
-            <span class="verdict-factor-label">Creator Rep</span>
-            <span class="verdict-factor-value" style="color:${factors.creator_reputation < 30 ? 'var(--danger)' : factors.creator_reputation < 60 ? 'var(--warning)' : 'var(--safe)'}">${factors.creator_reputation || 'N/A'}/100</span>
-          </div>
-          <div class="verdict-factor">
-            <span class="verdict-factor-label">Liquidity :</span>
-            <span class="verdict-factor-value">${factors.liquidity_usd ? '$' + this.formatNumber(factors.liquidity_usd) : 'N/A'}</span>
-          </div>
-          <div class="verdict-factor">
-            <span class="verdict-factor-label">Honeypot :</span>
-            <span class="verdict-factor-value" style="color:${factors.honeypot ? 'var(--danger)' : 'var(--safe)'}">${factors.honeypot ? 'YES' : 'No'}</span>
-          </div>
-          <div class="verdict-factor">
-            <span class="verdict-factor-label">Can Sell :</span>
-            <span class="verdict-factor-value" style="color:${factors.can_sell ? 'var(--safe)' : 'var(--danger)'}">${factors.can_sell ? 'Yes' : 'BLOCKED'}</span>
-          </div>
-        </div>
-      </div>
-    `;
+      `;
+    }
   }
 }
-const analysis = new ForensicLab();
-window.analysis = analysis;
 
-export default analysis;
+const lab = new ForensicLab();
+window.lab = lab;
+
+export default lab;
