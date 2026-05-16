@@ -8,7 +8,7 @@
     "start": "bash start.sh",
     "dev": "nodemon runtime/server.js",
     "agents": "python3 -m agents.orchestrator",
-    "test": "echo "Error: no test specified" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": ["crypto","ai-agent","blockchain","defi","intelligence","mantle"],
   "author": "ClawIntel Team",
