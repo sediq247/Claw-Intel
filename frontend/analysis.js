@@ -6,7 +6,7 @@
  */
 
 const CONFIG = {
-  WS_URL: `ws://${window.location.host}`,
+  WS_URL: `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`,
   RECONNECT_INTERVAL: 3000,
   TYPING_DURATION: 1500,
 };

@@ -5,12 +5,8 @@
  * World-class features: particles, sound FX, command palette, typing indicators
  */
 
-// ═══════════════════════════════════════════════════
-// CONFIGURATION
-// ═══════════════════════════════════════════════════
-
 const CONFIG = {
-  WS_URL: `ws://${window.location.host}`,
+  WS_URL: `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`,
   RECONNECT_INTERVAL: 3000,
   MAX_RECONNECT_ATTEMPTS: 10,
   TYPING_TIMEOUT: 5000,

@@ -1,20 +1,18 @@
 # ClawIntel
 
-### Real-Time Multi-Chain AI Intelligence System for Digital Asset Analysis
+### Real-Time Multi-Chain AI agents Intelligence System for Digital Asset Analysis
 
-Built by **Inferra-Labs**
-
-[
+---
 
 # Overview
 
-ClawIntel is a real-time AI-powered crypto intelligence platform designed to analyze emerging digital assets across multiple blockchain ecosystems.
+ClawIntel is a real-time AI-powered crypto intelligence system designed to analyze emerging digital assets across multiple blockchain ecosystems.
 
 The system combines autonomous AI agents, live market monitoring, behavioral simulation, and structured risk evaluation into a single intelligence environment capable of continuously observing and interpreting on-chain activity.
 
 Unlike traditional dashboards that simply display market metrics, ClawIntel is designed to function as an active intelligence layer — capable of discovering new tokens, evaluating contract behavior, identifying suspicious patterns, tracking creator histories, and producing contextual verdicts in real time.
 
-The platform is built around the concept of coordinated AI specialization, where multiple agents independently contribute unique perspectives before a final assessment is produced.
+The system is built around the concept of coordinated AI specialization, where multiple agents independently contribute unique perspectives before a final assessment is produced.
 
 ---
 
@@ -41,7 +39,7 @@ The objective is not merely to automate analysis, but to create a system capable
 
 ClawIntel operates through a coordinated network of autonomous AI agents. Each agent is responsible for a specific analytical domain and contributes independently to the final decision-making process.
 
-This multi-agent architecture allows the platform to separate discovery, simulation, risk analysis, historical intelligence, and final reasoning into dedicated layers.
+This multi-agent architecture allows the system to separate discovery, simulation, risk analysis, historical intelligence, and final reasoning into dedicated layers.
 
 ---
 
@@ -157,7 +155,7 @@ Users are able to observe the analytical process unfold in real time through a c
 
 ---
 
-# Platform Capabilities
+# System Capabilities
 
 ## Real-Time Token Monitoring
 Continuously monitors multiple blockchain ecosystems for newly emerging tokens and significant market activity.
@@ -212,7 +210,7 @@ A dedicated market overview environment displaying:
 - AI-verified tokens
 - Market movement signals
 
-AI-verified assets are filtered through the platform’s decision-making pipeline before being surfaced.
+AI-verified assets are filtered through the system’s decision-making pipeline before being surfaced.
 
 ---
 
@@ -289,7 +287,6 @@ Bash
 pip install -r requirements.txt
 Configure Environment Variables
 Create a .env file in the root directory.
-
 Example:
 Environment
 PORT=3000
@@ -309,7 +306,7 @@ Open:
 Plain text
 http://localhost:3000
 
-#Use Cases
+Use Cases
 ClawIntel is suitable for:
 Crypto market intelligence
 Smart contract risk analysis
@@ -318,15 +315,16 @@ Research and monitoring
 Web3 security investigations
 Multi-agent AI experimentation
 Autonomous analytical systems research
+
 Research Direction
 ClawIntel represents part of a broader exploration into autonomous intelligence systems capable of persistent observation, structured reasoning, and collaborative AI decision-making in decentralized environments.
-The project serves both as a production intelligence platform and as ongoing research into scalable multi-agent coordination systems.
+The project serves both as a production intelligence system and as ongoing research into scalable multi-agent coordination systems.
+
 Disclaimer
 ClawIntel provides AI-generated intelligence and analytical outputs for informational purposes only.
-The platform does not provide financial advice, investment guarantees, or trading recommendations.
+The system does not provide financial advice, investment guarantees, or trading recommendations.
 Users remain solely responsible for their own decisions and risk management.
-About Inferra-Labs
-Inferra-Labs is focused on building autonomous intelligence systems, advanced analytical infrastructures, and experimental AI architectures for decentralized technologies and emerging digital environments.
+
 License
 MIT License
 See LICENSE for more information.

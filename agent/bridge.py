@@ -52,7 +52,6 @@ class NodeBridge:
                 async with session.post(self.endpoint, json=body) as resp:
                     if resp.status == 200:
                         return
-                    # Log non-2xx but don't raise — fire and forget
                     text = await resp.text()
                     print(f"[bridge] Node returned {resp.status}: {text[:100]}")
                     return
@@ -71,7 +70,6 @@ class NodeBridge:
             loop = asyncio.get_running_loop()
             loop.create_task(self.publish(event_type, payload))
         except RuntimeError:
-            # No running loop — use asyncio.run in a thread or just print
             print(f"[bridge] No event loop — dropping {event_type}")
 
     async def close(self):
@@ -90,6 +88,5 @@ def make_publish_callable(node_url: str = None):
     def publish(event_type: str, payload: Any):
         bridge.publish_sync(event_type, payload)
 
-    # Attach bridge so orchestrator can close it on shutdown
     publish._bridge = bridge
     return publish

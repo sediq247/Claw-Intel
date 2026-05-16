@@ -1,10 +1,10 @@
 /**
- * 🌐 runtime/server.js
- * Main backend entry point.
- * Serves frontend files, initializes WebSocket server, boots eventBus,
- * connects all agents, routes messages to frontend.
- * ES Modules. Node 18+.
- */
+* 🌐 runtime/server.js
+* Main backend entry point.
+* Serves frontend files, initializes WebSocket server, boots eventBus,
+* connects all agents, routes messages to frontend.
+* ES Modules. Node 18+.
+*/
 
 import express from 'express';
 import { createServer } from 'http';
@@ -81,7 +81,6 @@ app.get('/api/chat/history', (req, res) => {
 });
 
 // ── API: Get market data ──
-// Store pending market requests by requestId
 const pendingMarketRequests = new Map();
 let marketRequestId = 0;
 
@@ -96,10 +95,8 @@ app.get('/api/markets/:category', async (req, res) => {
   const reqId = ++marketRequestId;
   pendingMarketRequests.set(reqId, res);
 
-  // Publish request — marketEngine will respond with MARKET_DATA_RESPONSE
   eventBus.publish('REQUEST_MARKET_DATA', { requestId: reqId, category });
 
-  // Timeout after 5s if no response
   setTimeout(() => {
     if (pendingMarketRequests.has(reqId)) {
       pendingMarketRequests.delete(reqId);
@@ -213,14 +210,14 @@ async function boot() {
     }
   });
 
-  // Start HTTP + WebSocket server
-  server.listen(PORT, () => {
-    console.log(`✅ Server running on http://localhost:${PORT}`);
-    console.log(`✅ WebSocket ready on ws://localhost:${PORT}`);
+  // 🔥 CRITICAL FIX: Bind to 0.0.0.0 for Render/external access
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`✅ Server running on http://0.0.0.0:${PORT}`);
+    console.log(`✅ WebSocket ready on ws://0.0.0.0:${PORT}`);
     console.log(`✅ Frontend served from root folder`);
     console.log('═══════════════════════════════════════\n');
 
-    auditLogger.logInfo('server', 'Server listening', { port: PORT });
+    auditLogger.logInfo('server', 'Server listening', { port: PORT, host: '0.0.0.0' });
   });
 
   // Graceful shutdown
