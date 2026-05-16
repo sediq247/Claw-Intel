@@ -3,7 +3,7 @@
 # Runs Node server AND Python agent swarm in the same service
 # This ensures they can communicate via localhost
 
-
+PORT=${PORT:-3000}
 echo "🦅 Starting ClawIntel..."
 echo "═══════════════════════════════════════"
 
@@ -16,7 +16,7 @@ echo "✅ Node server started (PID: $NODE_PID)"
 # Wait for Node to be ready
 echo "⏳ Waiting for Node server to be ready..."
 for i in {1..30}; do
-    if curl -s http://localhost:3000/health > /dev/null 2>&1; then
+    if curl -s http://localhost:$PORT/health > /dev/null 2>&1; then
         echo "✅ Node server is ready!"
         break
     fi
