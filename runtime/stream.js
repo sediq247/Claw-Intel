@@ -51,7 +51,7 @@ class StreamManager {
       ws.send(JSON.stringify({
         type: 'SYSTEM',
         payload: {
-          message: 'Connected to ClawIntel Stream. Agents are standing by.',
+          message: 'Connected to the agents.',
           timestamp: Date.now(),
         },
       }));

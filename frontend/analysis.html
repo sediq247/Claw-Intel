@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ClawIntel — Forensic Lab</title>
+  <title>ClawIntel — Lab</title>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -13,16 +13,16 @@
       <div class="logo-mark">CI</div>
       <div class="logo-text">CLAW INTEL</div>
       <nav class="page-nav">
-        <a href="../index.html" class="nav-link">💬 Room</a>
-        <a href="markets.html" class="nav-link">📊 Markets</a>
-        <a href="analysis.html" class="nav-link active">🔬 Analyze</a>
+        <a href="../index.html" class="nav-link">Dashboard</a>
+        <a href="markets.html" class="nav-link">Markets</a>
+        <a href="analysis.html" class="nav-link active">Forensic Lab</a>
       </nav>
     </div>
   </header>
 
   <div class="page-container">
     <div class="analysis-hero">
-      <h1>🔬 Forensic Lab</h1>
+      <h1>ClawIntel Lab</h1>
       <p>Paste any token contract address and let the agent swarm conduct a full forensic investigation.</p>
     </div>
     
@@ -30,7 +30,7 @@
       <div class="scan-form-row">
         <div>
           <label>Token Contract Address</label>
-          <input type="text" class="form-input" id="token-address" placeholder="0x... or Solana address">
+          <input type="text" class="form-input" id="token-address" placeholder="0x... or any token address">
         </div>
         <div>
           <label>Chain</label>
@@ -44,7 +44,7 @@
         <div>
           <label>&nbsp;</label>
           <button class="btn btn-primary btn-lg scan-btn" id="scan-btn" onclick="analysis.startInvestigation()">
-            <span id="scan-btn-text">🔍 Scan</span>
+            <span id="scan-btn-text">Scan</span>
           </button>
         </div>
       </div>
@@ -72,14 +72,13 @@
     
     <div class="investigation-log">
       <div class="investigation-log-header">
-        <h3>🕵️ Investigation Log</h3>
+        <h3>Investigation Log</h3>
         <div class="investigation-status" id="investigation-status"><span>Waiting for input...</span></div>
       </div>
       <div class="investigation-messages" id="investigation-messages">
         <div class="investigation-empty" id="investigation-empty">
-          <div class="investigation-empty-icon">🔬</div>
-          <div class="empty-state-title">Forensic Lab Ready</div>
-          <div class="empty-state-desc">Enter a token contract address above and click Scan to begin.</div>
+          <div class="empty-state-title">Lab agents are fully ready</div>
+          <div class="empty-state-desc">Paste a contract address above and click Scan to begin.</div>
         </div>
       </div>
     </div>

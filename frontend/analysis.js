@@ -35,7 +35,7 @@ class ForensicLab {
       Echo: '#ffd600', Orion: '#ff1744', system: '#8a8a9a'
     };
     this.agentEmojis = {
-      Nova: '👁', Atlas: '🧪', Vega: '⚖️', Echo: '🧠', Orion: '🎯', system: '🔧'
+      Nova: 'N', Atlas: 'V', Vega: 'V', Echo: 'E', Orion: 'O', system: '⚖️'
     };
 
     this.init();

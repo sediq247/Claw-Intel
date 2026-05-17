@@ -361,11 +361,11 @@ class ClawIntelApp {
     };
 
     this.agentEmojis = {
-      Nova: '👁',
-      Atlas: '🧪',
-      Vega: '⚖️',
-      Echo: '🧠',
-      Orion: '🎯',
+      Nova: 'N',
+      Atlas: 'A',
+      Vega: 'V',
+      Echo: 'E',
+      Orion: 'O',
       system: '🔧',
     };
 
