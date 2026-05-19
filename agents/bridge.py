@@ -1,88 +1,150 @@
 #!/usr/bin/env python3
 """
-🌉 agents/bridge.py
-Python → Node EventBus Bridge.
-Every agent calls this instead of a local print stub.
-POSTs events to the Node /api/publish endpoint.
+🌉 ClawIntel Node Bridge
+Python → Node EventBus communication layer
 """
 
 import os
+import sys
 import json
 import asyncio
 import aiohttp
-from typing import Any
+from typing import Any, List
 
 NODE_URL = os.getenv("CLAWINTEL_NODE_URL", "http://localhost:3000")
-PUBLISH_ENDPOINT = f"{NODE_URL}/api/publish"
+
+
+def log(msg: str):
+    print(f"[bridge] {msg}", file=sys.stderr, flush=True)
 
 
 class NodeBridge:
-    """
-    Async HTTP bridge to Node eventBus.
-    Fire-and-forget with small retry logic.
-    """
-
     def __init__(self, node_url: str = None):
         self.node_url = node_url or NODE_URL
-        self.endpoint = f"{self.node_url}/api/publish"
-        self._session: aiohttp.ClientSession | None = None
-        self._closed = False
+        self.publish_url = f"{self.node_url}/api/publish"
+        self.health_url = f"{self.node_url}/health"
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
-                headers={"Content-Type": "application/json"},
-                timeout=aiohttp.ClientTimeout(total=5)
+        self.session: aiohttp.ClientSession | None = None
+        self.ready = False
+        self.closed = False
+
+        # 🔥 BUFFER (prevents message loss)
+        self.queue: List[dict] = []
+
+        # 🔥 CIRCUIT BREAKER
+        self.failures = 0
+        self.max_failures = 5
+        self.circuit_open = False
+
+        log(f"Bridge initialized → {self.publish_url}")
+
+    async def _session_get(self):
+        if not self.session or self.session.closed:
+            self.session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=15)
             )
-        return self._session
+        return self.session
 
-    async def publish(self, event_type: str, payload: Any, retries: int = 2):
-        """
-        Publish an event to the Node eventBus.
-        Non-blocking. Retries on transient failures.
-        """
-        if self._closed:
-            return
+    # ----------------------------
+    # HEALTH CHECK
+    # ----------------------------
+    async def wait_for_node(self, max_wait: int = 90):
+        log("Waiting for Node server...")
+
+        for i in range(max_wait):
+            try:
+                session = await self._session_get()
+                async with session.get(self.health_url, timeout=3) as r:
+                    if r.status == 200:
+                        self.ready = True
+                        log(f"✅ Node ready after {i}s")
+                        return True
+            except:
+                pass
+
+            await asyncio.sleep(1)
+
+        log("❌ Node never became ready")
+        return False
+
+    # ----------------------------
+    # SEND EVENT
+    # ----------------------------
+    async def publish(self, event_type: str, payload: Any):
+        if self.closed:
+            return False
 
         body = {"eventType": event_type, "payload": payload}
 
-        for attempt in range(retries + 1):
-            try:
-                session = await self._get_session()
-                async with session.post(self.endpoint, json=body) as resp:
-                    if resp.status == 200:
-                        return
-                    text = await resp.text()
-                    print(f"[bridge] Node returned {resp.status}: {text[:100]}")
-                    return
-            except Exception as e:
-                if attempt < retries:
-                    await asyncio.sleep(0.1 * (attempt + 1))
-                else:
-                    print(f"[bridge] Failed to publish {event_type}: {e}")
+        # 🔥 queue if circuit is open
+        if self.circuit_open:
+            self.queue.append(body)
+            log(f"Queued event (circuit open): {event_type}")
+            return True
 
+        try:
+            session = await self._session_get()
+
+            async with session.post(
+                self.publish_url,
+                json=body,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+
+                if resp.status == 200:
+                    self.failures = 0
+                    return True
+
+                self.failures += 1
+                log(f"HTTP {resp.status}")
+
+        except Exception as e:
+            self.failures += 1
+            log(f"Publish error: {type(e).__name__}: {e}")
+
+        # 🔥 OPEN CIRCUIT BREAKER
+        if self.failures >= self.max_failures:
+            self.circuit_open = True
+            log("⚠️ Circuit breaker OPEN — buffering events")
+
+        return False
+
+    # ----------------------------
+    # SYNC WRAPPER
+    # ----------------------------
     def publish_sync(self, event_type: str, payload: Any):
-        """
-        Synchronous wrapper for fire-and-forget publishing.
-        Creates a new task in the running loop.
-        """
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(self.publish(event_type, payload))
         except RuntimeError:
-            print(f"[bridge] No event loop — dropping {event_type}")
+            self.queue.append({"eventType": event_type, "payload": payload})
 
+    # ----------------------------
+    # FLUSH BUFFER
+    # ----------------------------
+    async def flush(self):
+        if not self.queue:
+            return
+
+        log(f"Flushing {len(self.queue)} queued events...")
+
+        while self.queue:
+            event = self.queue.pop(0)
+            await self.publish(event["eventType"], event["payload"])
+
+        self.circuit_open = False
+        log("Buffer flushed")
+
+    # ----------------------------
+    # CLOSE
+    # ----------------------------
     async def close(self):
-        self._closed = True
-        if self._session and not self._session.closed:
-            await self._session.close()
+        self.closed = True
+        if self.session:
+            await self.session.close()
 
 
 def make_publish_callable(node_url: str = None):
-    """
-    Returns a synchronous callable (event_type, payload) -> None
-    that the agents can use exactly like their old test_publish.
-    """
     bridge = NodeBridge(node_url)
 
     def publish(event_type: str, payload: Any):

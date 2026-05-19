@@ -1,0 +1,26 @@
+[phases.setup]
+nixPkgs = [
+  "nodejs_18",
+  "python311",
+  "bash",
+  "curl",
+  "gcc"
+]
+
+[phases.install]
+cmds = [
+  "echo '📦 Installing Node dependencies...'",
+  "npm install",
+  "echo '🐍 Installing Python dependencies...'",
+  "pip install --no-cache-dir -r requirements.txt"
+]
+
+[phases.build]
+cmds = [
+  "echo '⚙️ Building ClawIntel runtime...' ",
+  "chmod +x start.sh",
+  "echo 'Build complete ✔'"
+]
+
+[start]
+cmd = "bash start.sh"

@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
 """
 🎛 agents/orchestrator.py
-The Conductor.
-Launches all 5 agents in one async process, wires their subscriptions,
-and bridges every event to the Node.js eventBus via HTTP.
-
-Run:  python3 -m agents.orchestrator
+Explicitly waits for bridge to connect before starting agents.
 """
 
 import asyncio
 import os
-import signal
 import sys
+import signal
 from typing import List
 
-from agents.bridge import make_publish_callable
+from agents.bridge import make_publish_callable, NodeBridge
 
-# Agent imports
 from agents.watcher import WatcherAgent
 from agents.simulator import SimulatorAgent
 from agents.analyzer import AnalyzerAgent
@@ -24,11 +19,11 @@ from agents.memory import MemoryAgent
 from agents.decision import DecisionAgent
 
 
-class AgentOrchestrator:
-    """
-    Single-process conductor for the entire agent swarm.
-    """
+def _log(msg: str):
+    print(f"[orch] {msg}", file=sys.stderr, flush=True)
 
+
+class AgentOrchestrator:
     def __init__(self):
         self.publish = make_publish_callable()
         self.bridge = self.publish._bridge
@@ -37,29 +32,18 @@ class AgentOrchestrator:
         self._tasks: List[asyncio.Task] = []
 
     def _wire_subscriptions(self):
-        """
-        Wire the agent pipeline:
-        Nova (watcher) -> Atlas (simulator) -> Vega (analyzer) -> Echo (memory) -> Orion (decision)
-        """
+        _log("Wiring agent pipeline...")
+
         nova = WatcherAgent(self.publish)
         atlas = SimulatorAgent(self.publish)
         vega = AnalyzerAgent(self.publish)
         echo = MemoryAgent(self.publish)
         orion = DecisionAgent(self.publish)
 
-        # Nova discovers → Atlas simulates
         nova.on_new_token = lambda data: atlas.on_new_token(data)
-
-        # Atlas simulates → Vega analyzes
         atlas.on_simulation_complete = lambda data: vega.on_simulation_complete(data)
-
-        # Vega analyzes → Echo updates memory
         vega.on_analysis_complete = lambda data: echo.on_analysis_complete(data)
-
-        # Echo memory + Vega analysis → Orion decides
         echo.on_memory_intelligence = lambda data: orion.on_memory_intelligence(data)
-
-        # Also wire Echo to hear Nova directly for new tokens
         nova.on_new_token_echo = lambda data: echo.on_new_token(data)
 
         self.agents = {
@@ -69,35 +53,53 @@ class AgentOrchestrator:
             "echo": echo,
             "orion": orion,
         }
+        _log("✅ Agent pipeline wired: Nova → Atlas → Vega → Echo → Orion")
 
     async def start(self):
         self.running = True
+
+        # 🔥 CRITICAL: Wait for bridge to connect to Node before starting agents
+        _log("Waiting for Node bridge to be ready...")
+        ready = await self.bridge.wait_for_node(max_wait=60)
+        if not ready:
+            _log("❌ Cannot connect to Node. Agents will not start.")
+            return
+
         self._wire_subscriptions()
 
-        print("\n🚀 CLAW INTEL — Agent Swarm Orchestrator")
-        print("══════════════════════════════════════════")
+        _log("\n🚀 CLAW INTEL — Agent Swarm Orchestrator")
+        _log("══════════════════════════════════════════")
 
-        # Start Nova (the watcher) — she drives the pipeline
+        # Start Nova (the watcher)
         nova = self.agents["nova"]
         self._tasks.append(asyncio.create_task(nova.start()))
+        _log("👁 Nova (Watcher) started")
 
-        # Start market engine if available
+        # Start market engine
         try:
             from utils.marketEngine import MarketEngine
             engine = MarketEngine(self.publish)
             self._tasks.append(asyncio.create_task(engine.start()))
-            print("💰 MarketEngine started")
+            _log("💰 MarketEngine started")
         except Exception as e:
-            print(f"⚠️ MarketEngine not started: {e}")
+            _log(f"⚠️ MarketEngine not started: {e}")
 
-        print("✅ All agents wired and running\n")
+        _log("✅ All agents running\n")
 
-        # Keep alive
+        # Announce system start
+        self.publish("AGENT_MESSAGE", {
+            "agent": "system",
+            "message": "ClawIntel agent swarm is online. Nova is scanning for new tokens...",
+            "type": "system",
+            "channel": "main",
+            "timestamp": asyncio.get_event_loop().time()
+        })
+
         while self.running:
             await asyncio.sleep(1)
 
     async def stop(self):
-        print("\n🛑 Stopping agent swarm...")
+        _log("\n🛑 Stopping agent swarm...")
         self.running = False
 
         for agent in self.agents.values():
@@ -105,7 +107,7 @@ class AgentOrchestrator:
                 try:
                     agent.stop()
                 except Exception as e:
-                    print(f"⚠️ Error stopping {agent.name}: {e}")
+                    _log(f"⚠️ Error stopping {agent.name}: {e}")
 
         for task in self._tasks:
             if not task.done():
@@ -116,14 +118,14 @@ class AgentOrchestrator:
                     pass
 
         await self.bridge.close()
-        print("✅ Agent swarm stopped")
+        _log("✅ Agent swarm stopped")
 
 
 async def main():
     orchestrator = AgentOrchestrator()
 
     def handle_signal(sig):
-        print(f"\n[signal] Received {sig.name}, shutting down...")
+        _log(f"\n[signal] Received {sig.name}, shutting down...")
         asyncio.create_task(orchestrator.stop())
 
     loop = asyncio.get_running_loop()

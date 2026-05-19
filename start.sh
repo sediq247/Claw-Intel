@@ -1,57 +1,96 @@
 #!/bin/bash
-# 🚀 ClawIntel Combined Start Script for Render
-# Runs Node server AND Python agent swarm in the same service
-# This ensures they can communicate via localhost
+# 🚀 ClawIntel Production Start Script (Railway/Koyeb safe)
+
+set -e
+
+log() {
+    echo "[ClawIntel] $1"
+}
+
+log "🦅 Starting ClawIntel system..."
 
 PORT=${PORT:-3000}
-echo "🦅 Starting ClawIntel..."
-echo "═══════════════════════════════════════"
 
-# Start Node server in background
-echo "[1/2] Starting Node server..."
+# -----------------------------
+# Start Node.js server
+# -----------------------------
+log "[1/2] Starting Node runtime..."
+
 node runtime/server.js &
 NODE_PID=$!
-echo "✅ Node server started (PID: $NODE_PID)"
 
+log "Node PID: $NODE_PID"
+
+# -----------------------------
 # Wait for Node to be ready
-echo "⏳ Waiting for Node server to be ready..."
-for i in {1..30}; do
-    if curl -s http://localhost:$PORT/health > /dev/null 2>&1; then
-        echo "✅ Node server is ready!"
+# -----------------------------
+log "⏳ Waiting for server health..."
+
+TIMEOUT=90
+ELAPSED=0
+
+while [ $ELAPSED -lt $TIMEOUT ]; do
+    STATUS=$(curl -s http://localhost:$PORT/health || echo "fail")
+
+    if echo "$STATUS" | grep -q "ok"; then
+        log "✅ Node is ready"
         break
     fi
-    if [ $i -eq 30 ]; then
-        echo "❌ Node server failed to start within 30s"
-        kill $NODE_PID 2>/dev/null
-        exit 1
-    fi
-    sleep 1
+
+    sleep 2
+    ELAPSED=$((ELAPSED+2))
 done
 
-# Start Python agent swarm
-echo "[2/2] Starting Python agent swarm..."
+if [ $ELAPSED -ge $TIMEOUT ]; then
+    log "❌ Node failed to start in time"
+    kill $NODE_PID || true
+    exit 1
+fi
+
+# -----------------------------
+# Start Python agents
+# -----------------------------
+log "[2/2] Starting Python agent swarm..."
+
 python3 -m agents.orchestrator &
 PYTHON_PID=$!
-echo "✅ Python agents started (PID: $PYTHON_PID)"
 
-echo "═══════════════════════════════════════"
-echo "🦅 ClawIntel is LIVE!"
-echo "   HTTP:  http://localhost:$PORT"
-echo "   WS:    ws://localhost:$PORT"
-echo "═══════════════════════════════════════"
+log "Python PID: $PYTHON_PID"
 
-# Handle shutdown gracefully
+# -----------------------------
+# Shutdown handler
+# -----------------------------
 cleanup() {
-    echo "\n🛑 Shutting down ClawIntel..."
-    kill $PYTHON_PID 2>/dev/null
-    kill $NODE_PID 2>/dev/null
-    wait $PYTHON_PID 2>/dev/null
-    wait $NODE_PID 2>/dev/null
-    echo "✅ Shutdown complete"
+    log "🛑 Shutting down ClawIntel..."
+
+    kill -TERM $PYTHON_PID 2>/dev/null || true
+    kill -TERM $NODE_PID 2>/dev/null || true
+
+    wait $PYTHON_PID 2>/dev/null || true
+    wait $NODE_PID 2>/dev/null || true
+
+    log "✅ Shutdown complete"
     exit 0
 }
 
-trap cleanup SIGTERM SIGINT
+trap cleanup SIGINT SIGTERM
 
-# Keep script running
-wait $NODE_PID
+# -----------------------------
+# Supervision loop (safe)
+# -----------------------------
+while true; do
+
+    if ! kill -0 $NODE_PID 2>/dev/null; then
+        log "⚠️ Node crashed — restarting..."
+        node runtime/server.js &
+        NODE_PID=$!
+    fi
+
+    if ! kill -0 $PYTHON_PID 2>/dev/null; then
+        log "⚠️ Python crashed — restarting..."
+        python3 -m agents.orchestrator &
+        PYTHON_PID=$!
+    fi
+
+    sleep 5
+done
