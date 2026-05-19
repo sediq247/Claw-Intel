@@ -9,15 +9,15 @@ nixPkgs = [
 
 [phases.install]
 cmds = [
-  "echo '📦 Installing Node dependencies...'",
+  "echo 'Installing Node dependencies...'",
   "npm install",
-  "echo '🐍 Installing Python dependencies...'",
+  "echo 'Installing Python dependencies...'",
   "pip install --no-cache-dir -r requirements.txt"
 ]
 
 [phases.build]
 cmds = [
-  "echo '⚙️ Building ClawIntel runtime...' ",
+  "echo 'Building ClawIntel runtime...' ",
   "chmod +x start.sh",
   "echo 'Build complete ✔'"
 ]
