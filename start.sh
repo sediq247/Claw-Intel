@@ -30,7 +30,6 @@ done
 
 # Start Python agent swarm
 echo "[2/2] Starting Python agent swarm..."
-export PYTHONPATH=$(pwd)
 python3 -m agents.orchestrator &
 PYTHON_PID=$!
 echo "✅ Python agents started (PID: $PYTHON_PID)"
