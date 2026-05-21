@@ -17,7 +17,6 @@ class StreamManager {
     this.minDelayMs = 800;
     this.maxDelayMs = 2500;
 
-    // Track pending market requests by requestId
     this.pendingMarketRequests = new Map();
     this.marketRequestId = 0;
 

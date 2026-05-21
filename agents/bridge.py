@@ -28,7 +28,6 @@ class NodeBridge:
         self.ready = False
         self.closed = False
 
-        # 🔥 BUFFER (prevents message loss)
         self.queue: List[dict] = []
 
         # 🔥 CIRCUIT BREAKER

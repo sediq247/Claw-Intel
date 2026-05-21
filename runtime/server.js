@@ -1,6 +1,7 @@
 /**
-* 🌐 runtime/server.js
-**/
+* runtime/server.js
+* Main backend entry point — with Database API endpoints.
+*/
 
 import express from 'express';
 import { createServer } from 'http';
@@ -34,7 +35,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, '..')));
 app.use('/frontend', express.static(path.join(__dirname, '..', 'frontend')));
 
-// Health check
+// ── Health check ──
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
@@ -45,33 +46,103 @@ app.get('/health', (req, res) => {
   });
 });
 
-// 🔥 CRITICAL: /api/publish — Python bridge endpoint
+// ── API: Publish from Python agents ──
 app.post('/api/publish', (req, res) => {
   const { eventType, payload } = req.body;
-
-  console.log(`[publish] ⬅️  Received: ${eventType} from Python`);
+  console.log(`[publish] ⬅  Received: ${eventType} from Python`);
 
   if (!eventType || typeof eventType !== 'string') {
-    console.log(`[publish] ❌ Rejected: missing eventType`);
+    console.log(`[publish]  Rejected: missing eventType`);
     return res.status(400).json({ error: 'eventType required' });
   }
 
   eventBus.publish(eventType, payload);
   auditLogger.logEvent(eventType, payload, 'python-agent');
-
-  console.log(`[publish] ✅ Published: ${eventType} to eventBus (subscribers: ${eventBus.subscribers.get(eventType)?.size || 0})`);
-
+  console.log(`[publish]  Published: ${eventType}`);
   res.json({ status: 'published', eventType });
 });
 
-// Chat history
+// ── API: Chat history ──
 app.get('/api/chat/history', (req, res) => {
   const limit = parseInt(req.query.limit) || 50;
   const history = eventBus.getHistory('AGENT_MESSAGE', limit);
   res.json({ history, count: history.length });
 });
 
-// Market data
+// ═══════════════════════════════════════════════════
+// 🗄 DATABASE API ENDPOINTS
+// ═══════════════════════════════════════════════════
+
+// ── Stats ──
+app.get('/api/stats', async (req, res) => {
+  try {
+    // Forward to Python via eventBus or return cached
+    // For now, return basic stats from eventBus
+    res.json({
+      status: 'ok',
+      tokens_scanned: eventBus.getHistory('NEW_TOKEN', 9999).length,
+      investigations: eventBus.getHistory('DECISION_COMPLETE', 9999).length,
+      agents_online: ['Nova', 'Atlas', 'Vega', 'Echo', 'Orion'],
+      uptime: process.uptime(),
+      timestamp: Date.now()
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Recent tokens ──
+app.get('/api/tokens', async (req, res) => {
+  const limit = parseInt(req.query.limit) || 50;
+  const chain = req.query.chain;
+  const history = eventBus.getHistory('NEW_TOKEN', limit);
+
+  let tokens = history;
+  if (chain) {
+    tokens = tokens.filter(t => t.chain === chain);
+  }
+
+  res.json({ tokens, count: tokens.length });
+});
+
+// ── Recent investigations ──
+app.get('/api/investigations', async (req, res) => {
+  const limit = parseInt(req.query.limit) || 50;
+  const verdict = req.query.verdict;
+  const history = eventBus.getHistory('DECISION_COMPLETE', limit * 2);
+
+  let investigations = history.map(d => ({
+    token_address: d.token_address,
+    chain: d.chain,
+    symbol: d.symbol,
+    verdict: d.verdict,
+    confidence: d.confidence,
+    timestamp: d.timestamp,
+    factors: d.factors
+  }));
+
+  if (verdict) {
+    investigations = investigations.filter(i => i.verdict === verdict);
+  }
+
+  investigations = investigations.slice(0, limit);
+  res.json({ investigations, count: investigations.length });
+});
+
+// ── Investigation detail ──
+app.get('/api/investigations/:token', async (req, res) => {
+  const token = req.params.token;
+  const history = eventBus.getHistory('DECISION_COMPLETE', 9999);
+  const investigation = history.find(i => i.token_address === token);
+
+  if (!investigation) {
+    return res.status(404).json({ error: 'Investigation not found' });
+  }
+
+  res.json(investigation);
+});
+
+// ── Market data ──
 const pendingMarketRequests = new Map();
 let marketRequestId = 0;
 
@@ -95,7 +166,7 @@ app.get('/api/markets/:category', async (req, res) => {
   }, 5000);
 });
 
-// Manual investigation
+// ── Manual investigation ──
 app.post('/api/analyze', (req, res) => {
   const { tokenAddress, chain } = req.body;
 
@@ -123,7 +194,7 @@ app.post('/api/analyze', (req, res) => {
   });
 });
 
-// Audit
+// ── Audit ──
 app.get('/api/audit/stats', (req, res) => {
   res.json(auditLogger.getStats());
 });
@@ -133,16 +204,18 @@ app.get('/api/audit/logs', (req, res) => {
   res.json(auditLogger.readRecent(count));
 });
 
+// ── SPA catch-all ──
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'index.html'));
 });
 
+// ── Initialize ──
 const auditLogger = new AuditLogger();
 const eventQueue = new EventQueue(eventBus);
 let streamManager = null;
 
 async function boot() {
-  console.log('\n🚀 CLAW INTEL — Boot Sequence');
+  console.log('\n CLAW INTEL — Boot Sequence');
   console.log('═══════════════════════════════════════');
 
   auditLogger.logInfo('server', 'ClawIntel server starting', {
@@ -154,29 +227,27 @@ async function boot() {
   streamManager = new StreamManager(server, eventBus);
   auditLogger.logInfo('server', 'Stream manager initialized');
 
-  // Log active subscriptions for debugging
   eventBus.subscribe('NEW_TOKEN', (payload) => {
-    console.log(`[eventBus] NEW_TOKEN received: ${payload.get?.('token_symbol') || 'unknown'}`);
+    console.log(`[eventBus] NEW_TOKEN: ${payload.token_symbol || 'unknown'}`);
     auditLogger.logEvent('NEW_TOKEN', payload, 'Nova');
   });
 
   eventBus.subscribe('SIMULATION_COMPLETE', (payload) => {
-    console.log(`[eventBus] SIMULATION_COMPLETE received`);
+    console.log(`[eventBus] SIMULATION_COMPLETE`);
     auditLogger.logEvent('SIMULATION_COMPLETE', payload, 'Atlas');
   });
 
   eventBus.subscribe('ANALYSIS_COMPLETE', (payload) => {
-    console.log(`[eventBus] ANALYSIS_COMPLETE received`);
+    console.log(`[eventBus] ANALYSIS_COMPLETE`);
     auditLogger.logEvent('ANALYSIS_COMPLETE', payload, 'Vega');
   });
 
   eventBus.subscribe('DECISION_COMPLETE', (payload) => {
-    console.log(`[eventBus] DECISION_COMPLETE received: ${payload.verdict}`);
+    console.log(`[eventBus] DECISION_COMPLETE: ${payload.verdict}`);
     auditLogger.logDecision('Orion', payload.token_address, payload.verdict, payload);
   });
 
   eventBus.subscribe('AGENT_MESSAGE', (payload) => {
-    console.log(`[eventBus] AGENT_MESSAGE received: ${payload.agent}: ${payload.message?.substring(0, 50)}...`);
     if (payload.type === 'system' || payload.type === 'error') {
       auditLogger.logEvent('AGENT_MESSAGE', payload, payload.agent);
     }
@@ -199,9 +270,8 @@ async function boot() {
   });
 
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ Server running on http://0.0.0.0:${PORT}`);
-    console.log(`✅ WebSocket ready on ws://0.0.0.0:${PORT}`);
-    console.log(`✅ /api/publish endpoint active`);
+    console.log(`Server running on http://0.0.0.0:${PORT}`);
+    console.log(`WebSocket ready on ws://0.0.0.0:${PORT}`);
     console.log('═══════════════════════════════════════\n');
     auditLogger.logInfo('server', 'Server listening', { port: PORT, host: '0.0.0.0' });
   });
@@ -211,21 +281,21 @@ async function boot() {
 }
 
 function shutdown() {
-  console.log('\n🛑 Shutting down ClawIntel...');
+  console.log('\n Shutting down ClawIntel...');
   if (streamManager) streamManager.shutdown();
   eventQueue.shutdown();
   auditLogger.shutdown();
   server.close(() => {
-    console.log('✅ Server closed');
+    console.log(' Server closed');
     process.exit(0);
   });
   setTimeout(() => {
-    console.error('❌ Forced shutdown');
+    console.error('Forced shutdown');
     process.exit(1);
   }, 5000);
 }
 
 boot().catch((err) => {
-  console.error('❌ Boot failed:', err);
+  console.error('Boot failed:', err);
   process.exit(1);
 });

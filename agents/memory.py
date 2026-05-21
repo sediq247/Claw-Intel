@@ -14,14 +14,14 @@ from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Callable, Optional, Set
 from collections import defaultdict
 import asyncio
-import google.generativeai as genai
+from google import genai
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # ─── Gemini Configuration ───────────────────────────────────────────
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 genai.configure(api_key=GEMINI_API_KEY)
 
 

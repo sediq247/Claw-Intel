@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 🎛 agents/orchestrator.py
-Explicitly waits for bridge to connect before starting agents.
+The Conductor — with Database Persistence.
+Launches all 5 agents, wires subscriptions, persists to MongoDB.
 """
 
 import asyncio
@@ -10,7 +11,8 @@ import sys
 import signal
 from typing import List
 
-from agents.bridge import make_publish_callable, NodeBridge
+from agents.bridge import make_publish_callable
+from utils.database import init_database, db
 
 from agents.watcher import WatcherAgent
 from agents.simulator import SimulatorAgent
@@ -30,6 +32,7 @@ class AgentOrchestrator:
         self.agents = {}
         self.running = False
         self._tasks: List[asyncio.Task] = []
+        self._pending_investigations = {}  # token_address -> investigation doc
 
     def _wire_subscriptions(self):
         _log("Wiring agent pipeline...")
@@ -40,11 +43,12 @@ class AgentOrchestrator:
         echo = MemoryAgent(self.publish)
         orion = DecisionAgent(self.publish)
 
-        nova.on_new_token = lambda data: atlas.on_new_token(data)
-        atlas.on_simulation_complete = lambda data: vega.on_simulation_complete(data)
-        vega.on_analysis_complete = lambda data: echo.on_analysis_complete(data)
-        echo.on_memory_intelligence = lambda data: orion.on_memory_intelligence(data)
-        nova.on_new_token_echo = lambda data: echo.on_new_token(data)
+        # Pipeline: Nova → Atlas → Vega → Echo → Orion
+        nova.on_new_token = lambda data: self._on_nova_discovery(data, atlas, echo)
+        atlas.on_simulation_complete = lambda data: self._on_simulation(data, vega)
+        vega.on_analysis_complete = lambda data: self._on_analysis(data, echo)
+        echo.on_memory_intelligence = lambda data: self._on_memory(data, orion)
+        orion.on_decision_complete = lambda data: self._on_decision(data)
 
         self.agents = {
             "nova": nova,
@@ -53,16 +57,94 @@ class AgentOrchestrator:
             "echo": echo,
             "orion": orion,
         }
-        _log("✅ Agent pipeline wired: Nova → Atlas → Vega → Echo → Orion")
+        _log(" Agent pipeline wired: Nova → Atlas → Vega → Echo → Orion")
+
+    def _on_nova_discovery(self, data: dict, atlas, echo):
+        """Nova found a token — start investigation, persist token, hand to Atlas + Echo."""
+        token_address = data.get("token_address")
+
+        # Initialize investigation tracker
+        self._pending_investigations[token_address] = {
+            "token_address": token_address,
+            "chain": data.get("chain"),
+            "symbol": data.get("token_symbol"),
+            "name": data.get("token_name"),
+            "creator": data.get("creator"),
+            "discovery_source": data.get("origin_source"),
+            "nova_data": data,
+            "timestamp": asyncio.get_event_loop().time(),
+        }
+
+        # Persist token to DB (fire and forget)
+        asyncio.create_task(db.save_token(data))
+
+        # Hand off to next agents
+        atlas.on_new_token(data)
+        echo.on_new_token(data)
+
+    def _on_simulation(self, data: dict, vega):
+        """Atlas finished — add sim data, hand to Vega."""
+        token_address = data.get("token_address")
+        if token_address in self._pending_investigations:
+            self._pending_investigations[token_address]["simulation"] = data
+        vega.on_simulation_complete(data)
+
+    def _on_analysis(self, data: dict, echo):
+        """Vega finished — add analysis data, hand to Echo."""
+        token_address = data.get("token_address")
+        if token_address in self._pending_investigations:
+            self._pending_investigations[token_address]["analysis"] = data
+        echo.on_analysis_complete(data)
+
+    def _on_memory(self, data: dict, orion):
+        """Echo finished — add memory data, hand to Orion."""
+        token_address = data.get("token")
+        if token_address in self._pending_investigations:
+            self._pending_investigations[token_address]["memory"] = data
+
+        # Persist creator profile
+        creator_data = data.get("profile")
+        if creator_data:
+            asyncio.create_task(db.save_creator(creator_data))
+
+        orion.on_memory_intelligence(data)
+
+    def _on_decision(self, data: dict):
+        """Orion finished — save complete investigation to DB."""
+        token_address = data.get("token_address")
+        inv = self._pending_investigations.pop(token_address, {})
+
+        investigation = {
+            "token_address": token_address,
+            "chain": data.get("chain", inv.get("chain")),
+            "symbol": data.get("symbol", inv.get("symbol")),
+            "verdict": data.get("verdict"),
+            "confidence": data.get("confidence"),
+            "reasoning": data.get("reasoning"),
+            "factors": data.get("factors", {}),
+            "simulation": inv.get("simulation", {}),
+            "analysis": inv.get("analysis", {}),
+            "memory": inv.get("memory", {}),
+            "nova_discovery": inv.get("nova_data", {}),
+            "timestamp": data.get("timestamp", asyncio.get_event_loop().time()),
+        }
+
+        # Persist to DB
+        asyncio.create_task(db.save_investigation(investigation))
+        _log(f"Investigation saved: {token_address} → {data.get('verdict')}")
 
     async def start(self):
         self.running = True
 
-        # 🔥 CRITICAL: Wait for bridge to connect to Node before starting agents
-        _log("Waiting for Node bridge to be ready...")
+        # Initialize database
+        _log("Initializing database...")
+        await init_database()
+
+        # Wait for Node bridge
+        _log("Waiting for Node bridge...")
         ready = await self.bridge.wait_for_node(max_wait=60)
         if not ready:
-            _log("❌ Cannot connect to Node. Agents will not start.")
+            _log("Cannot connect to Node. Agents will not start.")
             return
 
         self._wire_subscriptions()
@@ -70,21 +152,19 @@ class AgentOrchestrator:
         _log("\n🚀 CLAW INTEL — Agent Swarm Orchestrator")
         _log("══════════════════════════════════════════")
 
-        # Start Nova (the watcher)
         nova = self.agents["nova"]
         self._tasks.append(asyncio.create_task(nova.start()))
         _log("👁 Nova (Watcher) started")
 
-        # Start market engine
         try:
             from utils.marketEngine import MarketEngine
             engine = MarketEngine(self.publish)
             self._tasks.append(asyncio.create_task(engine.start()))
-            _log("💰 MarketEngine started")
+            _log("MarketEngine started")
         except Exception as e:
-            _log(f"⚠️ MarketEngine not started: {e}")
+            _log(f"MarketEngine not started: {e}")
 
-        _log("✅ All agents running\n")
+        _log("All agents running\n")
 
         # Announce system start
         self.publish("AGENT_MESSAGE", {
@@ -99,7 +179,7 @@ class AgentOrchestrator:
             await asyncio.sleep(1)
 
     async def stop(self):
-        _log("\n🛑 Stopping agent swarm...")
+        _log("Stopping agent swarm...")
         self.running = False
 
         for agent in self.agents.values():
@@ -118,7 +198,8 @@ class AgentOrchestrator:
                     pass
 
         await self.bridge.close()
-        _log("✅ Agent swarm stopped")
+        await db.close()
+        _log("Agent swarm stopped")
 
 
 async def main():

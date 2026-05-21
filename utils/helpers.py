@@ -162,10 +162,6 @@ def checksum_address(address: str) -> str:
         return address
 
 
-# ═══════════════════════════════════════════════════
-# CURRENCY / NUMBER FORMATTING
-# ═══════════════════════════════════════════════════
-
 def format_currency(value: Union[int, float, Decimal, str], 
                      symbol: str = "$", 
                      decimals: int = 2) -> str:

@@ -262,7 +262,7 @@ class MarketsApp {
       return `
         <div class="token-card" style="animation-delay:${i * 0.05}s">
           <div class="token-card-ai ${verdictClass}">
-            🤖 ${token.ai_verdict || 'SAFE'}
+             ${token.ai_verdict || 'SAFE'}
           </div>
           <div class="token-card-header">
             <div class="token-card-img">

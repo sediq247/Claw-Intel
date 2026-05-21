@@ -15,13 +15,13 @@ from typing import Dict, Callable, Optional
 import aiohttp
 from web3 import Web3
 from dotenv import load_dotenv
-import google.generativeai as genai
+from google import genai
 
 load_dotenv()
 
 # ─── Gemini Configuration ───────────────────────────────────────────
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 genai.configure(api_key=GEMINI_API_KEY)
 
 
