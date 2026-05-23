@@ -13,10 +13,9 @@ class EventBus {
   }
 
   /**
-   * Subscribe to an event type.
-   * @param {string} eventType - e.g. 'NEW_TOKEN', 'AGENT_MESSAGE'
-   * @param {Function} callback - (payload) => void
-   * @returns {Function} unsubscribe function
+   * @param {string} eventType
+   * @param {Function} callback
+   * @returns {Function}
    */
   subscribe(eventType, callback) {
     if (!this.subscribers.has(eventType)) {
