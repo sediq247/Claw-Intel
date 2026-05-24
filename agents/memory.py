@@ -171,7 +171,7 @@ Echo:"""
             return f"Never seen this creator before — {creator_short} is a fresh wallet in my database. No history, no pattern, no reputation score. Could be a first-timer with big dreams, could be a burner account. Time will tell, and I'll be watching."
 
         if self.RUGGER_TAG in profile.tags or self.HONEYPOT_TAG in profile.tags:
-            return f"🚨 ORION — STOP. I've seen {creator_short} before. This wallet has launched {profile.total_tokens_created} tokens and I've tagged them as a REPEAT RUGGER. Reputation: {profile.reputation_score:.0f}/100. {symbol} is their latest scam. Same playbook, different ticker."
+            return f"ORION — STOP. I've seen {creator_short} before. This wallet has launched {profile.total_tokens_created} tokens and I've tagged them as a REPEAT RUGGER. Reputation: {profile.reputation_score:.0f}/100. {symbol} is their latest scam. Same playbook, different ticker."
         elif self.LEGIT_TAG in profile.tags:
             return f"Good news — {creator_short} is a known quantity, and a positive one. I've tracked {profile.total_tokens_created} tokens with a clean record. Reputation: {profile.reputation_score:.0f}/100. They consistently build legit projects. {symbol} benefits from that legacy."
         else:

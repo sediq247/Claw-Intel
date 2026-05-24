@@ -23,11 +23,11 @@ dotenv.config();
 * Crash Protection
 */
 process.on('uncaughtException', err => {
-  console.error('❌ UNCAUGHT EXCEPTION:', err);
+  console.error('UNCAUGHT EXCEPTION:', err);
 });
 
 process.on('unhandledRejection', err => {
-  console.error('❌ UNHANDLED REJECTION:', err);
+  console.error('UNHANDLED REJECTION:', err);
 });
 
 const __filename = fileURLToPath(import.meta.url);
@@ -440,15 +440,15 @@ async function boot() {
    */
   server.listen(PORT, '0.0.0.0', () => {
     console.log(
-      `✅ Server running on port ${PORT}`
+      `Server running on port ${PORT}`
     );
 
     console.log(
-      `✅ HTTP ready`
+      `HTTP ready`
     );
 
     console.log(
-      `✅ WebSocket ready`
+      `WebSocket ready`
     );
 
     console.log(
@@ -572,12 +572,12 @@ function shutdown() {
   auditLogger.shutdown();
 
   server.close(() => {
-    console.log('✅ Server closed');
+    console.log(' Server closed');
     process.exit(0);
   });
 
   setTimeout(() => {
-    console.error('❌ Forced shutdown');
+    console.error('Forced shutdown');
     process.exit(1);
   }, 5000);
 }
@@ -586,6 +586,6 @@ function shutdown() {
 * START SYSTEM
 */
 boot().catch(err => {
-  console.error('❌ Boot failed:', err);
+  console.error(' Boot failed:', err);
   process.exit(1);
 });
