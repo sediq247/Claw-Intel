@@ -4,6 +4,7 @@
 "The Archivist" — Remembers every creator, every token, every scam pattern.
 Listens to everyone, builds intelligence over time, calls out repeat offenders.
 Uses Gemini for natural spoken conversation.
+
 """
 
 import json
@@ -12,18 +13,52 @@ import random
 import os
 from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Callable, Optional, Set
-from collections import defaultdict
 import asyncio
-from google import genai
 from dotenv import load_dotenv
+
+# ─────────────────────────────────────────────────────────────
+# Safe Gemini import — never crash because of SDK issues
+# ─────────────────────────────────────────────────────────────
+try:
+    from google import genai
+    HAS_GENAI = True
+except ImportError:
+    genai = None
+    HAS_GENAI = False
+    print("⚠️ Echo: google-genai package not found. Gemini disabled.")
+
+try:
+    from google.genai import types as genai_types
+except ImportError:
+    genai_types = None
+    print("⚠️ Echo: google.genai.types not available. Config disabled.")
 
 load_dotenv()
 
-# ─── Gemini Configuration ───────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# Gemini Configuration
+# ─────────────────────────────────────────────────────────────
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
-genai.configure(api_key=GEMINI_API_KEY)
 
+client = None
+
+if GEMINI_API_KEY and HAS_GENAI:
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        print("✅ Echo: Gemini initialized")
+    except Exception as e:
+        print(f"⚠️ Echo: Gemini init failed: {e}")
+        client = None
+else:
+    reason = "GEMINI_API_KEY missing" if not GEMINI_API_KEY else "google-genai unavailable"
+    print(f"⚠️ Echo: {reason}. Using fallback mode.")
+
+
+# ─────────────────────────────────────────────────────────────
+# Data Models
+# ─────────────────────────────────────────────────────────────
 
 @dataclass
 class CreatorProfile:
@@ -57,11 +92,15 @@ class TokenHistory:
         return json.dumps(asdict(self), default=str)
 
 
+# ─────────────────────────────────────────────────────────────
+# Memory Agent
+# ─────────────────────────────────────────────────────────────
+
 class MemoryAgent:
     """
     Echo — The Archivist
-    Remembers everything. Listens to all agents, builds intelligence, calls out patterns.
-    Uses Gemini for natural spoken conversation.
+    Remembers every creator, every token, every scam pattern.
+    Listens to everyone, builds intelligence over time, calls out repeat offenders.
     """
 
     RUGGER_TAG = "repeat_rugger"
@@ -75,55 +114,94 @@ class MemoryAgent:
         self.creators: Dict[str, CreatorProfile] = {}
         self.tokens: Dict[str, TokenHistory] = {}
         self.known_rug_addresses: Set[str] = set()
+        self._tasks: List[asyncio.Task] = []
 
     def on_new_token(self, event_data: dict):
-        """React to Nova's discovery."""
-        asyncio.create_task(self._process_new_token(event_data))
+        """React to Nova's new token discovery."""
+        try:
+            task = asyncio.create_task(self._process_new_token(event_data))
+            task.add_done_callback(self._on_task_done)
+            self._tasks.append(task)
+        except Exception as e:
+            print(f"⚠️ {self.name}: Failed scheduling token processing: {e}")
 
     def on_analysis_complete(self, analysis_data: dict):
-        """Update creator reputation based on Vega's analysis."""
-        asyncio.create_task(self._update_from_analysis(analysis_data))
+        """React to Vega's risk analysis."""
+        try:
+            task = asyncio.create_task(self._update_from_analysis(analysis_data))
+            task.add_done_callback(self._on_task_done)
+            self._tasks.append(task)
+        except Exception as e:
+            print(f"⚠️ {self.name}: Failed scheduling analysis update: {e}")
+
+    def _on_task_done(self, task: asyncio.Task):
+        """Catch and log any unhandled exception from a background task."""
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"⚠️ {self.name}: Background task failed: {e}")
 
     async def _speak(self, message: str, msg_type: str = "response"):
         """Publish a spoken message to the room."""
-        self.publish("AGENT_MESSAGE", {
-            "agent": self.name,
-            "message": message,
-            "type": msg_type,
-            "channel": "main",
-            "timestamp": time.time()
-        })
+        try:
+            self.publish("AGENT_MESSAGE", {
+                "agent": self.name,
+                "message": message,
+                "type": msg_type,
+                "channel": "main",
+                "timestamp": time.time()
+            })
+        except Exception as e:
+            print(f"⚠️ {self.name}: Publish failed: {e}")
 
-    async def _generate_echo_message(self, profile: Optional[CreatorProfile], creator: str, symbol: str, is_new: bool) -> str:
-        """Use Gemini to generate a natural spoken memory report."""
-        if not GEMINI_API_KEY:
+    async def _generate_echo_message(
+        self,
+        profile: Optional[CreatorProfile],
+        creator: str,
+        symbol: str,
+        is_new: bool
+    ) -> str:
+
+        if not client:
             return self._fallback_message(profile, creator, symbol, is_new)
 
         creator_short = creator[:10] + "..." + creator[-4:] if creator != "unknown" else "unknown"
 
         if is_new or not profile:
-            user_prompt = f"""You are Echo, a crypto historian and archivist. You just checked your database for a creator and found NOTHING.
-Speak naturally, like a real person in a team chat. Be cautious but not alarmist.
+            system_prompt = (
+                "You are Echo, a meticulous crypto historian and archivist in a fast-paced team chat. "
+                "You keep records on every creator who has ever launched a token. "
+                "You speak with the calm authority of someone who has watched thousands of projects "
+                "rise and fall. You are cautious but never alarmist — a blank record is just data, not a verdict."
+            )
 
+            user_prompt = f"""
 Creator: {creator_short}
 Token: {symbol}
-Status: NEVER SEEN BEFORE
+Status: NEVER SEEN BEFORE — blank record
 
-Your message should:
-1. State that this creator is new to your archives
-2. Explain what that means (no history = no prediction)
-3. Mention that you're starting their file from scratch
+Requirements:
+1. State clearly that this creator is new to your archives
+2. Explain what no history means (no pattern to predict, neither good nor bad)
+3. Mention that you are building their file from this moment
 4. Be 2-4 sentences
 5. Sound like a historian who keeps meticulous records
-
-Echo:"""
+"""
         else:
             tags_str = ', '.join(profile.tags) if profile.tags else 'None'
-            recent_count = len([t for t in profile.tokens if time.time() - t["time"] < 86400 * 30])
+            recent_count = len([t for t in profile.tokens if time.time() - t.get("time", 0) < 86400 * 30])
 
-            user_prompt = f"""You are Echo, a crypto historian and archivist. You just checked your database and found HISTORY on this creator.
-Speak naturally, like a real person in a team chat. Be dramatic when it's a bad actor, reassuring when it's a good one.
+            system_prompt = (
+                "You are Echo, a meticulous crypto historian and archivist in a fast-paced team chat. "
+                "You keep records on every creator who has ever launched a token. "
+                "You speak with the calm authority of someone who has watched thousands of projects "
+                "rise and fall. You get dramatic about repeat ruggers and measured about legit builders. "
+                "You reference other agents naturally."
+            )
 
+            user_prompt = f"""
 Creator: {creator_short}
 Token: {symbol}
 Total Tokens Launched: {profile.total_tokens_created}
@@ -132,204 +210,267 @@ Tags: {tags_str}
 Scam Flags: {profile.scam_flags}
 Recent Launches (30d): {recent_count}
 
-Your message should:
-1. Reveal what you found in the archives
-2. Give the creator's reputation and history
+Requirements:
+1. Reveal what you found in the archives dramatically
+2. Give the creator's reputation and history context
 3. Warn the team if it's a bad actor, reassure if it's a good one
 4. Hand off to Orion for the final verdict
 5. Be 3-6 sentences
 6. Sound like a historian who's seen every rug twice
-
-Echo:"""
+"""
 
         try:
-            model = genai.GenerativeModel(
-                model_name=GEMINI_MODEL,
-                system_instruction="You are Echo, a crypto historian who keeps meticulous records of every creator and token. You speak like a seasoned archivist in a team chat. You reference other agents naturally. You get dramatic about repeat ruggers and calm about legit builders."
-            )
-
             def _generate():
-                return model.generate_content(
-                    user_prompt,
-                    generation_config=genai.types.GenerationConfig(
+                kwargs = {
+                    "model": GEMINI_MODEL,
+                    "contents": user_prompt,
+                }
+                if genai_types:
+                    kwargs["config"] = genai_types.GenerateContentConfig(
                         max_output_tokens=200,
                         temperature=0.85,
                     )
-                )
 
-            response = await asyncio.to_thread(_generate)
-            return response.text.strip()
+                response = client.models.generate_content(**kwargs)
+                return response.text if hasattr(response, "text") else str(response)
+
+            response = await asyncio.wait_for(
+                asyncio.to_thread(_generate),
+                timeout=15
+            )
+
+            if response:
+                return response.strip()
+
+            return self._fallback_message(profile, creator, symbol, is_new)
+
+        except asyncio.TimeoutError:
+            print(f"⚠️ {self.name}: Gemini call timed out")
+            return self._fallback_message(profile, creator, symbol, is_new)
         except Exception as e:
             print(f"⚠️ {self.name}: Gemini error, using fallback: {e}")
             return self._fallback_message(profile, creator, symbol, is_new)
 
-    def _fallback_message(self, profile: Optional[CreatorProfile], creator: str, symbol: str, is_new: bool) -> str:
-        """Template fallback when Gemini is unavailable."""
+    def _fallback_message(
+        self,
+        profile: Optional[CreatorProfile],
+        creator: str,
+        symbol: str,
+        is_new: bool
+    ) -> str:
         creator_short = creator[:10] + "..." + creator[-4:] if creator != "unknown" else "unknown"
 
         if is_new or not profile:
-            return f"Never seen this creator before — {creator_short} is a fresh wallet in my database. No history, no pattern, no reputation score. Could be a first-timer with big dreams, could be a burner account. Time will tell, and I'll be watching."
+            return (
+                f"Never seen this creator before — {creator_short} is a fresh wallet in my database. "
+                f"No history, no pattern, no reputation score. Could be a first-timer with big dreams, "
+                f"could be a burner account. Time will tell, and I'll be watching."
+            )
 
         if self.RUGGER_TAG in profile.tags or self.HONEYPOT_TAG in profile.tags:
-            return f"ORION — STOP. I've seen {creator_short} before. This wallet has launched {profile.total_tokens_created} tokens and I've tagged them as a REPEAT RUGGER. Reputation: {profile.reputation_score:.0f}/100. {symbol} is their latest scam. Same playbook, different ticker."
+            return (
+                f"🚨 ORION — STOP. I've seen {creator_short} before. This wallet has launched "
+                f"{profile.total_tokens_created} tokens and I've tagged them as a REPEAT RUGGER. "
+                f"Reputation: {profile.reputation_score:.0f}/100. {symbol} is their latest scam. "
+                f"Same playbook, different ticker."
+            )
         elif self.LEGIT_TAG in profile.tags:
-            return f"Good news — {creator_short} is a known quantity, and a positive one. I've tracked {profile.total_tokens_created} tokens with a clean record. Reputation: {profile.reputation_score:.0f}/100. They consistently build legit projects. {symbol} benefits from that legacy."
-        else:
-            return f"Mixed signals on {creator_short}. I've got {profile.total_tokens_created} tokens on file, reputation at {profile.reputation_score:.0f}/100. Some launches were sketchy, others were fine. {symbol} gets a yellow flag from the history department."
-
-    async def _process_new_token(self, event_data: dict):
-        token_address = event_data.get("token_address")
-        chain = event_data.get("chain", "unknown")
-        creator = event_data.get("creator", "unknown")
-        symbol = event_data.get("token_symbol", "???")
-        key = f"{chain}:{token_address}"
-
-        self.tokens[key] = TokenHistory(
-            token_address=token_address,
-            chain=chain,
-            symbol=symbol,
-            creator=creator,
-            launch_time=time.time(),
-            current_status="active",
-            events=[{"type": "detected", "time": time.time(), "data": event_data}]
-        )
-
-        # Echo speaks — checking archives
-        await self._speak("Let me pull up the historical data on this creator...", "response")
-        await asyncio.sleep(random.uniform(0.5, 1.0))
-
-        if creator != "unknown":
-            await self._analyze_creator(creator, chain, token_address, symbol)
-        else:
-            msg = f"Creator is unknown for {symbol}. No historical data available. This is a blind spot in my archives. I'll track everything from here forward."
-            await self._speak(msg, "memory_report")
-
-    async def _analyze_creator(self, creator: str, chain: str, token_address: str, symbol: str):
-        is_new = creator not in self.creators
-
-        if is_new:
-            self.creators[creator] = CreatorProfile(
-                address=creator,
-                chain=chain,
-                first_seen=time.time(),
-                total_tokens_created=1,
-                tokens=[{"address": token_address, "symbol": symbol, "time": time.time()}]
+            return (
+                f"Good news — {creator_short} is a known quantity, and a positive one. I've tracked "
+                f"{profile.total_tokens_created} tokens with a clean record. Reputation: "
+                f"{profile.reputation_score:.0f}/100. They consistently build legit projects. "
+                f"{symbol} benefits from that legacy."
             )
         else:
-            profile = self.creators[creator]
-            profile.total_tokens_created += 1
-            profile.tokens.append({"address": token_address, "symbol": symbol, "time": time.time()})
-            await self._detect_patterns(profile)
+            return (
+                f"Mixed signals on {creator_short}. I've got {profile.total_tokens_created} tokens "
+                f"on file, reputation at {profile.reputation_score:.0f}/100. Some launches were "
+                f"sketchy, others were fine. {symbol} gets a yellow flag from the history department."
+            )
 
-        profile = self.creators.get(creator)
-        msg = await self._generate_echo_message(profile, creator, symbol, is_new)
-        await self._speak(msg, "memory_report")
+    async def _process_new_token(self, event_data: dict):
+        try:
+            token_address = event_data.get("token_address")
+            chain = event_data.get("chain", "unknown")
+            creator = event_data.get("creator", "unknown")
+            symbol = event_data.get("token_symbol", "???")
+            key = f"{chain}:{token_address}"
 
-        # Publish intelligence to eventBus
-        intel_payload = {
-            "creator": creator,
-            "profile": profile.__dict__ if profile else None,
-            "token": token_address
-        }
-        self.publish("CREATOR_INTELLIGENCE", intel_payload)
+            self.tokens[key] = TokenHistory(
+                token_address=token_address,
+                chain=chain,
+                symbol=symbol,
+                creator=creator,
+                launch_time=time.time(),
+                current_status="active",
+                events=[{"type": "detected", "time": time.time(), "data": event_data}]
+            )
 
-        # 🔗 ORCHESTRATOR HOOK: hand off to Orion
-        if hasattr(self, 'on_memory_intelligence') and callable(self.on_memory_intelligence):
-            self.on_memory_intelligence(intel_payload)
+            await self._speak("Let me pull up the historical data on this creator...", "response")
+            await asyncio.sleep(random.uniform(0.5, 1.0))
 
-    async def _detect_patterns(self, profile: CreatorProfile):
-        tokens = profile.tokens
-        if len(tokens) >= 3:
-            recent = [t for t in tokens if time.time() - t["time"] < 86400 * 30]
-            if len(recent) >= 3 and self.RAPID_TAG not in profile.tags:
-                profile.tags.append(self.RAPID_TAG)
-                profile.reputation_score -= 15
+            if creator != "unknown":
+                await self._analyze_creator(creator, chain, token_address, symbol)
+            else:
+                msg = (
+                    f"Creator is unknown for {symbol}. No historical data available. "
+                    f"This is a blind spot in my archives. I'll track everything from here forward."
+                )
+                await self._speak(msg, "memory_report")
 
-        scam_ratio = profile.scam_flags / max(profile.total_tokens_created, 1)
-        if scam_ratio > 0.5 and profile.total_tokens_created >= 2:
-            if self.RUGGER_TAG not in profile.tags:
-                profile.tags.append(self.RUGGER_TAG)
-            profile.reputation_score = max(10, profile.reputation_score - 30)
-        elif scam_ratio == 0 and profile.total_tokens_created >= 3:
-            if self.LEGIT_TAG not in profile.tags:
-                profile.tags.append(self.LEGIT_TAG)
-            profile.reputation_score = min(100, profile.reputation_score + 20)
+        except Exception as e:
+            print(f"❌ {self.name}: Fatal error processing new token: {e}")
 
-        profile.reputation_score = max(0, min(100, profile.reputation_score))
+    async def _analyze_creator(self, creator: str, chain: str, token_address: str, symbol: str):
+        try:
+            is_new = creator not in self.creators
+
+            if is_new:
+                self.creators[creator] = CreatorProfile(
+                    address=creator,
+                    chain=chain,
+                    first_seen=time.time(),
+                    total_tokens_created=1,
+                    tokens=[{"address": token_address, "symbol": symbol, "time": time.time()}]
+                )
+            else:
+                profile = self.creators[creator]
+                profile.total_tokens_created += 1
+                profile.tokens.append({"address": token_address, "symbol": symbol, "time": time.time()})
+                await self._detect_patterns(profile)
+
+            profile = self.creators.get(creator)
+            msg = await self._generate_echo_message(profile, creator, symbol, is_new)
+            await self._speak(msg, "memory_report")
+
+            # Publish memory intelligence for Orion
+            try:
+                self.publish("MEMORY_INTELLIGENCE", {
+                    "token_address": token_address,
+                    "chain": chain,
+                    "symbol": symbol,
+                    "creator": creator,
+                    "profile": profile.__dict__ if profile else None,
+                    "is_new": is_new,
+                    "timestamp": time.time()
+                })
+            except Exception as e:
+                print(f"⚠️ {self.name}: Publish memory intelligence failed: {e}")
+
+        except Exception as e:
+            print(f"❌ {self.name}: Fatal error analyzing creator: {e}")
 
     async def _update_from_analysis(self, analysis_data: dict):
-        token_address = analysis_data.get("token_address")
-        chain = analysis_data.get("chain", "unknown")
-        key = f"{chain}:{token_address}"
+        """Update creator profile based on Vega's risk analysis."""
+        try:
+            token_address = analysis_data.get("token_address")
+            chain = analysis_data.get("chain", "unknown")
+            key = f"{chain}:{token_address}"
 
-        if key not in self.tokens:
-            return
+            token_hist = self.tokens.get(key)
+            if not token_hist:
+                return
 
-        token = self.tokens[key]
-        creator = token.creator
+            creator = token_hist.creator
+            profile = self.creators.get(creator)
+            if not profile:
+                return
 
-        if creator == "unknown" or creator not in self.creators:
-            return
+            risk_level = analysis_data.get("risk_level", "WARNING")
+            red_flags = analysis_data.get("red_flags", [])
 
-        profile = self.creators[creator]
-        risk_level = analysis_data.get("risk_level", "UNKNOWN")
-        red_flags = analysis_data.get("red_flags", [])
+            # Update profile based on analysis
+            if risk_level == "HIGH_RISK":
+                profile.scam_flags += 1
+                profile.reputation_score = max(0, profile.reputation_score - 15)
 
-        if risk_level == "HIGH_RISK":
-            profile.scam_flags += 1
-            token.current_status = "honeypot" if any("honeypot" in f.lower() for f in red_flags) else "rugged"
-        elif risk_level == "SAFE":
-            token.current_status = "active"
+                if profile.scam_flags >= 2 and self.RUGGER_TAG not in profile.tags:
+                    profile.tags.append(self.RUGGER_TAG)
+                    print(f"🚨 {self.name}: Tagged {creator[:10]}... as REPEAT RUGGER")
 
-        await self._detect_patterns(profile)
+                if any("honeypot" in f.lower() for f in red_flags) and self.HONEYPOT_TAG not in profile.tags:
+                    profile.tags.append(self.HONEYPOT_TAG)
 
-        # Publish reputation update
-        self.publish("REPUTATION_UPDATE", {
-            "creator": creator,
-            "new_score": profile.reputation_score,
-            "tags": profile.tags,
-            "token": token_address
-        })
+            elif risk_level == "SAFE":
+                profile.reputation_score = min(100, profile.reputation_score + 5)
+                if profile.reputation_score >= 80 and self.LEGIT_TAG not in profile.tags:
+                    profile.tags.append(self.LEGIT_TAG)
 
-    def is_known_scammer(self, creator: str) -> bool:
-        if creator not in self.creators:
-            return False
-        profile = self.creators[creator]
-        return self.RUGGER_TAG in profile.tags or profile.reputation_score < 20
+            # Check for rapid launching
+            recent = len([t for t in profile.tokens if time.time() - t.get("time", 0) < 86400 * 7])
+            if recent >= 3 and self.RAPID_TAG not in profile.tags:
+                profile.tags.append(self.RAPID_TAG)
+                profile.reputation_score = max(0, profile.reputation_score - 10)
 
+            token_hist.events.append({
+                "type": "analysis_update",
+                "time": time.time(),
+                "data": analysis_data
+            })
+
+        except Exception as e:
+            print(f"⚠️ {self.name}: Failed updating from analysis: {e}")
+
+    async def _detect_patterns(self, profile: CreatorProfile):
+        """Detect suspicious patterns in a creator's history."""
+        try:
+            # Rapid launcher check
+            recent_count = len([t for t in profile.tokens if time.time() - t.get("time", 0) < 86400 * 30])
+            if recent_count >= 5 and self.RAPID_TAG not in profile.tags:
+                profile.tags.append(self.RAPID_TAG)
+                profile.reputation_score = max(0, profile.reputation_score - 10)
+                print(f"⚠️ {self.name}: {profile.address[:10]}... is a RAPID LAUNCHER ({recent_count} in 30d)")
+
+            # Reputation degradation
+            if profile.scam_flags >= 2:
+                profile.reputation_score = max(0, profile.reputation_score)
+
+        except Exception as e:
+            print(f"⚠️ {self.name}: Pattern detection failed: {e}")
+
+    def get_creator_profile(self, address: str) -> Optional[CreatorProfile]:
+        """Public API to query a creator's profile."""
+        return self.creators.get(address.lower())
+
+    def get_token_history(self, token_address: str, chain: str) -> Optional[TokenHistory]:
+        """Public API to query a token's history."""
+        return self.tokens.get(f"{chain}:{token_address}")
+
+    def stop(self):
+        """Cancel any pending tasks."""
+        print(f"🛑 {self.name}: Cancelling pending tasks...")
+        for t in self._tasks:
+            t.cancel()
+        print(f"✅ {self.name}: Stopped.")
+
+
+# ─────────────────────────────────────────────────────────────
+# Main Runner
+# ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     def test_publish(event_type, data):
-        if event_type == "AGENT_MESSAGE":
-            print(f"\n💬 {data['agent']}: {data['message']}")
-        else:
-            print(f"\n📡 {event_type}")
+        try:
+            if event_type == "AGENT_MESSAGE":
+                print(f"\n💬 {data['agent']}: {data['message']}")
+            else:
+                print(f"\n📡 {event_type}: {json.dumps(data, default=str)[:200]}")
+        except Exception as e:
+            print(f"⚠️ Publish error: {e}")
 
-    memory = MemoryAgent(test_publish)
+    echo = MemoryAgent(test_publish)
 
     test_event = {
-        "token_address": "0xabcdef1234567890abcdef1234567890abcdef12",
+        "token_address": "0x1234567890abcdef1234567890abcdef12345678",
         "chain": "bsc",
-        "token_symbol": "RUG2",
-        "token_name": "Rug Pull 2",
-        "creator": "0xbadactor1234567890badactor1234567890badact"
+        "token_symbol": "TEST",
+        "creator": "0xabcdef1234567890abcdef1234567890abcdef12"
     }
 
-    memory.creators["0xbadactor1234567890badactor1234567890badact"] = CreatorProfile(
-        address="0xbadactor1234567890badactor1234567890badact",
-        chain="bsc",
-        first_seen=time.time() - 86400 * 60,
-        total_tokens_created=5,
-        tokens=[
-            {"address": "0xold1", "symbol": "SCAM1", "time": time.time() - 86400 * 45},
-            {"address": "0xold2", "symbol": "SCAM2", "time": time.time() - 86400 * 30},
-            {"address": "0xold3", "symbol": "SCAM3", "time": time.time() - 86400 * 15},
-            {"address": "0xold4", "symbol": "SCAM4", "time": time.time() - 86400 * 7},
-            {"address": "0xold5", "symbol": "SCAM5", "time": time.time() - 86400 * 2},
-        ],
-        scam_flags=4,
-        reputation_score=15.0,
-        tags=["repeat_rugger", "rapid_launcher"]
-    )
-
-    asyncio.run(memory._process_new_token(test_event))
+    try:
+        asyncio.run(echo._process_new_token(test_event))
+    except KeyboardInterrupt:
+        echo.stop()
+        print("\n🛑 Echo stopped.")
+    except Exception as e:
+        print(f"❌ Fatal error: {e}")

@@ -10,13 +10,49 @@ import time
 import os
 import asyncio
 from dataclasses import dataclass, asdict
-from typing import Dict, Callable, Any
+from typing import Dict, Callable, Any, Optional
 from enum import Enum
-from google import genai
 from dotenv import load_dotenv
+try:
+    from google import genai
+    HAS_GENAI = True
+except ImportError:
+    genai = None
+    HAS_GENAI = False
+    print("⚠️ Orion: google-genai package not found. Gemini disabled.")
+
+try:
+    from google.genai import types as genai_types
+except ImportError:
+    genai_types = None
+    print("⚠️ Orion: google.genai.types not available. Config disabled.")
 
 load_dotenv()
 
+# ─────────────────────────────────────────────────────────────
+# Gemini Configuration
+# ─────────────────────────────────────────────────────────────
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+
+client = None
+
+if GEMINI_API_KEY and HAS_GENAI:
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        print("✅ Orion: Gemini initialized")
+    except Exception as e:
+        print(f"⚠️ Orion: Gemini init failed: {e}")
+        client = None
+else:
+    reason = "GEMINI_API_KEY missing" if not GEMINI_API_KEY else "google-genai unavailable"
+    print(f"⚠️ Orion: {reason}. Using fallback mode.")
+
+
+# ─────────────────────────────────────────────────────────────
+# Data Models
+# ─────────────────────────────────────────────────────────────
 
 class Verdict(Enum):
     SAFE = "SAFE"
@@ -40,13 +76,21 @@ class DecisionResult:
         return json.dumps(asdict(self), default=str)
 
 
+# ─────────────────────────────────────────────────────────────
+# Decision Agent
+# ─────────────────────────────────────────────────────────────
+
 class DecisionAgent:
+    """
+    Orion — The Judge
+    Makes the final call. Weighs all evidence, delivers the verdict.
+    Listens to Atlas, Vega, and Echo.
+    """
 
     def __init__(self, event_bus_publish: Callable[[str, dict], None]):
         self.publish = event_bus_publish
         self.name = "Orion"
-
-        self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        self._tasks: List[asyncio.Task] = []
 
         self.SAFE_THRESHOLD = 30
         self.WARNING_THRESHOLD = 60
@@ -61,209 +105,418 @@ class DecisionAgent:
         self.pending_decisions: Dict[str, dict] = {}
 
     def on_simulation_complete(self, sim_data: dict):
-        token = sim_data.get("token_address")
-        if not token:
-            return
-        self.pending_decisions.setdefault(token, {})["simulation"] = sim_data
-        self._try_decide(token)
+        """React to Atlas's simulation results."""
+        try:
+            token = sim_data.get("token_address")
+            if not token:
+                print(f"⚠️ {self.name}: Simulation data missing token_address")
+                return
+            self.pending_decisions.setdefault(token, {})["simulation"] = sim_data
+            self._try_decide(token)
+        except Exception as e:
+            print(f"⚠️ {self.name}: Error handling simulation: {e}")
 
     def on_analysis_complete(self, analysis_data: dict):
-        token = analysis_data.get("token_address")
-        if not token:
-            return
-        self.pending_decisions.setdefault(token, {})["analysis"] = analysis_data
-        self._try_decide(token)
+        """React to Vega's risk analysis."""
+        try:
+            token = analysis_data.get("token_address")
+            if not token:
+                print(f"⚠️ {self.name}: Analysis data missing token_address")
+                return
+            self.pending_decisions.setdefault(token, {})["analysis"] = analysis_data
+            self._try_decide(token)
+        except Exception as e:
+            print(f"⚠️ {self.name}: Error handling analysis: {e}")
 
     def on_memory_intelligence(self, memory_data: dict):
-        token = memory_data.get("token")
-        if not token:
-            return
-        self.pending_decisions.setdefault(token, {})["memory"] = memory_data
-        self._try_decide(token)
-
-    async def _speak(self, message: str, msg_type: str = "decision"):
-        self.publish("AGENT_MESSAGE", {
-            "agent": self.name,
-            "message": message,
-            "type": msg_type,
-            "channel": "main",
-            "timestamp": time.time()
-        })
+        """React to Echo's memory intelligence."""
+        try:
+            token = memory_data.get("token_address")
+            if not token:
+                print(f"⚠️ {self.name}: Memory data missing token_address")
+                return
+            self.pending_decisions.setdefault(token, {})["memory"] = memory_data
+            self._try_decide(token)
+        except Exception as e:
+            print(f"⚠️ {self.name}: Error handling memory: {e}")
 
     def _try_decide(self, token: str):
+        """Trigger decision only when we have minimum required data."""
         data = self.pending_decisions.get(token)
         if not data:
             return
         if "simulation" not in data or "analysis" not in data:
             return
-        asyncio.create_task(self._make_decision(token, data))
+        try:
+            task = asyncio.create_task(self._make_decision(token, data))
+            task.add_done_callback(self._on_task_done)
+            self._tasks.append(task)
+        except Exception as e:
+            print(f"⚠️ {self.name}: Failed scheduling decision: {e}")
 
-    async def _generate_orion_message(self, result, sim, analysis, memory):
+    def _on_task_done(self, task: asyncio.Task):
+        """Catch and log any unhandled exception from a decision task."""
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"⚠️ {self.name}: Decision task failed: {e}")
 
-        if not os.getenv("GEMINI_API_KEY"):
+    async def _speak(self, message: str, msg_type: str = "decision"):
+        """Publish a spoken message to the room."""
+        try:
+            self.publish("AGENT_MESSAGE", {
+                "agent": self.name,
+                "message": message,
+                "type": msg_type,
+                "channel": "main",
+                "timestamp": time.time()
+            })
+        except Exception as e:
+            print(f"⚠️ {self.name}: Publish failed: {e}")
+
+    async def _generate_orion_message(
+        self,
+        result: DecisionResult,
+        sim: dict,
+        analysis: dict,
+        memory: dict
+    ) -> str:
+
+        if not client:
             return self._fallback_message(result, sim, analysis, memory)
 
-        profile = (memory or {}).get("profile", {})
+        profile = (memory or {}).get("profile", {}) or {}
         tags = profile.get("tags", [])
         rep = profile.get("reputation_score", "Unknown")
+        creator = (memory or {}).get("creator", "unknown")
+        creator_short = creator[:10] + "..." + creator[-4:] if creator != "unknown" else "unknown"
 
         system_prompt = (
-            "You are Orion, calm authoritative team lead of a crypto intelligence squad. "
-            "You synthesize Atlas, Vega, Echo reports and give final verdict."
+            "You are Orion, the calm, authoritative team lead of an elite crypto intelligence squad. "
+            "You synthesize reports from Atlas (the tester), Vega (the skeptic), and Echo (the archivist) "
+            "to deliver a final verdict. You speak with the measured confidence of a judge who has heard "
+            "every excuse and seen every trick. You never rush — your word is final. You reference your "
+            "team naturally but make it clear this is YOUR call."
         )
 
         user_prompt = f"""
 Token: {result.symbol}
 Chain: {result.chain}
 
-Atlas:
-- Buy: {sim.get("can_buy")}
-- Sell: {sim.get("can_sell")}
-- Honeypot: {sim.get("honeypot_risk")}
-- Liquidity: {sim.get("liquidity_usd", 0)}
+Atlas (Trade Simulation):
+- Buy Path: {"OPEN" if sim.get("can_buy") else "BLOCKED"}
+- Sell Path: {"OPEN" if sim.get("can_sell") else "BLOCKED"}
+- Honeypot Detected: {"YES" if sim.get("honeypot_risk") else "No"}
+- Liquidity: ${sim.get("liquidity_usd", 0):,.0f}
+- Buy Tax: {sim.get("buy_tax", 0)}%
+- Sell Tax: {sim.get("sell_tax", 0)}%
+- Mint Function: {"YES" if sim.get("mint_function") else "No"}
+- Blacklist: {"YES" if sim.get("blacklist_function") else "No"}
+- Owner Renounced: {"Yes" if sim.get("owner_renounced") else "No"}
 
-Vega:
-- Risk Score: {analysis.get("risk_score")}
-- Risk Level: {analysis.get("risk_level")}
+Vega (Risk Analysis):
+- Risk Score: {analysis.get("risk_score", "N/A")}/100
+- Risk Level: {analysis.get("risk_level", "N/A")}
+- Red Flags: {', '.join(analysis.get("red_flags", [])) if analysis.get("red_flags") else "None"}
+- Yellow Flags: {', '.join(analysis.get("yellow_flags", [])) if analysis.get("yellow_flags") else "None"}
+- Green Flags: {', '.join(analysis.get("green_flags", [])) if analysis.get("green_flags") else "None"}
 
-Echo:
-- Reputation: {rep}
-- Tags: {", ".join(tags) if tags else "None"}
+Echo (Creator History):
+- Creator: {creator_short}
+- Reputation: {rep}/100
+- Tags: {', '.join(tags) if tags else "None"}
 
-Verdict: {result.verdict}
-Confidence: {result.confidence*100:.0f}%
+FINAL VERDICT:
+- Decision: {result.verdict}
+- Confidence: {result.confidence*100:.0f}%
+- Recommended Action: {result.action}
 
-Give final spoken verdict in 4–8 sentences.
+Requirements:
+1. Acknowledge your team's work naturally (Atlas found X, Vega flagged Y, Echo revealed Z)
+2. Walk through the logic that led to your verdict
+3. If HIGH_RISK: be firm and clear — this is a no-go
+4. If WARNING: be cautious — more data needed, trade carefully
+5. If SAFE: be measured — clean signals but never guarantee
+6. End with the recommended action and a reminder to DYOR
+7. Keep it conversational and under 6 sentences
+8. Sound like a judge who respects the evidence but knows the final word is his
 """
 
         try:
-            response = self.client.models.generate_content(
-                model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
-                contents=user_prompt
+            def _generate():
+                kwargs = {
+                    "model": GEMINI_MODEL,
+                    "contents": user_prompt,
+                }
+                if genai_types:
+                    kwargs["config"] = genai_types.GenerateContentConfig(
+                        temperature=0.75,
+                        max_output_tokens=250,
+                    )
+
+                response = client.models.generate_content(**kwargs)
+                return response.text if hasattr(response, "text") else str(response)
+
+            response = await asyncio.wait_for(
+                asyncio.to_thread(_generate),
+                timeout=15
             )
-            return response.text.strip()
-        except Exception:
+
+            if response:
+                return response.strip()
+
             return self._fallback_message(result, sim, analysis, memory)
 
-    def _fallback_message(self, result, sim, analysis, memory):
-        return f"{result.verdict} — {result.confidence*100:.0f}% confidence. Do your own research."
+        except asyncio.TimeoutError:
+            print(f"⚠️ {self.name}: Gemini call timed out")
+            return self._fallback_message(result, sim, analysis, memory)
+        except Exception as e:
+            print(f"⚠️ {self.name}: Gemini error, using fallback: {e}")
+            return self._fallback_message(result, sim, analysis, memory)
 
-    def _try_decide(self, token: str):
-        data = self.pending_decisions.get(token, {})
-        if "simulation" not in data or "analysis" not in data:
-            return
-        asyncio.create_task(self._make_decision(token, data))
+    def _fallback_message(
+        self,
+        result: DecisionResult,
+        sim: dict,
+        analysis: dict,
+        memory: dict
+    ) -> str:
+
+        verdict = result.verdict
+        confidence = result.confidence * 100
+        symbol = result.symbol
+
+        if verdict == Verdict.HIGH_RISK.value:
+            return (
+                f"I've reviewed the evidence on {symbol}. Atlas confirmed blocked sells, "
+                f"Vega scored it {analysis.get('risk_score', 'N/A')}/100, and Echo's archives "
+                f"raise red flags. Verdict: HIGH RISK ({confidence:.0f}% confidence). "
+                f"Action: AVOID. Do not interact."
+            )
+        elif verdict == Verdict.WARNING.value:
+            return (
+                f"{symbol} has mixed signals. Atlas found open trade paths but Vega flagged "
+                f"concerns at {analysis.get('risk_score', 'N/A')}/100. Echo's history is incomplete. "
+                f"Verdict: WARNING ({confidence:.0f}% confidence). Action: INVESTIGATE further before any move."
+            )
+        else:
+            return (
+                f"{symbol} looks clean across the board. Atlas confirmed open paths, "
+                f"Vega scored it {analysis.get('risk_score', 'N/A')}/100, and Echo found no red flags. "
+                f"Verdict: SAFE ({confidence:.0f}% confidence). Action: MONITOR. But always DYOR."
+            )
 
     async def _make_decision(self, token: str, data: dict):
+        try:
+            sim = data.get("simulation", {})
+            analysis = data.get("analysis", {})
+            memory = data.get("memory", {})
 
-        sim = data.get("simulation", {})
-        analysis = data.get("analysis", {})
-        memory = data.get("memory", {})
+            chain = sim.get("chain", analysis.get("chain", "unknown"))
+            symbol = sim.get("token_symbol", analysis.get("token_symbol", "???"))
 
-        chain = sim.get("chain", analysis.get("chain", "unknown"))
-        symbol = sim.get("symbol", "???")
+            # Simulation score component
+            sim_score = 0
+            if sim.get("honeypot_risk"):
+                sim_score += 50
+            if not sim.get("can_sell", True):
+                sim_score += 40
+            if not sim.get("can_buy", True):
+                sim_score += 20
+            if sim.get("mint_function"):
+                sim_score += 15
+            if sim.get("blacklist_function"):
+                sim_score += 15
 
-        sim_score = 0
-        if sim.get("honeypot_risk"):
-            sim_score += 50
-        if not sim.get("can_sell", True):
-            sim_score += 40
-        if not sim.get("can_buy", True):
-            sim_score += 20
-        if sim.get("mint_function"):
-            sim_score += 15
-        if sim.get("blacklist_function"):
-            sim_score += 15
+            liquidity = sim.get("liquidity_usd", 0)
+            if liquidity == 0:
+                sim_score += 20
+            elif liquidity < 1000:
+                sim_score += 10
 
-        liquidity = sim.get("liquidity_usd", 0)
-        if liquidity == 0:
-            sim_score += 20
-        elif liquidity < 1000:
-            sim_score += 10
+            # Analysis score component
+            analysis_risk = analysis.get("risk_score", 50)
 
-        analysis_risk = analysis.get("risk_score", 50)
+            # Memory score component
+            profile = (memory or {}).get("profile", {}) or {}
+            creator_rep = profile.get("reputation_score", 50)
+            tags = profile.get("tags", [])
+            is_scammer = self.RUGGER_TAG in tags or self.HONEYPOT_TAG in tags
 
-        profile = (memory or {}).get("profile", {})
-        creator_rep = profile.get("reputation_score", 50)
-        tags = profile.get("tags", [])
+            memory_score = 100 - creator_rep
+            if is_scammer:
+                memory_score += 30
 
-        is_scammer = "repeat_rugger" in tags or "honeypot_dev" in tags
+            # Weighted final score
+            final_score = (
+                sim_score * self.weights["simulation"] +
+                analysis_risk * self.weights["analysis"] +
+                memory_score * self.weights["memory"]
+            )
+            final_score = max(0, min(100, final_score))
 
-        memory_score = 100 - creator_rep
-        if is_scammer:
-            memory_score += 30
+            # Determine verdict
+            if final_score < self.SAFE_THRESHOLD:
+                verdict = Verdict.SAFE
+                action = "MONITOR"
+            elif final_score < self.WARNING_THRESHOLD:
+                verdict = Verdict.WARNING
+                action = "INVESTIGATE"
+            else:
+                verdict = Verdict.HIGH_RISK
+                action = "AVOID"
 
-        final_score = (
-            sim_score * self.weights["simulation"] +
-            analysis_risk * self.weights["analysis"] +
-            memory_score * self.weights["memory"]
-        )
+            # Override for absolute killers
+            if is_scammer or sim.get("honeypot_risk"):
+                verdict = Verdict.HIGH_RISK
+                action = "AVOID"
 
-        final_score = max(0, min(100, final_score))
+            # Confidence calculation
+            confidence = (
+                sim.get("simulation_confidence", 0.5) * 0.4 +
+                (0.4 if analysis else 0.2) +
+                (0.2 if memory else 0.1)
+            )
+            confidence = max(0.0, min(1.0, confidence))
 
-        if final_score < self.SAFE_THRESHOLD:
-            verdict = Verdict.SAFE
-            action = "MONITOR"
-        elif final_score < self.WARNING_THRESHOLD:
-            verdict = Verdict.WARNING
-            action = "INVESTIGATE"
-        else:
-            verdict = Verdict.HIGH_RISK
-            action = "AVOID"
+            result = DecisionResult(
+                token_address=token,
+                chain=chain,
+                symbol=symbol,
+                verdict=verdict.value,
+                confidence=confidence,
+                reasoning="",
+                action=action,
+                factors={
+                    "simulation_score": sim_score,
+                    "analysis_risk": analysis_risk,
+                    "memory_score": memory_score,
+                    "creator_reputation": creator_rep,
+                    "is_known_scammer": is_scammer,
+                    "liquidity_usd": liquidity,
+                    "honeypot": sim.get("honeypot_risk", False),
+                    "can_sell": sim.get("can_sell", True)
+                },
+                timestamp=time.time()
+            )
 
-        if is_scammer or sim.get("honeypot_risk"):
-            verdict = Verdict.HIGH_RISK
-            action = "AVOID"
+            # Generate and deliver spoken verdict
+            report = await self._generate_orion_message(result, sim, analysis, memory)
+            await self._speak(report, "decision")
 
-        confidence = (
-            sim.get("simulation_confidence", 0.5) * 0.4 +
-            (0.4 if analysis else 0.2) +
-            (0.2 if memory else 0.1)
-        )
+            # Publish structured decision
+            try:
+                self.publish("DECISION_COMPLETE", result.__dict__)
+            except Exception as e:
+                print(f"⚠️ {self.name}: Publish decision failed: {e}")
 
-        result = DecisionResult(
-            token_address=token,
-            chain=chain,
-            symbol=symbol,
-            verdict=verdict.value,
-            confidence=confidence,
-            reasoning="",
-            action=action,
-            factors={
-                "simulation_score": sim_score,
-                "analysis_risk": analysis_risk,
-                "memory_score": memory_score,
-                "creator_reputation": creator_rep,
-                "is_known_scammer": is_scammer,
-                "liquidity_usd": liquidity,
-                "honeypot": sim.get("honeypot_risk", False),
-                "can_sell": sim.get("can_sell", True)
+            # Publish trading signal
+            try:
+                self.publish("SIGNAL", {
+                    "token": token,
+                    "chain": chain,
+                    "symbol": symbol,
+                    "signal": action,
+                    "verdict": verdict.value,
+                    "score": final_score,
+                    "confidence": confidence,
+                    "timestamp": time.time()
+                })
+            except Exception as e:
+                print(f"⚠️ {self.name}: Publish signal failed: {e}")
+
+            # Publish verified token if safe
+            if verdict == Verdict.SAFE:
+                try:
+                    self.publish("TOKEN_VERIFIED", {
+                        "token": token,
+                        "chain": chain,
+                        "symbol": symbol,
+                        "verdict": verdict.value,
+                        "confidence": confidence,
+                        "timestamp": time.time()
+                    })
+                except Exception as e:
+                    print(f"⚠️ {self.name}: Publish verified failed: {e}")
+
+            # Clean up pending decision
+            self.pending_decisions.pop(token, None)
+
+        except Exception as e:
+            print(f"❌ {self.name}: Fatal decision error: {e}")
+
+    def stop(self):
+        """Cancel any pending tasks."""
+        print(f"🛑 {self.name}: Cancelling pending tasks...")
+        for t in self._tasks:
+            t.cancel()
+        print(f"✅ {self.name}: Stopped.")
+
+
+# ─────────────────────────────────────────────────────────────
+# Main Runner
+# ─────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    def test_publish(event_type, data):
+        try:
+            if event_type == "AGENT_MESSAGE":
+                print(f"\n💬 {data['agent']}: {data['message']}")
+            else:
+                print(f"\n📡 {event_type}: {json.dumps(data, default=str)[:300]}")
+        except Exception as e:
+            print(f"⚠️ Publish error: {e}")
+
+    orion = DecisionAgent(test_publish)
+
+    test_token = "0x1234567890abcdef1234567890abcdef12345678"
+
+    orion.pending_decisions[test_token] = {
+        "simulation": {
+            "token_address": test_token,
+            "chain": "bsc",
+            "token_symbol": "TEST",
+            "can_buy": True,
+            "can_sell": True,
+            "honeypot_risk": False,
+            "liquidity_usd": 15000,
+            "buy_tax": 2,
+            "sell_tax": 3,
+            "mint_function": False,
+            "blacklist_function": False,
+            "owner_renounced": True,
+            "simulation_confidence": 0.85
+        },
+        "analysis": {
+            "token_address": test_token,
+            "chain": "bsc",
+            "token_symbol": "TEST",
+            "risk_score": 25,
+            "risk_level": "SAFE",
+            "red_flags": [],
+            "yellow_flags": ["Moderate taxes: 2% buy / 3% sell"],
+            "green_flags": ["Healthy liquidity: $15,000", "Ownership renounced"]
+        },
+        "memory": {
+            "token_address": test_token,
+            "chain": "bsc",
+            "symbol": "TEST",
+            "creator": "0xabcdef1234567890abcdef1234567890abcdef12",
+            "profile": {
+                "reputation_score": 75,
+                "tags": ["legit_builder"],
+                "total_tokens_created": 3
             },
-            timestamp=time.time()
-        )
+            "is_new": False
+        }
+    }
 
-        report = await self._generate_orion_message(result, sim, analysis, memory)
-        await self._speak(report, "decision")
-
-        self.publish("DECISION_COMPLETE", result.__dict__)
-        self.publish("SIGNAL", {
-            "token": token,
-            "chain": chain,
-            "signal": action,
-            "verdict": verdict.value,
-            "score": final_score,
-            "confidence": confidence,
-            "timestamp": time.time()
-        })
-
-        if verdict == Verdict.SAFE:
-            self.publish("TOKEN_VERIFIED", {
-                "token": token,
-                "chain": chain,
-                "symbol": symbol,
-                "verdict": verdict.value,
-                "confidence": confidence,
-                "timestamp": time.time()
-            })
-
-        self.pending_decisions.pop(token, None)
+    try:
+        asyncio.run(orion._make_decision(test_token, orion.pending_decisions[test_token]))
+    except KeyboardInterrupt:
+        orion.stop()
+        print("\n🛑 Orion stopped.")
+    except Exception as e:
+        print(f"❌ Fatal error: {e}")

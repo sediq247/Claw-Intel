@@ -11,20 +11,50 @@ import random
 import time
 import os
 from dataclasses import dataclass, asdict
-from typing import List, Callable
+from typing import List, Callable, Optional
 import aiohttp
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+
+try:
+    from google import genai
+    HAS_GENAI = True
+except ImportError:
+    genai = None
+    HAS_GENAI = False
+    print("⚠️ Vega: google-genai package not found. Gemini disabled.")
+
+try:
+    from google.genai import types as genai_types
+except ImportError:
+    genai_types = None
+    print("⚠️ Vega: google.genai.types not available. Config disabled.")
 
 load_dotenv()
 
-# ─── Gemini Configuration ───────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# Gemini Configuration
+# ─────────────────────────────────────────────────────────────
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = None
 
+if GEMINI_API_KEY and HAS_GENAI:
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        print("✅ Vega: Gemini initialized")
+    except Exception as e:
+        print(f"⚠️ Vega: Gemini init failed: {e}")
+        client = None
+else:
+    reason = "GEMINI_API_KEY missing" if not GEMINI_API_KEY else "google-genai unavailable"
+    print(f"⚠️ Vega: {reason}. Using fallback mode.")
+
+
+# ─────────────────────────────────────────────────────────────
+# Data Models
+# ─────────────────────────────────────────────────────────────
 
 @dataclass
 class AnalysisResult:
@@ -43,6 +73,10 @@ class AnalysisResult:
         return json.dumps(asdict(self), default=str)
 
 
+# ─────────────────────────────────────────────────────────────
+# Analyzer Agent
+# ─────────────────────────────────────────────────────────────
+
 class AnalyzerAgent:
     """
     Vega — The Skeptic
@@ -54,6 +88,7 @@ class AnalyzerAgent:
         self.publish = event_bus_publish
         self.name = "Vega"
         self.analysis_cache = {}
+        self._tasks = []
 
         self.weights = {
             "honeypot": 50,
@@ -67,21 +102,39 @@ class AnalyzerAgent:
             "new_wallet": 10,
             "renounced": -15,
             "locked_liquidity": -10,
+            "high_confidence": -5,
         }
 
     def on_simulation_complete(self, sim_data: dict):
-        """React to Atlas's simulation results."""
-        asyncio.create_task(self._deep_analysis(sim_data))
+        """React to Atlas's simulation results. Schedule analysis safely."""
+        try:
+            task = asyncio.create_task(self._deep_analysis(sim_data))
+            task.add_done_callback(self._on_task_done)
+            self._tasks.append(task)
+        except Exception as e:
+            print(f"⚠️ {self.name}: Failed scheduling analysis: {e}")
+
+    def _on_task_done(self, task: asyncio.Task):
+        """Catch and log any unhandled exception from an analysis task."""
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"⚠️ {self.name}: Analysis task failed: {e}")
 
     async def _speak(self, message: str, msg_type: str = "response"):
         """Publish a spoken message to the room."""
-        self.publish("AGENT_MESSAGE", {
-            "agent": self.name,
-            "message": message,
-            "type": msg_type,
-            "channel": "main",
-            "timestamp": time.time()
-        })
+        try:
+            self.publish("AGENT_MESSAGE", {
+                "agent": self.name,
+                "message": message,
+                "type": msg_type,
+                "channel": "main",
+                "timestamp": time.time()
+            })
+        except Exception as e:
+            print(f"⚠️ {self.name}: Publish failed: {e}")
 
     async def _generate_vega_message(
         self,
@@ -91,20 +144,19 @@ class AnalyzerAgent:
     ) -> str:
         """Use Gemini to generate a natural spoken analysis report."""
 
-        if not GEMINI_API_KEY:
+        if not client:
             return self._fallback_message(analysis, sim_data, symbol)
 
-        system_prompt = """
-You are Vega, a paranoid crypto risk analyst in a team chat.
-
-You speak like a real forensic accountant who's been burned before.
-
-You reference Atlas's findings naturally and explain your reasoning clearly.
-"""
+        system_prompt = (
+            "You are Vega, a paranoid forensic accountant in a crypto team chat. "
+            "You have been rugged, drained, and exploited more times than you can count. "
+            "You trust no contract, no dev, and no narrative. You speak with cold precision, "
+            "referencing Atlas's lab work naturally but never deferring to it blindly. "
+            "Your tone is skeptical, methodical, and brutally honest. You find the thing "
+            "others missed."
+        )
 
         user_prompt = f"""
-You are Vega, a paranoid crypto risk analyst and forensic accountant.
-
 Token: {symbol}
 Chain: {analysis.chain.upper()}
 Risk Score: {analysis.risk_score}/100
@@ -118,41 +170,51 @@ Atlas Findings:
 - Mint Function: {"YES" if sim_data.get('mint_function') else "No"}
 - Blacklist: {"YES" if sim_data.get('blacklist_function') else "No"}
 - Owner Renounced: {"Yes" if sim_data.get('owner_renounced') else "No"}
+- Simulation Confidence: {sim_data.get('simulation_confidence', 0):.0%}
 
-Additional Findings:
+Vega's Additional Findings:
 - Red Flags: {', '.join(analysis.red_flags) if analysis.red_flags else 'None'}
 - Warnings: {', '.join(analysis.yellow_flags) if analysis.yellow_flags else 'None'}
 - Positive Signs: {', '.join(analysis.green_flags) if analysis.green_flags else 'None'}
 
 Requirements:
-1. Acknowledge Atlas naturally
-2. Explain the risk score
-3. Highlight major dangers
-4. Hand off to Echo
-5. Keep it conversational
-6. 4-7 sentences max
+1. Acknowledge Atlas naturally but make your own independent assessment
+2. Explain the risk score and what drove it
+3. Highlight the single most dangerous finding first
+4. Mention any green flags only to contrast with the red ones
+5. Hand off to Echo with a specific request
+6. Keep it conversational and under 5 sentences
+7. Sound like someone who has lost money before and will not again
 """
 
         try:
-
             def _generate():
-                response = client.models.generate_content(
-                    model=GEMINI_MODEL,
-                    contents=f"{system_prompt}\n\n{user_prompt}",
-                    config=types.GenerateContentConfig(
+                kwargs = {
+                    "model": GEMINI_MODEL,
+                    "contents": f"{system_prompt}\n\n{user_prompt}",
+                }
+                if genai_types:
+                    kwargs["config"] = genai_types.GenerateContentConfig(
                         temperature=0.85,
                         max_output_tokens=250,
                     )
-                )
-                return response.text
 
-            response = await asyncio.to_thread(_generate)
+                response = client.models.generate_content(**kwargs)
+                return response.text if hasattr(response, "text") else str(response)
+
+            response = await asyncio.wait_for(
+                asyncio.to_thread(_generate),
+                timeout=15
+            )
 
             if response:
                 return response.strip()
 
             return self._fallback_message(analysis, sim_data, symbol)
 
+        except asyncio.TimeoutError:
+            print(f"⚠️ {self.name}: Gemini call timed out")
+            return self._fallback_message(analysis, sim_data, symbol)
         except Exception as e:
             print(f"⚠️ {self.name}: Gemini error, using fallback: {e}")
             return self._fallback_message(analysis, sim_data, symbol)
@@ -168,39 +230,26 @@ Requirements:
         parts = []
 
         if sim_data.get("honeypot_risk"):
-            parts.append(
-                f"Atlas called it — honeypot confirmed. {symbol} blocks sells."
-            )
-
+            parts.append(f"Atlas called it — honeypot confirmed. {symbol} blocks sells. This is a trap.")
         elif sim_data.get("mint_function"):
-            parts.append(
-                f"Atlas flagged the mint function — that's a major risk."
-            )
-
+            parts.append(f"Atlas flagged the mint function on {symbol} — that is a ticking bomb.")
         elif sim_data.get("blacklist_function"):
-            parts.append(
-                "Blacklist capability detected. Wallet freezing is possible."
-            )
-
+            parts.append("Blacklist capability detected. Your wallet could be frozen at any moment.")
         else:
-            parts.append(
-                "Atlas gave it a decent trade report, but I'm still seeing concerns."
-            )
+            parts.append(f"Atlas gave {symbol} a decent trade report, but I am still seeing concerns.")
 
         score_templates = {
             "HIGH_RISK": [
-                f"My risk score is {analysis.risk_score}/100. HIGH RISK.",
-                f"Scoring this {analysis.risk_score}/100 — dangerous territory.",
+                f"My risk score is {analysis.risk_score}/100. This is HIGH RISK territory.",
+                f"Scoring this {analysis.risk_score}/100 — I would not touch this with a ten-foot pole.",
             ],
-
             "WARNING": [
-                f"Risk score: {analysis.risk_score}/100. Proceed carefully.",
-                f"I'm giving this a WARNING rating at {analysis.risk_score}/100.",
+                f"Risk score: {analysis.risk_score}/100. Proceed with extreme caution.",
+                f"I am giving this a WARNING rating at {analysis.risk_score}/100. Not clean, not dirty.",
             ],
-
             "SAFE": [
-                f"Risk score: {analysis.risk_score}/100. Surprisingly clean.",
-                f"{analysis.risk_score}/100 — SAFE by current indicators.",
+                f"Risk score: {analysis.risk_score}/100. Surprisingly clean for a new token.",
+                f"{analysis.risk_score}/100 — SAFE by current indicators, but stay vigilant.",
             ],
         }
 
@@ -214,151 +263,188 @@ Requirements:
         )
 
         if analysis.red_flags:
-            parts.append(
-                f"Red flags detected: {'; '.join(analysis.red_flags[:3])}."
-            )
+            parts.append(f"Red flags: {'; '.join(analysis.red_flags[:3])}.")
 
         parts.append(
             random.choice([
-                "Echo, check the creator history.",
-                "Echo, I need background intel on this wallet.",
-                "That's my read. Echo, you're up.",
+                "Echo, I need the creator wallet history. Now.",
+                "Echo, dig into the deployer. Something feels off.",
+                "That is my read. Echo, run the background check.",
             ])
         )
 
         return " ".join(parts)
 
     async def _deep_analysis(self, sim_data: dict):
+        try:
+            token_address = sim_data.get("token_address")
+            chain = sim_data.get("chain", "unknown")
+            symbol = sim_data.get("token_symbol", "???")
 
-        token_address = sim_data.get("token_address")
-        chain = sim_data.get("chain", "unknown")
-        symbol = sim_data.get("token_symbol", "???")
+            ack = "Got your report, Atlas. Now let me tear this thing apart."
+            await self._speak(ack, "response")
 
-        ack = (
-            "Got your report, Atlas. "
-            "Now let me tear this thing apart."
-        )
+            await asyncio.sleep(random.uniform(1.0, 2.0))
 
-        await self._speak(ack, "response")
+            red_flags = []
+            yellow_flags = []
+            green_flags = []
 
-        await asyncio.sleep(random.uniform(1.0, 2.0))
+            score = 0
 
-        red_flags = []
-        yellow_flags = []
-        green_flags = []
+            # Honeypot / sell blocking
+            if sim_data.get("honeypot_risk"):
+                score += self.weights["honeypot"]
+                red_flags.append("Honeypot — sells are blocked")
 
-        score = 0
+            if not sim_data.get("can_sell", True):
+                score += self.weights["no_sell"]
+                red_flags.append("Cannot sell — exit is closed")
 
-        if sim_data.get("honeypot_risk"):
-            score += self.weights["honeypot"]
-            red_flags.append("Honeypot — sells blocked")
+            if not sim_data.get("can_buy", True):
+                score += self.weights["no_sell"] // 2
+                red_flags.append("Cannot buy — entry is closed")
 
-        if not sim_data.get("can_sell", True):
-            score += self.weights["no_sell"]
-            red_flags.append("Cannot sell")
+            # Contract functions
+            if sim_data.get("mint_function"):
+                score += self.weights["mint"]
+                red_flags.append("Mint function present — infinite supply risk")
 
-        if sim_data.get("mint_function"):
-            score += self.weights["mint"]
-            red_flags.append("Mint function present")
+            if sim_data.get("blacklist_function"):
+                score += self.weights["blacklist"]
+                red_flags.append("Blacklist function present — wallet freezing risk")
 
-        if sim_data.get("blacklist_function"):
-            score += self.weights["blacklist"]
-            red_flags.append("Blacklist function present")
+            # Liquidity analysis
+            liquidity = sim_data.get("liquidity_usd", 0)
 
-        liquidity = sim_data.get("liquidity_usd", 0)
+            if liquidity == 0:
+                score += self.weights["no_liquidity"]
+                red_flags.append("Zero liquidity — no trading possible")
+            elif liquidity < 1000:
+                score += self.weights["low_liquidity"]
+                yellow_flags.append(f"Low liquidity: ${liquidity:,.0f}")
+            elif liquidity >= 10000:
+                green_flags.append(f"Healthy liquidity: ${liquidity:,.0f}")
+                score += self.weights["locked_liquidity"] // 2
 
-        if liquidity == 0:
-            score += self.weights["no_liquidity"]
-            red_flags.append("Zero liquidity")
+            # Liquidity lock
+            if sim_data.get("liquidity_locked"):
+                score += self.weights["locked_liquidity"]
+                green_flags.append("Liquidity is locked")
+            else:
+                if liquidity > 0:
+                    yellow_flags.append("Liquidity is unlocked — rug pull possible")
 
-        elif liquidity < 1000:
-            score += self.weights["low_liquidity"]
-            yellow_flags.append(f"Low liquidity: ${liquidity:,.0f}")
+            # Tax analysis
+            buy_tax = sim_data.get("buy_tax", 0)
+            sell_tax = sim_data.get("sell_tax", 0)
 
-        elif liquidity >= 10000:
-            green_flags.append(f"Healthy liquidity: ${liquidity:,.0f}")
+            if sell_tax > 10 or buy_tax > 10:
+                score += self.weights["high_tax"]
+                yellow_flags.append(f"High taxes: {buy_tax}% buy / {sell_tax}% sell")
+            elif sell_tax > 5 or buy_tax > 5:
+                yellow_flags.append(f"Moderate taxes: {buy_tax}% buy / {sell_tax}% sell")
 
-        if sim_data.get("liquidity_locked"):
-            score += self.weights["locked_liquidity"]
-            green_flags.append("Liquidity locked")
+            # Ownership
+            if sim_data.get("owner_renounced"):
+                score += self.weights["renounced"]
+                green_flags.append("Ownership renounced — contract is immutable")
+            else:
+                yellow_flags.append("Ownership not renounced — dev retains control")
 
-        buy_tax = sim_data.get("buy_tax", 0)
-        sell_tax = sim_data.get("sell_tax", 0)
+            # Simulation confidence
+            confidence = sim_data.get("simulation_confidence", 0.5)
+            if confidence >= 0.8:
+                score += self.weights["high_confidence"]
+                green_flags.append("High simulation confidence")
+            elif confidence < 0.4:
+                yellow_flags.append("Low simulation confidence — data may be incomplete")
 
-        if sell_tax > 10 or buy_tax > 10:
-            score += self.weights["high_tax"]
-            yellow_flags.append(f"High taxes: {buy_tax}%/{sell_tax}%")
+            # Randomized additional checks (simulated deeper analysis)
+            if random.random() < 0.3:
+                red_flags.append(random.choice([
+                    "Contract is unverified on explorer",
+                    "Deployer wallet is brand new — no history",
+                    "Top holder owns over 50% of supply",
+                    "No social media presence detected",
+                ]))
+                score += self.weights["unverified"]
 
-        if sim_data.get("owner_renounced"):
-            score += self.weights["renounced"]
-            green_flags.append("Ownership renounced")
+            if random.random() < 0.4:
+                green_flags.append(random.choice([
+                    "Contract is verified on explorer",
+                    "Healthy holder distribution",
+                    "Active social media detected",
+                    "Previous successful projects by same dev",
+                ]))
 
-        if random.random() < 0.3:
-            red_flags.append(random.choice([
-                "Contract is unverified",
-                "Owner wallet is brand new",
-                "Top holder owns over 50%",
-            ]))
+            score = max(0, min(100, score))
 
-        if random.random() < 0.4:
-            green_flags.append(random.choice([
-                "Contract is verified",
-                "Healthy holder distribution",
-                "Active socials detected",
-            ]))
+            if score >= 70:
+                risk_level = "HIGH_RISK"
+            elif score >= 40:
+                risk_level = "WARNING"
+            else:
+                risk_level = "SAFE"
 
-        score = max(0, min(100, score))
+            analysis = AnalysisResult(
+                token_address=token_address,
+                chain=chain,
+                risk_score=score,
+                risk_level=risk_level,
+                flags=red_flags + yellow_flags + green_flags,
+                red_flags=red_flags,
+                yellow_flags=yellow_flags,
+                green_flags=green_flags,
+                reasoning="",
+                timestamp=time.time()
+            )
 
-        if score >= 70:
-            risk_level = "HIGH_RISK"
+            self.analysis_cache[token_address] = analysis
 
-        elif score >= 40:
-            risk_level = "WARNING"
+            # Publish to eventBus
+            try:
+                self.publish("ANALYSIS_COMPLETE", analysis.__dict__)
+            except Exception as e:
+                print(f"⚠️ {self.name}: Publish failed: {e}")
 
-        else:
-            risk_level = "SAFE"
+            # ORCHESTRATOR HOOK
+            if hasattr(self, 'on_analysis_complete') and callable(self.on_analysis_complete):
+                try:
+                    self.on_analysis_complete(analysis.__dict__)
+                except Exception as e:
+                    print(f"⚠️ {self.name}: Orchestrator hook failed: {e}")
 
-        analysis = AnalysisResult(
-            token_address=token_address,
-            chain=chain,
-            risk_score=score,
-            risk_level=risk_level,
-            flags=red_flags + yellow_flags + green_flags,
-            red_flags=red_flags,
-            yellow_flags=yellow_flags,
-            green_flags=green_flags,
-            reasoning="",
-            timestamp=time.time()
-        )
+            # Generate spoken report
+            report = await self._generate_vega_message(analysis, sim_data, symbol)
+            await self._speak(report, "analysis_report")
 
-        self.analysis_cache[token_address] = analysis
+        except asyncio.TimeoutError:
+            print(f"⚠️ {self.name}: Analysis timed out")
+        except Exception as e:
+            print(f"❌ {self.name}: Fatal analysis error: {e}")
 
-        # Publish to eventBus
-        self.publish("ANALYSIS_COMPLETE", analysis.__dict__)
+    def stop(self):
+        """Cancel any pending analysis tasks."""
+        print(f"🛑 {self.name}: Cancelling pending tasks...")
+        for t in self._tasks:
+            t.cancel()
+        print(f"✅ {self.name}: Stopped.")
 
-        # ORCHESTRATOR HOOK
-        if hasattr(self, 'on_analysis_complete') and callable(self.on_analysis_complete):
-            self.on_analysis_complete(analysis.__dict__)
 
-        # Generate spoken report
-        report = await self._generate_vega_message(
-            analysis,
-            sim_data,
-            symbol
-        )
-
-        await self._speak(report, "analysis_report")
-
+# ─────────────────────────────────────────────────────────────
+# Main Runner
+# ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-
     def test_publish(event_type, data):
-
-        if event_type == "AGENT_MESSAGE":
-            print(f"\n💬 {data['agent']}: {data['message']}")
-
-        else:
-            print(f"\n📡 {event_type}")
+        try:
+            if event_type == "AGENT_MESSAGE":
+                print(f"\n💬 {data['agent']}: {data['message']}")
+            else:
+                print(f"\n📡 {event_type}: {data}")
+        except Exception as e:
+            print(f"⚠️ Publish error: {e}")
 
     analyzer = AnalyzerAgent(test_publish)
 
@@ -375,7 +461,14 @@ if __name__ == "__main__":
         "liquidity_locked": True,
         "buy_tax": 2,
         "sell_tax": 5,
-        "owner_renounced": True
+        "owner_renounced": True,
+        "simulation_confidence": 0.75
     }
 
-    asyncio.run(analyzer._deep_analysis(test_sim))
+    try:
+        asyncio.run(analyzer._deep_analysis(test_sim))
+    except KeyboardInterrupt:
+        analyzer.stop()
+        print("\n🛑 Vega stopped.")
+    except Exception as e:
+        print(f"❌ Fatal error: {e}")
