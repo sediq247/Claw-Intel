@@ -14,7 +14,7 @@ from collections import deque
 
 import aiohttp
 
-NODE_URL = os.getenv("CLAWINTEL_NODE_URL", "http://localhost:3000")
+NODE_URL = os.getenv("CLAWINTEL_NODE_URL", "https://clawintel.up.railway.app")
 PUBLISH_ENDPOINT = f"{NODE_URL}/api/publish"
 HEALTH_ENDPOINT = f"{NODE_URL}/health"
 

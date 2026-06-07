@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from bson import ObjectId
+from bson.errors import InvalidId
 
 MONGO_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017/clawintel")
 DB_NAME = os.getenv("MONGODB_DB_NAME", "clawintel")
@@ -29,6 +30,7 @@ class Database:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialized = False
+            cls._instance.client = None
         return cls._instance
 
     async def init(self):
@@ -49,23 +51,26 @@ class Database:
 
     async def _create_indexes(self):
         """Create indexes for common queries."""
-        await self.db.tokens.create_index("token_address", unique=True)
-        await self.db.tokens.create_index("chain")
-        await self.db.tokens.create_index("timestamp", -1)
+        try:
+            await self.db.tokens.create_index("token_address", unique=True)
+            await self.db.tokens.create_index("chain")
+            await self.db.tokens.create_index([("timestamp", -1)])
 
-        await self.db.creators.create_index("address", unique=True)
-        await self.db.creators.create_index("reputation_score", -1)
+            await self.db.creators.create_index("address", unique=True)
+            await self.db.creators.create_index([("reputation_score", -1)])
 
-        await self.db.investigations.create_index("token_address")
-        await self.db.investigations.create_index("timestamp", -1)
-        await self.db.investigations.create_index("verdict")
+            await self.db.investigations.create_index("token_address")
+            await self.db.investigations.create_index([("timestamp", -1)])
+            await self.db.investigations.create_index("verdict")
 
-        await self.db.agent_messages.create_index("timestamp", -1)
-        await self.db.agent_messages.create_index("investigation_id")
+            await self.db.agent_messages.create_index([("timestamp", -1)])
+            await self.db.agent_messages.create_index("investigation_id")
 
-        await self.db.market_snapshots.create_index("timestamp", -1)
+            await self.db.market_snapshots.create_index([("timestamp", -1)])
 
-        print("[db] ✅ Indexes created")
+            print("[db] ✅ Indexes created")
+        except Exception as e:
+            print(f"[db] ⚠️ Index creation warning (may already exist): {e}")
 
     # ── TOKENS ──
     async def save_token(self, token_data: dict) -> str:
@@ -78,7 +83,7 @@ class Database:
             {"$set": token_data, "$setOnInsert": {"created_at": datetime.now(timezone.utc)}},
             upsert=True
         )
-        return str(result.upserted_id or result.matched_count)
+        return str(result.upserted_id or token_data["token_address"])
 
     async def get_token(self, token_address: str) -> Optional[dict]:
         return await self.db.tokens.find_one({"token_address": token_address})
@@ -103,7 +108,10 @@ class Database:
         return str(result.inserted_id)
 
     async def get_investigation(self, investigation_id: str) -> Optional[dict]:
-        return await self.db.investigations.find_one({"_id": ObjectId(investigation_id)})
+        try:
+            return await self.db.investigations.find_one({"_id": ObjectId(investigation_id)})
+        except InvalidId:
+            return None
 
     async def get_investigations_by_token(self, token_address: str) -> List[dict]:
         cursor = self.db.investigations.find({"token_address": token_address}).sort("timestamp", -1)
@@ -126,7 +134,7 @@ class Database:
             {"$set": creator_data, "$setOnInsert": {"created_at": datetime.now(timezone.utc)}},
             upsert=True
         )
-        return str(result.upserted_id or result.matched_count)
+        return str(result.upserted_id or creator_data["address"])
 
     async def get_creator(self, address: str) -> Optional[dict]:
         return await self.db.creators.find_one({"address": address})
@@ -154,9 +162,8 @@ class Database:
         query = {}
         if investigation_id:
             query["investigation_id"] = investigation_id
-        cursor = self.db.agent_messages.find(query).sort("timestamp", -1).limit(limit)
-        messages = await cursor.to_list(length=limit)
-        return list(reversed(messages))  # Oldest first
+        cursor = self.db.agent_messages.find(query).sort("timestamp", 1).limit(limit)
+        return await cursor.to_list(length=limit)
 
     # ── MARKET SNAPSHOTS ──
     async def save_market_snapshot(self, snapshot: dict) -> str:
@@ -188,7 +195,7 @@ class Database:
 
     async def close(self):
         if self.client:
-            self.client.close()
+            await self.client.close()
             print("[db] ✅ Connection closed")
 
 
