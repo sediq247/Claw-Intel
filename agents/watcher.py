@@ -1,26 +1,7 @@
 #!/usr/bin/env python3
 """
-🔭 WATCHER AGENT — Nova v4
+WATCHER AGENT — Nova v4
 "The Scout" — Multi-chain token detection engine.
-
-ARCHITECTURE:
-  • SURVEILLANCE = RPC-only (EVM factory events via web3.py, Solana Raydium via RPC)
-  • INVESTIGATION = DexScreener API (only when user pastes a token address)
-
-SUPPORTED CHAINS (8 total):
-  EVM:  ethereum, bsc, base, arbitrum, optimism, polygon, avalanche
-  Non-EVM: solana
-
-FREE RPC SOURCES (verified 2026 — no API key, no signup):
-  • PublicNode (Allnodes) — 78 chains, 6.7B req/day, privacy-first
-  • Ankr Public — 40+ chains, 20 RPS, no signup
-  • Chain-native — free but heavily rate-limited
-  • Pocket Network / Grove — free per-IP public endpoints
-
-DEXSCREENER INVESTIGATION:
-  Endpoint: /tokens/v1/{chainId}/{tokenAddresses}
-  Rate limit: 300 req/min (no API key needed)
-  Chain slugs: ethereum, bsc, base, arbitrum, polygon, avalanche, optimism, solana
 """
 
 import asyncio
@@ -83,10 +64,6 @@ class TokenEvent:
         return json.dumps(asdict(self), default=str)
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Watcher Agent — Nova v4
-# ═══════════════════════════════════════════════════════════════════
-
 class WatcherAgent:
     """
     Nova — The Scout
@@ -95,63 +72,57 @@ class WatcherAgent:
     Uses verified FREE public RPCs (no API key, no signup required).
     """
 
-    # ── Free RPC Endpoint Pools (verified 2026) ──
-    # Priority order: PublicNode → Ankr → Chain Native
-    # All are FREE with no API key and no signup required.
     RPC_POOLS = {
         "ethereum": [
-            "https://ethereum-rpc.publicnode.com",      # PublicNode (Allnodes) — 78 chains, 6.7B req/day
-            "https://rpc.ankr.com/eth",                  # Ankr Public — 20 RPS, no signup
-            "https://eth.llamarpc.com",                  # LlamaNodes
-            "https://eth.rpc.grove.city",                # Pocket Network / Grove
+            "https://ethereum-rpc.publicnode.com",      
+            "https://rpc.ankr.com/eth",                  
+            "https://eth.llamarpc.com",                  
+            "https://eth.rpc.grove.city",                
         ],
         "bsc": [
-            "https://bsc-rpc.publicnode.com",            # PublicNode
-            "https://rpc.ankr.com/bsc",                  # Ankr
-            "https://bsc-dataseed.binance.org/",         # Chain native (heavily rate-limited)
-            "https://bsc.rpc.grove.city",                # Pocket / Grove
+            "https://bsc-rpc.publicnode.com",           
+            "https://rpc.ankr.com/bsc",                  
+            "https://bsc-dataseed.binance.org/",         
+            "https://bsc.rpc.grove.city",                
         ],
         "base": [
-            "https://base-rpc.publicnode.com",           # PublicNode
-            "https://rpc.ankr.com/base",                 # Ankr
-            "https://mainnet.base.org/",                 # Chain native
-            "https://base.rpc.grove.city",               # Pocket / Grove
+            "https://base-rpc.publicnode.com",           
+            "https://rpc.ankr.com/base",                 
+            "https://mainnet.base.org/",                 
+            "https://base.rpc.grove.city",               
         ],
         "arbitrum": [
-            "https://arbitrum-one-rpc.publicnode.com",   # PublicNode
-            "https://rpc.ankr.com/arbitrum",             # Ankr
-            "https://arb1.arbitrum.io/rpc",              # Chain native
-            "https://arbitrum.rpc.grove.city",           # Pocket / Grove
+            "https://arbitrum-one-rpc.publicnode.com",
+            "https://rpc.ankr.com/arbitrum",         
+            "https://arb1.arbitrum.io/rpc", 
+            "https://arbitrum.rpc.grove.city",
         ],
         "optimism": [
-            "https://optimism-rpc.publicnode.com",       # PublicNode
-            "https://rpc.ankr.com/optimism",             # Ankr
-            "https://mainnet.optimism.io/",              # Chain native
-            "https://optimism.rpc.grove.city",           # Pocket / Grove
+            "https://optimism-rpc.publicnode.com",
+            "https://rpc.ankr.com/optimism",            
+            "https://mainnet.optimism.io/",              
+            "https://optimism.rpc.grove.city",           
         ],
         "polygon": [
-            "https://polygon-bor-rpc.publicnode.com",    # PublicNode
-            "https://rpc.ankr.com/polygon",              # Ankr
-            "https://polygon-rpc.com",                   # Chain native
-            "https://polygon.rpc.grove.city",            # Pocket / Grove
+            "https://polygon-bor-rpc.publicnode.com",  
+            "https://rpc.ankr.com/polygon",         
+            "https://polygon-rpc.com",                   
+            "https://polygon.rpc.grove.city",            
         ],
         "avalanche": [
-            "https://avalanche-c-chain-rpc.publicnode.com",  # PublicNode
-            "https://rpc.ankr.com/avalanche",                # Ankr
-            "https://api.avax.network/ext/bc/C/rpc",       # Chain native
-            "https://avalanche.rpc.grove.city",              # Pocket / Grove
+            "https://avalanche-c-chain-rpc.publicnode.com", 
+            "https://rpc.ankr.com/avalanche",                
+            "https://api.avax.network/ext/bc/C/rpc",      
+            "https://avalanche.rpc.grove.city",              
         ],
         "solana": [
-            "https://solana-rpc.publicnode.com",         # PublicNode
-            "https://rpc.ankr.com/solana",               # Ankr
-            "https://api.mainnet-beta.solana.com",       # Chain native (heavily rate-limited)
-            "https://solana.rpc.grove.city",             # Pocket / Grove
+            "https://solana-rpc.publicnode.com",         
+            "https://rpc.ankr.com/solana",               
+            "https://api.mainnet-beta.solana.com",     
+            "https://solana.rpc.grove.city",             
         ],
     }
 
-    # ── Chain Configurations ──
-    # Factories: Uniswap V2 for most chains, PancakeSwap V2 for BSC
-    # Addresses verified against official docs (2026)
     CHAIN_CONFIG = {
         "ethereum": {
             "factory": "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f",   # Uniswap V2
@@ -194,7 +165,6 @@ class WatcherAgent:
     RAYDIUM_AMM_V4 = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
     SOLANA_DEX_SLUG = "solana"
 
-    # Tokens to ignore in Solana surveillance (stables + wrapped SOL)
     SOLANA_IGNORE_MINTS = {
         "So11111111111111111111111111111111111111112",   # wSOL
         "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC
@@ -202,7 +172,6 @@ class WatcherAgent:
         "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",  # BONK
     }
 
-    # PairCreated event topic (Uniswap V2 / PancakeSwap V2 compatible)
     PAIR_CREATED_TOPIC = (
         "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9"
     )
@@ -220,9 +189,6 @@ class WatcherAgent:
 
         self._init_connections()
 
-    # ─────────────────────────────────────────────────────────────────
-    # Connection Initialization with Fallback
-    # ─────────────────────────────────────────────────────────────────
 
     def _init_connections(self):
         """Try multiple free RPC endpoints per chain, pick the first working one."""
@@ -241,11 +207,13 @@ class WatcherAgent:
                         block_num = w3.eth.block_number
                         if block_num and block_num > 0:
                             self.web3_instances[chain] = w3
-                            print(f"✅ {self.name}: Connected to {chain} via {url.split("/")[2]}")
+                            host = url.split("/")[2]
+                            print(f"✅ {self.name}: Connected to {chain} via {host}")
                             connected = True
                             break
                 except Exception as e:
-                    print(f"⚠️ {self.name}: {chain} endpoint {url.split("/")[2]} failed: {e}")
+                    host = url.split("/")[2]
+                    print(f"⚠️ {self.name}: {chain} endpoint {host} failed: {e}")
                     continue
 
             if not connected:
@@ -265,16 +233,14 @@ class WatcherAgent:
                 with urllib.request.urlopen(req, timeout=10) as resp:
                     if resp.status == 200:
                         self.solana_rpc_url = url
-                        print(f"✅ {self.name}: Connected to solana via {url.split("/")[2]}")
+                        host = url.split("/")[2]
+                        print(f"✅ {self.name}: Connected to solana via {host}")
                         return
             except Exception as e:
-                print(f"⚠️ {self.name}: Solana endpoint {url.split("/")[2]} failed: {e}")
+                host = url.split("/")[2]
+                print(f"⚠️ {self.name}: Solana endpoint {host} failed: {e}")
                 continue
         print(f"❌ {self.name}: All Solana RPC endpoints failed")
-
-    # ─────────────────────────────────────────────────────────────────
-    # Deduplication
-    # ─────────────────────────────────────────────────────────────────
 
     def _track_token(self, token: str) -> bool:
         token = token.lower()
@@ -895,9 +861,6 @@ Requirements:
             return {}
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Standalone test
-# ═══════════════════════════════════════════════════════════════════
 
 async def main():
     def dummy_publish(event_type: str, payload: dict):
