@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """
-🎯 DECISION AGENT — Orion
+🎯 DECISION AGENT — Orion v2.1
 "The Judge" — Makes the final call. Weighs all evidence, delivers the verdict.
 Listens to Atlas, Vega, and Echo. Uses Gemini for natural spoken conversation.
+
+v2.1 FIXES:
+- on_memory_intelligence() now reads 'token_address' (matches memory.py output)
+- Added RUGGER_TAG, HONEYPOT_TAG, SCAMMER_TAG, LEGIT_TAG constants
+- Added pending decision timeout cleanup (memory leak fix)
+- Added on_decision_complete callback for orchestrator
+- Fixed key mismatch: memory.py publishes 'token_address', we now read 'token_address'
 """
 
 import json
@@ -10,7 +17,7 @@ import time
 import os
 import asyncio
 from dataclasses import dataclass, asdict
-from typing import Dict, Callable, Any, Optional
+from typing import Dict, Callable, Any, Optional, List
 from enum import Enum
 from dotenv import load_dotenv
 try:
@@ -85,7 +92,24 @@ class DecisionAgent:
     Orion — The Judge
     Makes the final call. Weighs all evidence, delivers the verdict.
     Listens to Atlas, Vega, and Echo.
+
+    v2.1 FIXES:
+    - Tag constants added (were missing, causing crashes)
+    - Key fix: on_memory_intelligence reads 'token_address' to match memory.py
+    - Pending decision expiry prevents memory leaks
+    - on_decision_complete callback for orchestrator state management
     """
+
+    # TAG CONSTANTS — must match MemoryAgent tags
+    RUGGER_TAG = "repeat_rugger"
+    HONEYPOT_TAG = "honeypot_dev"
+    SCAMMER_TAG = "known_scammer"
+    LEGIT_TAG = "legit_builder"
+    RAPID_TAG = "rapid_launcher"
+    NEWBIE_TAG = "new_wallet"
+
+    # Pending decision expiry (seconds) — prevent memory leak
+    PENDING_DECISION_TIMEOUT = 300  # 5 minutes
 
     def __init__(self, event_bus_publish: Callable[[str, dict], None]):
         self.publish = event_bus_publish
@@ -103,6 +127,10 @@ class DecisionAgent:
         }
 
         self.pending_decisions: Dict[str, dict] = {}
+        self._pending_timestamps: Dict[str, float] = {}  # Track when each pending was created
+
+        # Callback for orchestrator — set by orchestrator after init
+        self.on_decision_complete: Optional[Callable] = None
 
     def on_simulation_complete(self, sim_data: dict):
         """React to Atlas's simulation results."""
@@ -111,7 +139,9 @@ class DecisionAgent:
             if not token:
                 print(f"⚠️ {self.name}: Simulation data missing token_address")
                 return
+            self._cleanup_expired_pending()
             self.pending_decisions.setdefault(token, {})["simulation"] = sim_data
+            self._pending_timestamps[token] = time.time()
             self._try_decide(token)
         except Exception as e:
             print(f"⚠️ {self.name}: Error handling simulation: {e}")
@@ -123,22 +153,44 @@ class DecisionAgent:
             if not token:
                 print(f"⚠️ {self.name}: Analysis data missing token_address")
                 return
+            self._cleanup_expired_pending()
             self.pending_decisions.setdefault(token, {})["analysis"] = analysis_data
+            self._pending_timestamps[token] = time.time()
             self._try_decide(token)
         except Exception as e:
             print(f"⚠️ {self.name}: Error handling analysis: {e}")
 
     def on_memory_intelligence(self, memory_data: dict):
-        """React to Echo's memory intelligence."""
+        """
+        React to Echo's memory intelligence.
+
+        v2.1 FIX: memory.py publishes 'token_address', so we read that.
+        Falls back to 'token' for backward compatibility.
+        """
         try:
-            token = memory_data.get("token_address")
+            # v2.1: memory.py publishes 'token_address'
+            token = memory_data.get("token_address") or memory_data.get("token")
             if not token:
-                print(f"⚠️ {self.name}: Memory data missing token_address")
+                print(f"⚠️ {self.name}: Memory data missing token_address/token")
                 return
+            self._cleanup_expired_pending()
             self.pending_decisions.setdefault(token, {})["memory"] = memory_data
+            self._pending_timestamps[token] = time.time()
             self._try_decide(token)
         except Exception as e:
             print(f"⚠️ {self.name}: Error handling memory: {e}")
+
+    def _cleanup_expired_pending(self):
+        """Remove pending decisions that have timed out to prevent memory leaks."""
+        now = time.time()
+        expired = [
+            token for token, ts in self._pending_timestamps.items()
+            if now - ts > self.PENDING_DECISION_TIMEOUT
+        ]
+        for token in expired:
+            self.pending_decisions.pop(token, None)
+            self._pending_timestamps.pop(token, None)
+            print(f"🧹 {self.name}: Cleaned up expired pending decision for {token[:12]}...")
 
     def _try_decide(self, token: str):
         """Trigger decision only when we have minimum required data."""
@@ -234,7 +286,7 @@ FINAL VERDICT:
 - Recommended Action: {result.action}
 
 Requirements:
-1. Acknowledge your team's work naturally (Atlas found X, Vega flagged Y, Echo revealed Z)
+1. Acknowledge your team naturally (Atlas found X, Vega flagged Y, Echo revealed Z)
 2. Walk through the logic that led to your verdict
 3. If HIGH_RISK: be firm and clear — this is a no-go
 4. If WARNING: be cautious — more data needed, trade carefully
@@ -290,7 +342,7 @@ Requirements:
 
         if verdict == Verdict.HIGH_RISK.value:
             return (
-                f"I've reviewed the evidence on {symbol}. Atlas confirmed blocked sells, "
+                f"I have reviewed the evidence on {symbol}. Atlas confirmed blocked sells, "
                 f"Vega scored it {analysis.get('risk_score', 'N/A')}/100, and Echo's archives "
                 f"raise red flags. Verdict: HIGH RISK ({confidence:.0f}% confidence). "
                 f"Action: AVOID. Do not interact."
@@ -343,7 +395,13 @@ Requirements:
             profile = (memory or {}).get("profile", {}) or {}
             creator_rep = profile.get("reputation_score", 50)
             tags = profile.get("tags", [])
-            is_scammer = self.RUGGER_TAG in tags or self.HONEYPOT_TAG in tags
+
+            # v2.1: Check all tag constants
+            is_scammer = (
+                self.RUGGER_TAG in tags or 
+                self.HONEYPOT_TAG in tags or 
+                self.SCAMMER_TAG in tags
+            )
 
             memory_score = 100 - creator_rep
             if is_scammer:
@@ -441,8 +499,16 @@ Requirements:
                 except Exception as e:
                     print(f"⚠️ {self.name}: Publish verified failed: {e}")
 
+            # Notify orchestrator that decision is complete
+            if self.on_decision_complete and callable(self.on_decision_complete):
+                try:
+                    self.on_decision_complete(result.__dict__)
+                except Exception as e:
+                    print(f"⚠️ {self.name}: on_decision_complete callback failed: {e}")
+
             # Clean up pending decision
             self.pending_decisions.pop(token, None)
+            self._pending_timestamps.pop(token, None)
 
         except Exception as e:
             print(f"❌ {self.name}: Fatal decision error: {e}")
@@ -500,7 +566,7 @@ if __name__ == "__main__":
             "green_flags": ["Healthy liquidity: $15,000", "Ownership renounced"]
         },
         "memory": {
-            "token_address": test_token,
+            "token_address": test_token,  # v2.1: matches memory.py output
             "chain": "bsc",
             "symbol": "TEST",
             "creator": "0xabcdef1234567890abcdef1234567890abcdef12",
@@ -512,6 +578,7 @@ if __name__ == "__main__":
             "is_new": False
         }
     }
+    orion._pending_timestamps[test_token] = time.time()
 
     try:
         asyncio.run(orion._make_decision(test_token, orion.pending_decisions[test_token]))

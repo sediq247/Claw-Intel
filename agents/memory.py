@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-🧠 MEMORY AGENT — Echo
+ MEMORY AGENT — Echo
 "The Archivist" — Remembers every creator, every token, every scam pattern.
 Listens to everyone, builds intelligence over time, calls out repeat offenders.
 Uses Gemini for natural spoken conversation.

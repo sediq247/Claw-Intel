@@ -3,7 +3,7 @@
 🧰 utils/helpers.py
 The Utility Toolbox.
 Shared helper functions for string normalization, timestamp conversion,
-address validation, currency formatting, and large number display.
+address validation, currency formatting, and large number display;
 """
 
 import re
@@ -20,11 +20,12 @@ import hashlib
 def normalize_symbol(symbol: str) -> str:
     """
     Standardize token symbol for consistent display.
-    Uppercase, strip whitespace, remove special chars.
+    Uppercase, strip whitespace, remove special chars EXCEPT dots.
+    Preserves dots for wrapped tokens like USDC.e
     """
     if not symbol:
         return "???"
-    cleaned = re.sub(r'[^a-zA-Z0-9]', '', symbol.strip())
+    cleaned = re.sub(r'[^a-zA-Z0-9.]', '', symbol.strip())
     return cleaned.upper()[:12] if cleaned else "???"
 
 
@@ -67,13 +68,13 @@ def unix_to_human(timestamp: Union[int, float]) -> str:
     """
     if not timestamp:
         return "unknown"
-    
+
     now = datetime.now(timezone.utc)
     dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
     diff = now - dt
-    
+
     seconds = int(diff.total_seconds())
-    
+
     if seconds < 60:
         return "just now"
     elif seconds < 3600:
@@ -132,7 +133,6 @@ def is_valid_solana_address(address: str) -> bool:
         return False
     if len(address) < 32 or len(address) > 44:
         return False
-    # Basic base58 check (only contains base58 chars)
     base58_chars = set('123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz')
     return set(address).issubset(base58_chars)
 
@@ -162,6 +162,10 @@ def checksum_address(address: str) -> str:
         return address
 
 
+# ═══════════════════════════════════════════════════
+# NUMBER FORMATTING
+# ═══════════════════════════════════════════════════
+
 def format_currency(value: Union[int, float, Decimal, str], 
                      symbol: str = "$", 
                      decimals: int = 2) -> str:
@@ -171,23 +175,23 @@ def format_currency(value: Union[int, float, Decimal, str],
     """
     if value is None:
         return f"{symbol}0.00"
-    
+
     try:
         num = Decimal(str(value))
     except:
         return f"{symbol}{value}"
-    
+
     abs_num = abs(num)
-    
+
     # Large numbers: use K, M, B, T
-    if abs_num >= 1_000_000_000_000:
-        return f"{symbol}{num / Decimal('1_000_000_000_000'):.{decimals}f}T"
-    elif abs_num >= 1_000_000_000:
-        return f"{symbol}{num / Decimal('1_000_000_000'):.{decimals}f}B"
-    elif abs_num >= 1_000_000:
-        return f"{symbol}{num / Decimal('1_000_000'):.{decimals}f}M"
-    elif abs_num >= 1_000:
-        return f"{symbol}{num / Decimal('1_000'):.{decimals}f}K"
+    if abs_num >= 1000000000000:
+        return f"{symbol}{num / Decimal('1000000000000'):.{decimals}f}T"
+    elif abs_num >= 1000000000:
+        return f"{symbol}{num / Decimal('1000000000'):.{decimals}f}B"
+    elif abs_num >= 1000000:
+        return f"{symbol}{num / Decimal('1000000'):.{decimals}f}M"
+    elif abs_num >= 1000:
+        return f"{symbol}{num / Decimal('1000'):.{decimals}f}K"
     elif abs_num >= 1:
         return f"{symbol}{num:,.{decimals}f}"
     elif abs_num >= 0.01:
@@ -204,22 +208,22 @@ def format_large_number(value: Union[int, float, Decimal, str]) -> str:
     """
     if value is None:
         return "0"
-    
+
     try:
         num = Decimal(str(value))
     except:
         return str(value)
-    
+
     abs_num = abs(num)
-    
-    if abs_num >= 1_000_000_000_000:
-        return f"{num / Decimal('1_000_000_000_000'):.2f}T"
-    elif abs_num >= 1_000_000_000:
-        return f"{num / Decimal('1_000_000_000'):.2f}B"
-    elif abs_num >= 1_000_000:
-        return f"{num / Decimal('1_000_000'):.2f}M"
-    elif abs_num >= 1_000:
-        return f"{num / Decimal('1_000'):.2f}K"
+
+    if abs_num >= 1000000000000:
+        return f"{num / Decimal('1000000000000'):.2f}T"
+    elif abs_num >= 1000000000:
+        return f"{num / Decimal('1000000000000'):.2f}B"
+    elif abs_num >= 1000000:
+        return f"{num / Decimal('1000000'):.2f}M"
+    elif abs_num >= 1000:
+        return f"{num / Decimal('1000'):.2f}K"
     else:
         return f"{num:,.0f}"
 
@@ -232,12 +236,12 @@ def format_percentage(value: Union[int, float, Decimal, str],
     """
     if value is None:
         return "0.00%"
-    
+
     try:
         num = Decimal(str(value))
     except:
         return f"{value}%"
-    
+
     sign = "+" if num > 0 and include_sign else ""
     return f"{sign}{num:.2f}%"
 
@@ -249,14 +253,14 @@ def format_price(value: Union[int, float, Decimal, str]) -> str:
     """
     if value is None:
         return "$0.00"
-    
+
     try:
         num = Decimal(str(value))
     except:
         return f"${value}"
-    
+
     abs_num = abs(num)
-    
+
     if abs_num >= 1:
         return f"${num:,.2f}"
     elif abs_num >= 0.01:
@@ -265,13 +269,6 @@ def format_price(value: Union[int, float, Decimal, str]) -> str:
         return f"${num:.6f}"
     else:
         return f"${num:.8f}"
-
-
-def format_liquidity(value: Union[int, float, Decimal, str]) -> str:
-    """
-    Format liquidity value. Same as currency but with $ prefix.
-    """
-    return format_currency(value, symbol="$", decimals=0)
 
 
 # ═══════════════════════════════════════════════════
@@ -293,67 +290,6 @@ def get_chain_display_name(chain: str) -> str:
     return chain_map.get(chain.lower(), chain.upper())
 
 
-def get_chain_color(chain: str) -> str:
-    """Get color code for chain (for UI)."""
-    colors = {
-        'bsc': '#F0B90B',
-        'ethereum': '#627EEA',
-        'solana': '#14F195',
-        'base': '#0052FF',
-        'mantle': '#000000',
-    }
-    return colors.get(chain.lower(), '#888888')
-
-
-# ═══════════════════════════════════════════════════
-# HASH / ID UTILITIES
-# ═══════════════════════════════════════════════════
-
-def generate_token_id(token_address: str, chain: str) -> str:
-    """Generate unique token ID from address + chain."""
-    raw = f"{chain.lower()}:{token_address.lower()}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
-
-
-def generate_case_id() -> str:
-    """Generate unique investigation case ID."""
-    return hashlib.sha256(str(datetime.now().timestamp()).encode()).hexdigest()[:12].upper()
-
-
-# ═══════════════════════════════════════════════════
-# RISK COLOR UTILITIES
-# ═══════════════════════════════════════════════════
-
-def get_risk_color(risk_level: str) -> str:
-    """Get color for risk level."""
-    colors = {
-        'SAFE': '#00C853',
-        'WARNING': '#FFB300',
-        'HIGH_RISK': '#FF1744',
-    }
-    return colors.get(risk_level.upper(), '#888888')
-
-
-def get_risk_emoji(risk_level: str) -> str:
-    """Get emoji for risk level."""
-    emojis = {
-        'SAFE': '✅',
-        'WARNING': '⚠️',
-        'HIGH_RISK': '🚨',
-    }
-    return emojis.get(risk_level.upper(), '❓')
-
-
-def get_risk_badge_class(risk_level: str) -> str:
-    """Get CSS class for risk badge."""
-    classes = {
-        'SAFE': 'badge-safe',
-        'WARNING': 'badge-warning',
-        'HIGH_RISK': 'badge-danger',
-    }
-    return classes.get(risk_level.upper(), 'badge-neutral')
-
-
 # ═══════════════════════════════════════════════════
 # DEXSCREENER / COINGECKO DATA NORMALIZATION
 # ═══════════════════════════════════════════════════
@@ -364,7 +300,7 @@ def normalize_dexscreener_token(data: dict) -> dict:
     """
     if not data:
         return {}
-    
+
     return {
         'address': data.get('tokenAddress') or data.get('baseToken', {}).get('address'),
         'symbol': normalize_symbol(data.get('symbol') or data.get('baseToken', {}).get('symbol')),
@@ -387,7 +323,7 @@ def normalize_coingecko_token(data: dict) -> dict:
     """
     if not data:
         return {}
-    
+
     return {
         'id': data.get('id'),
         'symbol': normalize_symbol(data.get('symbol')),
@@ -405,52 +341,17 @@ def normalize_coingecko_token(data: dict) -> dict:
 
 
 # ═══════════════════════════════════════════════════
-# AGENT MESSAGE FORMATTING
-# ═══════════════════════════════════════════════════
-
-def format_agent_message(agent: str, message: str, msg_type: str = "chat") -> dict:
-    """
-    Format agent message for frontend consumption.
-    """
-    agent_colors = {
-        'Nova': '#00E5FF',
-        'Atlas': '#00C853',
-        'Vega': '#D500F9',
-        'Echo': '#FFD600',
-        'Orion': '#FF1744',
-    }
-    
-    agent_emojis = {
-        'Nova': '👁',
-        'Atlas': '🧪',
-        'Vega': '⚖️',
-        'Echo': '🧠',
-        'Orion': '🎯',
-    }
-    
-    return {
-        'agent': agent,
-        'message': message,
-        'type': msg_type,
-        'color': agent_colors.get(agent, '#FFFFFF'),
-        'emoji': agent_emojis.get(agent, '🤖'),
-        'timestamp': datetime.now(timezone.utc).timestamp(),
-        'time_display': unix_to_human(datetime.now(timezone.utc).timestamp()),
-    }
-
-
-# ═══════════════════════════════════════════════════
 # CACHE UTILITIES
 # ═══════════════════════════════════════════════════
 
 class SimpleCache:
     """Simple in-memory cache with TTL."""
-    
+
     def __init__(self, default_ttl: int = 300):
         self.cache = {}
         self.default_ttl = default_ttl
-    
-    def get(self, key: str) -> Optional[any]:
+
+    def get(self, key: str):
         if key not in self.cache:
             return None
         entry = self.cache[key]
@@ -458,20 +359,20 @@ class SimpleCache:
             del self.cache[key]
             return None
         return entry['value']
-    
-    def set(self, key: str, value: any, ttl: Optional[int] = None):
+
+    def set(self, key: str, value, ttl: Optional[int] = None):
         ttl = ttl or self.default_ttl
         self.cache[key] = {
             'value': value,
             'expires': datetime.now(timezone.utc).timestamp() + ttl,
         }
-    
+
     def delete(self, key: str):
         self.cache.pop(key, None)
-    
+
     def clear(self):
         self.cache.clear()
-    
+
     def size(self) -> int:
         return len(self.cache)
 
@@ -485,17 +386,9 @@ __all__ = [
     # Address
     'is_valid_evm_address', 'is_valid_solana_address', 'validate_address', 'checksum_address',
     # Numbers
-    'format_currency', 'format_large_number', 'format_percentage', 'format_price', 'format_liquidity',
+    'format_currency', 'format_large_number', 'format_percentage', 'format_price',
     # Chain
-    'get_chain_display_name', 'get_chain_color',
-    # Hash
-    'generate_token_id', 'generate_case_id',
-    # Risk
-    'get_risk_color', 'get_risk_emoji', 'get_risk_badge_class',
-    # Normalization
+    'get_chain_display_name',
     'normalize_dexscreener_token', 'normalize_coingecko_token',
-    # Message
-    'format_agent_message',
-    # Cache
     'SimpleCache',
 ]

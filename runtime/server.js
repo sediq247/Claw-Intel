@@ -1,8 +1,7 @@
 /**
 * 🌐 runtime/server.js
 * ClawIntel Production Backend
-*/
-
+**/
 import express from 'express';
 import { createServer } from 'http';
 import cors from 'cors';
@@ -34,6 +33,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = process.env.PORT || 3000;
+const PYTHON_API_URL = process.env.PYTHON_API_URL || 'http://localhost:8081';
 
 const app = express();
 const server = createServer(app);
@@ -339,10 +339,10 @@ app.get('/api/markets/:category', async (req, res) => {
 });
 
 /* ════════════════════════════════════════
-   MANUAL INVESTIGATION
+   MANUAL INVESTIGATION — FORENSIC LAB
 ════════════════════════════════════════ */
 
-app.post('/api/analyze', (req, res) => {
+app.post('/api/analyze', async (req, res) => {
   try {
     const { tokenAddress, chain } = req.body;
 
@@ -365,21 +365,50 @@ app.post('/api/analyze', (req, res) => {
       !validChains.includes(chain.toLowerCase())
     ) {
       return res.status(400).json({
-        error: `Invalid chain`,
+        error: `Invalid chain. Supported: ${validChains.join(', ')}`,
       });
     }
 
+    const normalizedChain = chain.toLowerCase();
+
+    // Publish to eventBus for WebSocket broadcast
     eventBus.publish('MANUAL_INVESTIGATE', {
       token_address: tokenAddress,
-      chain: chain.toLowerCase(),
+      chain: normalizedChain,
       triggered_by: 'user',
       timestamp: Date.now(),
     });
 
+    // FORWARD to Python orchestrator via HTTP
+    // This is the critical fix — previously Python never received this
+    try {
+      const fetch = (await import('node-fetch')).default;
+      const pyResponse = await fetch(`${PYTHON_API_URL}/api/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tokenAddress: tokenAddress,
+          chain: normalizedChain,
+        }),
+        timeout: 5000,
+      });
+
+      if (pyResponse.ok) {
+        const pyData = await pyResponse.json();
+        console.log(`[forensic] Python acknowledged: ${pyData.status}`);
+      } else {
+        console.warn(`[forensic] Python returned ${pyResponse.status}`);
+      }
+    } catch (pyErr) {
+      console.warn(`[forensic] Could not reach Python API: ${pyErr.message}`);
+      // Don't fail the request — the eventBus publish already happened
+      // and WebSocket clients will see the investigation start
+    }
+
     res.json({
       status: 'investigation_started',
       tokenAddress,
-      chain,
+      chain: normalizedChain,
       message:
         'Agents are investigating. Watch the live feed.',
     });
@@ -431,7 +460,7 @@ app.use((req, res) => {
 ════════════════════════════════════════ */
 
 async function boot() {
-  console.log('\n🚀 CLAWINTEL BOOT');
+  console.log('\n🚀 CLAWINTEL BOOT v2');
   console.log('═══════════════════════════════════════');
 
   /**
@@ -552,6 +581,16 @@ async function boot() {
       }
     }
   );
+
+  // Subscribe to MANUAL_INVESTIGATE for logging
+  eventBus.subscribe('MANUAL_INVESTIGATE', payload => {
+    auditLogger.logEvent(
+      'MANUAL_INVESTIGATE',
+      payload,
+      'user'
+    );
+    console.log(`[forensic] User requested investigation: ${payload.token_address} on ${payload.chain}`);
+  });
 
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);

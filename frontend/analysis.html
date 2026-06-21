@@ -26,7 +26,7 @@
       <h1>ClawIntel Lab</h1>
       <p>Paste any token contract address and let the agent swarm conduct a full forensic analysis.</p>
     </div>
-    
+
     <div class="scan-form">
       <div class="scan-form-row">
         <div>
@@ -44,33 +44,14 @@
         </div>
         <div>
           <label>&nbsp;</label>
-          <button class="btn btn-primary btn-lg scan-btn" id="scan-btn" onclick="analysis.startInvestigation()">
+          <button class="btn btn-primary btn-lg scan-btn" id="scan-btn" onclick="lab.startInvestigation()">
             <span id="scan-btn-text">Scan</span>
           </button>
         </div>
       </div>
-      
-      <div class="scan-progress-container" id="scan-progress">
-        <div class="scan-progress-label">
-          <span id="scan-step">Initializing...</span>
-          <span id="scan-percent">0%</span>
-        </div>
-        <div class="scan-progress-bar-wrap">
-          <div class="scan-progress-bar-fill" id="scan-progress-fill" style="width:0%"></div>
-        </div>
-      </div>
-      
-      <div class="token-summary" id="token-summary">
-        <div class="token-summary-row"><span class="token-summary-label">Name :</span><span class="token-summary-value" id="sum-name">—</span></div>
-        <div class="token-summary-row"><span class="token-summary-label">Symbol :</span><span class="token-summary-value" id="sum-symbol">—</span></div>
-        <div class="token-summary-row"><span class="token-summary-label">Chain :</span><span class="token-summary-value" id="sum-chain">—</span></div>
-        <div class="token-summary-row"><span class="token-summary-label">Price :</span><span class="token-summary-value" id="sum-price">—</span></div>
-        <div class="token-summary-row"><span class="token-summary-label">Liquidity :</span><span class="token-summary-value" id="sum-liquidity">—</span></div>
-        <div class="token-summary-row"><span class="token-summary-label">Market Cap :</span><span class="token-summary-value" id="sum-mcap">—</span></div>
-        <div class="token-summary-row"><span class="token-summary-label">Contract :</span><span class="token-summary-value" id="sum-contract">—</span></div>
-      </div>
+      <!-- scan-progress and token-summary are generated internally by analysis.js -->
     </div>
-    
+
     <div class="investigation-log">
       <div class="investigation-log-header">
         <h3>Investigation Log</h3>
@@ -83,7 +64,7 @@
         </div>
       </div>
     </div>
-    
+
     <div id="verdict-container"></div>
   </div>
 

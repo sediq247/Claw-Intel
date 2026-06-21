@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-WATCHER AGENT — Nova v4
+WATCHER AGENT — Nova
 "The Scout" — Multi-chain token detection engine.
 """
 
@@ -57,6 +57,7 @@ class TokenEvent:
     block_number: Optional[int] = None
     liquidity_usd: Optional[float] = None
     market_cap: Optional[float] = None
+    volume_24h: Optional[float] = None
     origin_source: str = "unknown"
     raw_data: Optional[dict] = None
 
@@ -68,113 +69,127 @@ class WatcherAgent:
     """
     Nova — The Scout
     RPC-based surveillance across 7 EVM chains + Solana.
-    DexScreener used ONLY for user-initiated token investigation.
-    Uses verified FREE public RPCs (no API key, no signup required).
+
+    v5 CHANGES:
+    - Quality filtering: Only tokens with real liquidity/volume enter pipeline
+    - Queue discipline: Respects orchestrator's INVESTIGATION_BUSY signal
+    - Forensic lab: search_token() properly wired for user-submitted investigations
+    - Pacing: Tokens are held in a candidate queue, not immediately published
     """
 
     RPC_POOLS = {
         "ethereum": [
-            "https://ethereum-rpc.publicnode.com",      
-            "https://rpc.ankr.com/eth",                  
-            "https://eth.llamarpc.com",                  
-            "https://eth.rpc.grove.city",                
+            "https://ethereum-rpc.publicnode.com",
+            "https://rpc.ankr.com/eth",
+            "https://eth.llamarpc.com",
+            "https://eth.rpc.grove.city",
         ],
         "bsc": [
-            "https://bsc-rpc.publicnode.com",           
-            "https://rpc.ankr.com/bsc",                  
-            "https://bsc-dataseed.binance.org/",         
-            "https://bsc.rpc.grove.city",                
+            "https://bsc-rpc.publicnode.com",
+            "https://rpc.ankr.com/bsc",
+            "https://bsc-dataseed.binance.org/",
+            "https://bsc.rpc.grove.city",
         ],
         "base": [
-            "https://base-rpc.publicnode.com",           
-            "https://rpc.ankr.com/base",                 
-            "https://mainnet.base.org/",                 
-            "https://base.rpc.grove.city",               
+            "https://base-rpc.publicnode.com",
+            "https://rpc.ankr.com/base",
+            "https://mainnet.base.org/",
+            "https://base.rpc.grove.city",
         ],
         "arbitrum": [
             "https://arbitrum-one-rpc.publicnode.com",
-            "https://rpc.ankr.com/arbitrum",         
-            "https://arb1.arbitrum.io/rpc", 
+            "https://rpc.ankr.com/arbitrum",
+            "https://arb1.arbitrum.io/rpc",
             "https://arbitrum.rpc.grove.city",
         ],
         "optimism": [
             "https://optimism-rpc.publicnode.com",
-            "https://rpc.ankr.com/optimism",            
-            "https://mainnet.optimism.io/",              
-            "https://optimism.rpc.grove.city",           
+            "https://rpc.ankr.com/optimism",
+            "https://mainnet.optimism.io/",
+            "https://optimism.rpc.grove.city",
         ],
         "polygon": [
-            "https://polygon-bor-rpc.publicnode.com",  
-            "https://rpc.ankr.com/polygon",         
-            "https://polygon-rpc.com",                   
-            "https://polygon.rpc.grove.city",            
+            "https://polygon-bor-rpc.publicnode.com",
+            "https://rpc.ankr.com/polygon",
+            "https://polygon-rpc.com",
+            "https://polygon.rpc.grove.city",
         ],
         "avalanche": [
-            "https://avalanche-c-chain-rpc.publicnode.com", 
-            "https://rpc.ankr.com/avalanche",                
-            "https://api.avax.network/ext/bc/C/rpc",      
-            "https://avalanche.rpc.grove.city",              
+            "https://avalanche-c-chain-rpc.publicnode.com",
+            "https://rpc.ankr.com/avalanche",
+            "https://api.avax.network/ext/bc/C/rpc",
+            "https://avalanche.rpc.grove.city",
         ],
         "solana": [
-            "https://solana-rpc.publicnode.com",         
-            "https://rpc.ankr.com/solana",               
-            "https://api.mainnet-beta.solana.com",     
-            "https://solana.rpc.grove.city",             
+            "https://solana-rpc.publicnode.com",
+            "https://rpc.ankr.com/solana",
+            "https://api.mainnet-beta.solana.com",
+            "https://solana.rpc.grove.city",
         ],
     }
 
     CHAIN_CONFIG = {
         "ethereum": {
-            "factory": "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f",   # Uniswap V2
-            "w_native": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",    # WETH
+            "factory": "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f",
+            "w_native": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
             "dex_slug": "ethereum",
         },
         "bsc": {
-            "factory": "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73",   # PancakeSwap V2
-            "w_native": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",    # WBNB
+            "factory": "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73",
+            "w_native": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
             "dex_slug": "bsc",
         },
         "base": {
-            "factory": "0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6",   # Uniswap V2 (Base)
-            "w_native": "0x4200000000000000000000000000000000000006",    # WETH (Base)
+            "factory": "0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6",
+            "w_native": "0x4200000000000000000000000000000000000006",
             "dex_slug": "base",
         },
         "arbitrum": {
-            "factory": "0xf1D7CC64Fb4452F05c498126312eBE29f30Fbcf9",   # Uniswap V2 (Arbitrum)
-            "w_native": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",    # WETH (Arbitrum)
+            "factory": "0xf1D7CC64Fb4452F05c498126312eBE29f30Fbcf9",
+            "w_native": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
             "dex_slug": "arbitrum",
         },
         "optimism": {
-            "factory": "0x0c3c1c532F1e39EdF36BE9Fe0bE1410313E074Bf",   # Uniswap V2 (Optimism)
-            "w_native": "0x4200000000000000000000000000000000000006",    # WETH (Optimism)
+            "factory": "0x0c3c1c532F1e39EdF36BE9Fe0bE1410313E074Bf",
+            "w_native": "0x4200000000000000000000000000000000000006",
             "dex_slug": "optimism",
         },
         "polygon": {
-            "factory": "0x9e5A52f57b3038F1B8EeE45F28b3C1967e22799C",   # Uniswap V2 (Polygon)
-            "w_native": "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270",    # WMATIC
+            "factory": "0x9e5A52f57b3038F1B8EeE45F28b3C1967e22799C",
+            "w_native": "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270",
             "dex_slug": "polygon",
         },
         "avalanche": {
-            "factory": "0x9e5A52f57b3038F1B8EeE45F28b3C1967e22799C",   # Uniswap V2 (Avalanche)
-            "w_native": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",    # WAVAX
+            "factory": "0x9e5A52f57b3038F1B8EeE45F28b3C1967e22799C",
+            "w_native": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
             "dex_slug": "avalanche",
         },
     }
 
-    # Solana config
     RAYDIUM_AMM_V4 = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
     SOLANA_DEX_SLUG = "solana"
 
     SOLANA_IGNORE_MINTS = {
-        "So11111111111111111111111111111111111111112",   # wSOL
-        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC
-        "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",  # USDT
-        "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",  # BONK
+        "So11111111111111111111111111111111111111112",
+        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+        "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
     }
 
     PAIR_CREATED_TOPIC = (
         "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9"
     )
+
+    # ═══════════════════════════════════════════════════════════════════
+    # QUALITY THRESHOLDS — Only tokens meeting these enter the pipeline
+    # ═══════════════════════════════════════════════════════════════════
+    MIN_LIQUIDITY_USD = 500           # At least $500 in liquidity
+    MIN_MARKET_CAP_USD = 1000         # At least $1K market cap
+    MIN_VOLUME_24H_USD = 100          # At least $100 volume in 24h
+    MAX_TOKEN_AGE_HOURS = 48          # Token must be < 48 hours old
+
+    # Rate limiting for discovery
+    DISCOVERY_COOLDOWN_SECONDS = 10   # Minimum seconds between token discoveries per chain
 
     def __init__(self, event_bus_publish: Callable[[str, dict], None]):
         self.publish = event_bus_publish
@@ -187,8 +202,20 @@ class WatcherAgent:
         self.running = False
         self._tasks: list[asyncio.Task] = []
 
+        # Quality control
+        self._last_discovery_time: dict[str, float] = {}  # chain -> timestamp
+        self._candidate_buffer: list[TokenEvent] = []      # Tokens awaiting quality check
+        self._busy = False                                  # Set by orchestrator
+
         self._init_connections()
 
+    def set_busy(self, busy: bool):
+        """Orchestrator calls this to tell Nova to pause/resume discoveries."""
+        self._busy = busy
+        if busy:
+            print(f"🔇 {self.name}: Pausing discoveries — investigation in progress.")
+        else:
+            print(f"🔊 {self.name}: Resuming discoveries.")
 
     def _init_connections(self):
         """Try multiple free RPC endpoints per chain, pick the first working one."""
@@ -203,7 +230,6 @@ class WatcherAgent:
                     provider = Web3.HTTPProvider(url, request_kwargs={"timeout": 15})
                     w3 = Web3(provider)
                     if w3.is_connected():
-                        # Verify it's actually synced by checking block number
                         block_num = w3.eth.block_number
                         if block_num and block_num > 0:
                             self.web3_instances[chain] = w3
@@ -253,6 +279,96 @@ class WatcherAgent:
 
         self.known_tokens.add(token)
         self.token_queue.append(token)
+        return True
+
+    # ─────────────────────────────────────────────────────────────────
+    # QUALITY FILTERING — Only promising tokens get published
+    # ─────────────────────────────────────────────────────────────────
+
+    async def _passes_quality_check(self, token_event: TokenEvent) -> bool:
+        """
+        Check if a token is worth investigating.
+        Must have: liquidity >= MIN_LIQUIDITY_USD, market_cap >= MIN_MARKET_CAP_USD,
+        and volume >= MIN_VOLUME_24H_USD.
+        """
+        # If we already have market data from DexScreener, use it
+        if token_event.liquidity_usd is not None:
+            if token_event.liquidity_usd < self.MIN_LIQUIDITY_USD:
+                print(f"🚫 {self.name}: {token_event.token_symbol} rejected — liquidity ${token_event.liquidity_usd:,.0f} < ${self.MIN_LIQUIDITY_USD}")
+                return False
+
+        if token_event.market_cap is not None:
+            if token_event.market_cap < self.MIN_MARKET_CAP_USD:
+                print(f"🚫 {self.name}: {token_event.token_symbol} rejected — mcap ${token_event.market_cap:,.0f} < ${self.MIN_MARKET_CAP_USD}")
+                return False
+
+        # For EVM tokens discovered via PairCreated, we need to fetch market data
+        if token_event.event_type == "NEW_TOKEN" and token_event.chain in self.CHAIN_CONFIG:
+            market_data = await self._fetch_dexscreener_token(
+                token_event.token_address,
+                self.CHAIN_CONFIG[token_event.chain]["dex_slug"]
+            )
+
+            liquidity = market_data.get("liquidity_usd", 0) or 0
+            mcap = market_data.get("market_cap", 0) or 0
+            volume = market_data.get("volume_24h", 0) or 0
+
+            if liquidity < self.MIN_LIQUIDITY_USD:
+                print(f"🚫 {self.name}: {token_event.token_symbol} rejected — liquidity ${liquidity:,.0f} < ${self.MIN_LIQUIDITY_USD}")
+                return False
+            if mcap < self.MIN_MARKET_CAP_USD:
+                print(f"🚫 {self.name}: {token_event.token_symbol} rejected — mcap ${mcap:,.0f} < ${self.MIN_MARKET_CAP_USD}")
+                return False
+            if volume < self.MIN_VOLUME_24H_USD:
+                print(f"🚫 {self.name}: {token_event.token_symbol} rejected — volume ${volume:,.0f} < ${self.MIN_VOLUME_24H_USD}")
+                return False
+
+            # Enrich the token event with market data
+            token_event.liquidity_usd = liquidity
+            token_event.market_cap = mcap
+            token_event.volume_24h = volume
+
+            print(f"✅ {self.name}: {token_event.token_symbol} PASSED quality check — liq: ${liquidity:,.0f}, mcap: ${mcap:,.0f}, vol: ${volume:,.0f}")
+            return True
+
+        # For user queries (forensic lab), always pass
+        if token_event.event_type == "USER_QUERY":
+            return True
+
+        # For Solana, fetch market data
+        if token_event.chain == "solana":
+            market_data = await self._fetch_dexscreener_token(
+                token_event.token_address,
+                self.SOLANA_DEX_SLUG
+            )
+            liquidity = market_data.get("liquidity_usd", 0) or 0
+            mcap = market_data.get("market_cap", 0) or 0
+            volume = market_data.get("volume_24h", 0) or 0
+
+            if liquidity < self.MIN_LIQUIDITY_USD:
+                print(f"🚫 {self.name}: {token_event.token_symbol} rejected — liquidity ${liquidity:,.0f}")
+                return False
+            if mcap < self.MIN_MARKET_CAP_USD:
+                print(f"🚫 {self.name}: {token_event.token_symbol} rejected — mcap ${mcap:,.0f}")
+                return False
+            if volume < self.MIN_VOLUME_24H_USD:
+                print(f"🚫 {self.name}: {token_event.token_symbol} rejected — volume ${volume:,.0f}")
+                return False
+
+            token_event.liquidity_usd = liquidity
+            token_event.market_cap = mcap
+            token_event.volume_24h = volume
+            return True
+
+        return False
+
+    def _check_rate_limit(self, chain: str) -> bool:
+        """Check if enough time has passed since last discovery on this chain."""
+        now = time.time()
+        last = self._last_discovery_time.get(chain, 0)
+        if now - last < self.DISCOVERY_COOLDOWN_SECONDS:
+            return False
+        self._last_discovery_time[chain] = now
         return True
 
     # ─────────────────────────────────────────────────────────────────
@@ -422,13 +538,14 @@ Requirements:
         print(f"✅ {self.name}: All watchers stopped.")
 
     # ═══════════════════════════════════════════════════════════════════
-    # PUBLIC API — User pasted a token address (INVESTIGATION)
+    # PUBLIC API — User pasted a token address (FORENSIC LAB)
     # ═══════════════════════════════════════════════════════════════════
 
     async def search_token(self, token_address: str, chain: Optional[str] = None) -> Optional[TokenEvent]:
         """
         Investigation mode — user pasted a token address.
         Fetches on-chain basics + DexScreener market data, then reports.
+        This is called by the orchestrator when MANUAL_INVESTIGATE is received.
         """
         token_address = token_address.strip()
 
@@ -557,6 +674,16 @@ Requirements:
 
             while self.running:
                 try:
+                    # If orchestrator says we're busy, sleep and check again
+                    if self._busy:
+                        await asyncio.sleep(2)
+                        continue
+
+                    # Rate limit check
+                    if not self._check_rate_limit(chain):
+                        await asyncio.sleep(2)
+                        continue
+
                     current_block = await asyncio.to_thread(lambda: w3.eth.block_number)
 
                     if current_block < from_block:
@@ -568,7 +695,6 @@ Requirements:
                     while from_block <= scan_to and self.running:
                         chunk_end = min(scan_to, from_block + 50)
 
-                        # web3.py v6+ / v7+ uses snake_case
                         events = await asyncio.to_thread(
                             lambda fb=from_block, tb=chunk_end: factory.events.PairCreated().get_logs(
                                 from_block=fb,
@@ -578,6 +704,10 @@ Requirements:
 
                         for event in events:
                             try:
+                                # If busy, skip this token
+                                if self._busy:
+                                    break
+
                                 token0 = event.args.token0
                                 token1 = event.args.token1
                                 pair = event.args.pair
@@ -601,6 +731,18 @@ Requirements:
                                     origin_source="uniswap" if chain != "bsc" else "pancakeswap",
                                     raw_data={"pair": pair, "token0": token0, "token1": token1}
                                 )
+
+                                # QUALITY CHECK — only pass good tokens
+                                passes = await self._passes_quality_check(token_event)
+                                if not passes:
+                                    continue
+
+                                # If we got here, the token is worth investigating
+                                # But check busy again before publishing
+                                if self._busy:
+                                    print(f"⏸️ {self.name}: {token_event.token_symbol} held — investigation in progress.")
+                                    self._candidate_buffer.append(token_event)
+                                    continue
 
                                 try:
                                     self.publish("NEW_TOKEN", token_event.__dict__)
@@ -677,6 +819,16 @@ Requirements:
         async with aiohttp.ClientSession() as session:
             while self.running:
                 try:
+                    # Check busy state
+                    if self._busy:
+                        await asyncio.sleep(2)
+                        continue
+
+                    # Rate limit
+                    if not self._check_rate_limit("solana"):
+                        await asyncio.sleep(2)
+                        continue
+
                     payload = {
                         "jsonrpc": "2.0",
                         "id": 1,
@@ -705,6 +857,10 @@ Requirements:
                             new_sigs.reverse()  # oldest first
 
                             for sig in new_sigs:
+                                # Check busy before processing each tx
+                                if self._busy:
+                                    break
+
                                 tx_payload = {
                                     "jsonrpc": "2.0",
                                     "id": 1,
@@ -731,7 +887,7 @@ Requirements:
                                             if not self._track_token(mint):
                                                 continue
 
-                                            # Verify it's a real mint with supply
+                                            # Verify it is a real mint with supply
                                             supply_payload = {
                                                 "jsonrpc": "2.0",
                                                 "id": 1,
@@ -760,6 +916,16 @@ Requirements:
                                                 origin_source="raydium",
                                                 raw_data={"signature": sig, "supply": supply_info.get("uiAmountString")}
                                             )
+
+                                            # QUALITY CHECK
+                                            passes = await self._passes_quality_check(token_event)
+                                            if not passes:
+                                                continue
+
+                                            if self._busy:
+                                                print(f"⏸️ {self.name}: {token_event.token_symbol} held — investigation in progress.")
+                                                self._candidate_buffer.append(token_event)
+                                                continue
 
                                             try:
                                                 self.publish("NEW_TOKEN", token_event.__dict__)
@@ -822,13 +988,13 @@ Requirements:
         return basic
 
     # ═══════════════════════════════════════════════════════════════════
-    # DEXSCREENER — Investigation only (user queries)
+    # DEXSCREENER — Used for quality checks and investigations
     # ═══════════════════════════════════════════════════════════════════
 
     async def _fetch_dexscreener_token(self, token_address: str, chain_slug: str) -> dict:
         """
         Deep dive market data for a specific token.
-        Endpoint: /tokens/v1/{chainId}/{tokenAddresses} (up to 30 addresses, comma-separated)
+        Endpoint: /tokens/v1/{chainId}/{tokenAddresses}
         Rate limit: 300 requests/minute (no API key needed)
         """
         url = f"https://api.dexscreener.com/tokens/v1/{chain_slug}/{token_address}"
@@ -859,7 +1025,6 @@ Requirements:
         except Exception as e:
             print(f"⚠️ {self.name}: DexScreener lookup failed: {e}")
             return {}
-
 
 
 async def main():
