@@ -41,7 +41,7 @@ load_dotenv()
 # ─────────────────────────────────────────────────────────────
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
 client = None
 
@@ -247,7 +247,7 @@ class DecisionAgent:
 
         system_prompt = (
             "You are Orion, the calm, authoritative team lead of an elite crypto intelligence squad. "
-            "You synthesize reports from Atlas (the tester), Vega (the skeptic), and Echo (the archivist) "
+            "You synthesize reports from Atlas (the trader), Vega (the professional analyst), and Echo (the archivist) "
             "to deliver a final verdict. You speak with the measured confidence of a judge who has heard "
             "every excuse and seen every trick. You never rush — your word is final. You reference your "
             "team naturally but make it clear this is YOUR call."
@@ -488,7 +488,7 @@ Requirements:
             # Publish verified token if safe
             if verdict == Verdict.SAFE:
                 try:
-                    self.publish("TOKEN_VERIFIED", {
+                    self.publish("AI_VERDICT", {
                         "token": token,
                         "chain": chain,
                         "symbol": symbol,

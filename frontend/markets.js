@@ -62,7 +62,7 @@ class MarketsApp {
           if (type === 'MARKET_UPDATE') {
             this.handleMarketUpdate(payload);
           }
-          if (type === 'TOKEN_VERIFIED') {
+          if (type === 'AI_VERDICT') {
             this.addAiVerifiedToken(payload);
           }
         } catch (e) {
