@@ -1,50 +1,125 @@
 #!/usr/bin/env python3
 """
 🌉 agents/bridge.py
-Python → Node EventBus Bridge.
+Python ↔ Node EventBus Bridge.
 
+BIDIRECTIONAL:
+- Outbound: HTTP POST /api/publish → Node.js
+- Inbound:  WebSocket → local dispatch to Python subscribers
 """
 
 import os
 import sys
 import json
 import asyncio
-from typing import Any, Optional
-from collections import deque
+from typing import Any, Optional, Callable, Dict, List
+from collections import defaultdict, deque
 
 import aiohttp
+from aiohttp import WSMsgType
 
 NODE_URL = os.getenv("CLAWINTEL_NODE_URL", "https://clawintel.up.railway.app")
+WS_PATH = os.getenv("CLAWINTEL_WS_PATH", "/")
 PUBLISH_ENDPOINT = f"{NODE_URL}/api/publish"
 HEALTH_ENDPOINT = f"{NODE_URL}/health"
 
 
 def _log(msg: str):
-    """Log to stderr — always visible in Render/Fly/Railway logs."""
     print(f"[bridge] {msg}", file=sys.stderr, flush=True)
 
 
 class NodeBridge:
-    """
-    Async bridge to the Node.js event bus.
-    Handles reconnection, backoff, and message queuing.
-    """
+    """Async bridge to Node.js event bus. HTTP out + WebSocket in."""
 
-    def __init__(self, node_url: str = None):
+    def __init__(self, node_url: str = None, ws_path: str = None):
         self.node_url = node_url or NODE_URL
         self.publish_endpoint = f"{self.node_url}/api/publish"
         self.health_endpoint = f"{self.node_url}/health"
+
+        base_ws = self.node_url.replace("https://", "wss://").replace("http://", "ws://")
+        self.ws_url = f"{base_ws}{ws_path or WS_PATH}"
+
         self._session: Optional[aiohttp.ClientSession] = None
         self._closed = False
         self._ready = False
-        self._pending_queue: deque = deque(maxlen=500)  # Buffer when Node is down
+        self._pending_queue: deque = deque(maxlen=500)
         self._flush_task: Optional[asyncio.Task] = None
-        _log(f"Initialized. Publish endpoint: {self.publish_endpoint}")
+        self._ws_task: Optional[asyncio.Task] = None
 
+        # Local subscribers for events coming FROM Node.js
+        self._local_subscribers: Dict[str, List[Callable[[Any], None]]] = defaultdict(list)
+
+        _log(f"Initialized. Publish: {self.publish_endpoint} | WS: {self.ws_url}")
+
+    # ─────────────────────────────────────────────────────────
+    # Local Subscribe — NEW: receive events from Node.js
+    # ─────────────────────────────────────────────────────────
+
+    def subscribe(self, event_type: str, callback: Callable[[Any], None]) -> Callable[[], None]:
+        """Subscribe to events arriving from Node.js via WebSocket."""
+        self._local_subscribers[event_type].append(callback)
+        _log(f"Subscribed to '{event_type}' ({len(self._local_subscribers[event_type])} handlers)")
+
+        def unsubscribe():
+            try:
+                self._local_subscribers[event_type].remove(callback)
+            except ValueError:
+                pass
+        return unsubscribe
+
+    def _dispatch_local(self, event_type: str, payload: Any):
+        """Dispatch an incoming Node.js event to local Python subscribers."""
+        for cb in list(self._local_subscribers.get(event_type, [])):
+            try:
+                cb(payload)
+            except Exception as e:
+                _log(f"Error in local subscriber for {event_type}: {e}")
+
+    # ─────────────────────────────────────────────────────────
+    # WebSocket Listener — NEW: receive events from Node.js
+    # ─────────────────────────────────────────────────────────
+
+    async def _ws_listener(self):
+        """Background task: maintain WebSocket connection to Node.js."""
+        while not self._closed:
+            try:
+                session = await self._get_session()
+                _log(f"Connecting to WebSocket: {self.ws_url}")
+                async with session.ws_connect(
+                    self.ws_url,
+                    heartbeat=30.0,
+                    autoping=True,
+                ) as ws:
+                    _log("✅ WebSocket connected")
+                    # Register as backend client
+                    await ws.send_json({
+                        "type": "REGISTER_BACKEND",
+                        "events": ["MANUAL_INVESTIGATE", "REQUEST_MARKET_DATA", "USER_COMMAND"]
+                    })
+                    async for msg in ws:
+                        if msg.type == WSMsgType.TEXT:
+                            try:
+                                data = msg.json()
+                                event_type = data.get("type") or data.get("eventType")
+                                payload = data.get("payload")
+                                if event_type:
+                                    self._dispatch_local(event_type, payload)
+                            except Exception as e:
+                                _log(f"WS message parse error: {e}")
+                        elif msg.type in (WSMsgType.ERROR, WSMsgType.CLOSED):
+                            break
+            except Exception as e:
+                _log(f"WebSocket error: {type(e).__name__}: {e}")
+            if self._closed:
+                break
+            _log("WebSocket reconnecting in 5s...")
+            await asyncio.sleep(5)
+
+    # ─────────────────────────────────────────────────────────
+    # HTTP Publish — existing outbound logic
     # ─────────────────────────────────────────────────────────
 
     async def _get_session(self) -> aiohttp.ClientSession:
-        """Lazy session creation with auto-reconnect."""
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
                 headers={"Content-Type": "application/json"},
@@ -52,10 +127,7 @@ class NodeBridge:
             )
         return self._session
 
-    # ─────────────────────────────────────────────────────────
-
     async def wait_for_node(self, max_wait: int = 60) -> bool:
-        """Block until Node /health returns 200. Critical for container startup."""
         _log(f"Waiting for Node at {self.health_endpoint} (max {max_wait}s)...")
         for attempt in range(max_wait):
             try:
@@ -64,40 +136,28 @@ class NodeBridge:
                     if resp.status == 200:
                         self._ready = True
                         _log(f"✅ Node is ready! (took {attempt + 1}s)")
-                        # Start background flush of queued messages
                         self._flush_task = asyncio.create_task(self._flush_loop())
+                        if not self._ws_task or self._ws_task.done():
+                            self._ws_task = asyncio.create_task(self._ws_listener())
                         return True
-            except asyncio.TimeoutError:
-                if attempt % 5 == 0:
-                    _log(f"  ... health check timed out ({attempt + 1}s)")
             except Exception as e:
                 if attempt % 5 == 0:
                     _log(f"  ... still waiting ({attempt + 1}s) — {type(e).__name__}")
             await asyncio.sleep(1)
-        _log(f"❌ Node failed to become ready after {max_wait}s")
+        _log(f"❌ Node failed after {max_wait}s")
         return False
 
-    # ─────────────────────────────────────────────────────────
-
     async def publish(self, event_type: str, payload: Any, retries: int = 5) -> bool:
-        """
-        Publish an event to the Node bridge.
-        If Node is down, queue it for later delivery.
-        """
         if self._closed:
-            _log(f"Dropping {event_type} — bridge is closed")
+            _log(f"Dropping {event_type} — bridge closed")
             return False
-
         if not self._ready:
-            # Queue the message and try to wake up Node
             self._pending_queue.append({"eventType": event_type, "payload": payload})
             _log(f"📦 Queued {event_type} — Node not ready ({len(self._pending_queue)} queued)")
-            # Attempt quick wake-up
             await self.wait_for_node(max_wait=5)
             return False
 
         body = {"eventType": event_type, "payload": payload}
-
         for attempt in range(retries + 1):
             try:
                 session = await self._get_session()
@@ -105,62 +165,32 @@ class NodeBridge:
                     if resp.status == 200:
                         return True
                     text = await resp.text()
-                    _log(f"Node returned HTTP {resp.status}: {text[:200]}")
+                    _log(f"Node HTTP {resp.status}: {text[:200]}")
                     if resp.status == 404:
-                        _log("CRITICAL: /api/publish endpoint not found! Check server.js")
                         return False
-                    # For 5xx or other errors, retry
                     if attempt < retries:
-                        wait = min(2 ** attempt, 30)
-                        _log(f"  Retrying in {wait}s...")
-                        await asyncio.sleep(wait)
-                    else:
-                        return False
-            except aiohttp.ClientConnectorError as e:
-                _log(f"Connection refused (attempt {attempt + 1}/{retries + 1}): {e}")
-                if attempt < retries:
-                    wait = min(2 ** attempt, 30)
-                    _log(f"  Retrying in {wait}s...")
-                    await asyncio.sleep(wait)
-                else:
-                    # Queue for later flush
-                    self._pending_queue.append(body)
-                    _log(f"📦 Queued {event_type} for later flush ({len(self._pending_queue)} total)")
-                    return False
+                        await asyncio.sleep(min(2 ** attempt, 30))
             except Exception as e:
-                _log(f"Unexpected error (attempt {attempt + 1}): {type(e).__name__}: {e}")
+                _log(f"Publish error (attempt {attempt + 1}): {e}")
                 if attempt < retries:
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(min(2 ** attempt, 30))
                 else:
                     self._pending_queue.append(body)
                     return False
-
         return False
 
-    # ─────────────────────────────────────────────────────────
-
     def publish_sync(self, event_type: str, payload: Any) -> None:
-        """
-        Fire-and-forget publish from sync context.
-        Creates an asyncio task that runs in the background.
-        """
         if self._closed:
             return
-
         try:
             loop = asyncio.get_running_loop()
             task = loop.create_task(self.publish(event_type, payload))
-            # Add done callback to catch unhandled exceptions
-            task.add_done_callback(
-                lambda t: self._on_publish_done(t, event_type)
-            )
+            task.add_done_callback(lambda t: self._on_publish_done(t, event_type))
         except RuntimeError:
-            # No event loop running — cannot publish
             _log(f"No event loop — cannot publish {event_type}")
 
     @staticmethod
     def _on_publish_done(task: asyncio.Task, event_type: str):
-        """Log any unhandled exception from a background publish."""
         try:
             task.result()
         except asyncio.CancelledError:
@@ -168,85 +198,52 @@ class NodeBridge:
         except Exception as e:
             _log(f"⚠️ Background publish ({event_type}) failed: {e}")
 
-    # ─────────────────────────────────────────────────────────
-
     async def _flush_loop(self):
-        """Background task that periodically tries to deliver queued messages."""
         while not self._closed:
             try:
                 if self._pending_queue and self._ready:
-                    # Flush up to 10 messages at a time
                     batch = []
                     while self._pending_queue and len(batch) < 10:
                         batch.append(self._pending_queue.popleft())
-
                     for msg in batch:
                         try:
-                            success = await self.publish(
-                                msg["eventType"],
-                                msg["payload"],
-                                retries=2
-                            )
+                            success = await self.publish(msg["eventType"], msg["payload"], retries=2)
                             if not success:
-                                # Re-queue if failed
                                 self._pending_queue.appendleft(msg)
-                                break  # Stop flushing, Node is struggling
+                                break
                         except Exception as e:
                             _log(f"⚠️ Flush error: {e}")
                             self._pending_queue.appendleft(msg)
                             break
             except Exception as e:
                 _log(f"⚠️ Flush loop error: {e}")
-
             await asyncio.sleep(5)
 
-    # ─────────────────────────────────────────────────────────
-
     async def close(self):
-        """Graceful shutdown: flush remaining messages, close session."""
         self._closed = True
         _log("Closing bridge...")
-
-        # Cancel flush loop
-        if self._flush_task and not self._flush_task.done():
-            self._flush_task.cancel()
-            try:
-                await self._flush_task
-            except asyncio.CancelledError:
-                pass
-
-        # Final flush attempt
+        for task in (self._flush_task, self._ws_task):
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
         if self._pending_queue:
             _log(f"Flushing {len(self._pending_queue)} remaining messages...")
             for msg in list(self._pending_queue):
                 try:
                     await self.publish(msg["eventType"], msg["payload"], retries=1)
-                    self._pending_queue.remove(msg)
                 except Exception:
                     pass
-
-        if self._pending_queue:
-            _log(f"⚠️ {len(self._pending_queue)} messages dropped — Node never came back")
-
-        # Close session
         if self._session and not self._session.closed:
             await self._session.close()
             _log("✅ Session closed")
 
 
-# ─────────────────────────────────────────────────────────────
-# Callable Factory
-# ─────────────────────────────────────────────────────────────
-
 def make_publish_callable(node_url: str = None):
-    """
-    Create a sync callable that agents can use to fire-and-forget publish.
-    The returned function exposes `_bridge` for orchestrator access.
-    """
     bridge = NodeBridge(node_url)
-
     def publish(event_type: str, payload: Any):
         bridge.publish_sync(event_type, payload)
-
     publish._bridge = bridge
     return publish

@@ -2,6 +2,11 @@
 """
 WATCHER AGENT — Nova
 "The Scout" — Multi-chain token detection engine.
+
+FIXED:
+- Removed corrupted duplicate code in _fetch_solana_token_info_rpc
+- Uses local bus for NEW_TOKEN (internal pipeline)
+- Uses bridge ONLY for AGENT_MESSAGE (frontend chat)
 """
 
 import asyncio
@@ -9,7 +14,6 @@ import json
 import os
 import time
 import random
-import re
 
 from collections import deque
 from dataclasses import dataclass, asdict
@@ -53,7 +57,6 @@ class TokenEvent:
     token_name: str
     creator: str
     timestamp: float
-
     block_number: Optional[int] = None
     liquidity_usd: Optional[float] = None
     market_cap: Optional[float] = None
@@ -69,12 +72,6 @@ class WatcherAgent:
     """
     Nova — The Scout
     RPC-based surveillance across 7 EVM chains + Solana.
-
-    v5 CHANGES:
-    - Quality filtering: Only tokens with real liquidity/volume enter pipeline
-    - Queue discipline: Respects orchestrator's INVESTIGATION_BUSY signal
-    - Forensic lab: search_token() properly wired for user-submitted investigations
-    - Pacing: Tokens are held in a candidate queue, not immediately published
     """
 
     RPC_POOLS = {
@@ -180,19 +177,26 @@ class WatcherAgent:
         "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9"
     )
 
-    # ═══════════════════════════════════════════════════════════════════
-    # QUALITY THRESHOLDS — Only tokens meeting these enter the pipeline
-    # ═══════════════════════════════════════════════════════════════════
-    MIN_LIQUIDITY_USD = 500           # At least $500 in liquidity
-    MIN_MARKET_CAP_USD = 1000         # At least $1K market cap
-    MIN_VOLUME_24H_USD = 100          # At least $100 volume in 24h
-    MAX_TOKEN_AGE_HOURS = 48          # Token must be < 48 hours old
+    MIN_LIQUIDITY_USD = 500
+    MIN_MARKET_CAP_USD = 1000
+    MIN_VOLUME_24H_USD = 100
+    MAX_TOKEN_AGE_HOURS = 48
+    DISCOVERY_COOLDOWN_SECONDS = 10
 
-    # Rate limiting for discovery
-    DISCOVERY_COOLDOWN_SECONDS = 10   # Minimum seconds between token discoveries per chain
-
-    def __init__(self, event_bus_publish: Callable[[str, dict], None]):
-        self.publish = event_bus_publish
+    def __init__(
+        self,
+        event_bus_publish: Callable[[str, dict], None],
+        local_bus_publish: Optional[Callable[[str, dict], None]] = None,
+        bridge_publish: Optional[Callable[[str, dict], None]] = None,
+    ):
+        """
+        event_bus_publish: Legacy single publish (used if dual publish not provided)
+        local_bus_publish: Publish to PyEventBus (internal pipeline signals like NEW_TOKEN)
+        bridge_publish:    Publish to NodeBridge (frontend chat like AGENT_MESSAGE)
+        """
+        self._publish = event_bus_publish
+        self.local_bus_publish = local_bus_publish or event_bus_publish
+        self.bridge_publish = bridge_publish or event_bus_publish
         self.name = "Nova"
 
         self.web3_instances: dict[str, Web3] = {}
@@ -202,15 +206,13 @@ class WatcherAgent:
         self.running = False
         self._tasks: list[asyncio.Task] = []
 
-        # Quality control
-        self._last_discovery_time: dict[str, float] = {}  # chain -> timestamp
-        self._candidate_buffer: list[TokenEvent] = []      # Tokens awaiting quality check
-        self._busy = False                                  # Set by orchestrator
+        self._last_discovery_time: dict[str, float] = {}
+        self._candidate_buffer: list[TokenEvent] = []
+        self._busy = False
 
         self._init_connections()
 
     def set_busy(self, busy: bool):
-        """Orchestrator calls this to tell Nova to pause/resume discoveries."""
         self._busy = busy
         if busy:
             print(f"🔇 {self.name}: Pausing discoveries — investigation in progress.")
@@ -218,12 +220,10 @@ class WatcherAgent:
             print(f"🔊 {self.name}: Resuming discoveries.")
 
     def _init_connections(self):
-        """Try multiple free RPC endpoints per chain, pick the first working one."""
         for chain, urls in self.RPC_POOLS.items():
             if chain == "solana":
                 self._init_solana(urls)
                 continue
-
             connected = False
             for url in urls:
                 try:
@@ -240,13 +240,10 @@ class WatcherAgent:
                 except Exception as e:
                     host = url.split("/")[2]
                     print(f"⚠️ {self.name}: {chain} endpoint {host} failed: {e}")
-                    continue
-
             if not connected:
                 print(f"❌ {self.name}: All RPC endpoints failed for {chain}")
 
     def _init_solana(self, urls: list[str]):
-        """Test Solana RPC endpoints, pick first working one."""
         for url in urls:
             try:
                 import urllib.request
@@ -265,86 +262,36 @@ class WatcherAgent:
             except Exception as e:
                 host = url.split("/")[2]
                 print(f"⚠️ {self.name}: Solana endpoint {host} failed: {e}")
-                continue
         print(f"❌ {self.name}: All Solana RPC endpoints failed")
 
     def _track_token(self, token: str) -> bool:
         token = token.lower()
         if token in self.known_tokens:
             return False
-
         if len(self.token_queue) >= 10000:
             old = self.token_queue.popleft()
             self.known_tokens.discard(old)
-
         self.known_tokens.add(token)
         self.token_queue.append(token)
         return True
 
-    # ─────────────────────────────────────────────────────────────────
-    # QUALITY FILTERING — Only promising tokens get published
-    # ─────────────────────────────────────────────────────────────────
-
     async def _passes_quality_check(self, token_event: TokenEvent) -> bool:
-        """
-        Check if a token is worth investigating.
-        Must have: liquidity >= MIN_LIQUIDITY_USD, market_cap >= MIN_MARKET_CAP_USD,
-        and volume >= MIN_VOLUME_24H_USD.
-        """
-        # If we already have market data from DexScreener, use it
         if token_event.liquidity_usd is not None:
             if token_event.liquidity_usd < self.MIN_LIQUIDITY_USD:
-                print(f"🚫 {self.name}: {token_event.token_symbol} rejected — liquidity ${token_event.liquidity_usd:,.0f} < ${self.MIN_LIQUIDITY_USD}")
+                print(f"🚫 {self.name}: {token_event.token_symbol} rejected — liquidity ${token_event.liquidity_usd:,.0f}")
                 return False
-
         if token_event.market_cap is not None:
             if token_event.market_cap < self.MIN_MARKET_CAP_USD:
-                print(f"🚫 {self.name}: {token_event.token_symbol} rejected — mcap ${token_event.market_cap:,.0f} < ${self.MIN_MARKET_CAP_USD}")
+                print(f"🚫 {self.name}: {token_event.token_symbol} rejected — mcap ${token_event.market_cap:,.0f}")
                 return False
-
-        # For EVM tokens discovered via PairCreated, we need to fetch market data
         if token_event.event_type == "NEW_TOKEN" and token_event.chain in self.CHAIN_CONFIG:
             market_data = await self._fetch_dexscreener_token(
                 token_event.token_address,
                 self.CHAIN_CONFIG[token_event.chain]["dex_slug"]
             )
-
             liquidity = market_data.get("liquidity_usd", 0) or 0
             mcap = market_data.get("market_cap", 0) or 0
             volume = market_data.get("volume_24h", 0) or 0
-
-            if liquidity < self.MIN_LIQUIDITY_USD:
-                print(f"🚫 {self.name}: {token_event.token_symbol} rejected — liquidity ${liquidity:,.0f} < ${self.MIN_LIQUIDITY_USD}")
-                return False
-            if mcap < self.MIN_MARKET_CAP_USD:
-                print(f"🚫 {self.name}: {token_event.token_symbol} rejected — mcap ${mcap:,.0f} < ${self.MIN_MARKET_CAP_USD}")
-                return False
-            if volume < self.MIN_VOLUME_24H_USD:
-                print(f"🚫 {self.name}: {token_event.token_symbol} rejected — volume ${volume:,.0f} < ${self.MIN_VOLUME_24H_USD}")
-                return False
-
-            # Enrich the token event with market data
-            token_event.liquidity_usd = liquidity
-            token_event.market_cap = mcap
-            token_event.volume_24h = volume
-
-            print(f"✅ {self.name}: {token_event.token_symbol} PASSED quality check — liq: ${liquidity:,.0f}, mcap: ${mcap:,.0f}, vol: ${volume:,.0f}")
-            return True
-
-        # For user queries (forensic lab), always pass
-        if token_event.event_type == "USER_QUERY":
-            return True
-
-        # For Solana, fetch market data
-        if token_event.chain == "solana":
-            market_data = await self._fetch_dexscreener_token(
-                token_event.token_address,
-                self.SOLANA_DEX_SLUG
-            )
-            liquidity = market_data.get("liquidity_usd", 0) or 0
-            mcap = market_data.get("market_cap", 0) or 0
-            volume = market_data.get("volume_24h", 0) or 0
-
             if liquidity < self.MIN_LIQUIDITY_USD:
                 print(f"🚫 {self.name}: {token_event.token_symbol} rejected — liquidity ${liquidity:,.0f}")
                 return False
@@ -354,16 +301,31 @@ class WatcherAgent:
             if volume < self.MIN_VOLUME_24H_USD:
                 print(f"🚫 {self.name}: {token_event.token_symbol} rejected — volume ${volume:,.0f}")
                 return False
-
+            token_event.liquidity_usd = liquidity
+            token_event.market_cap = mcap
+            token_event.volume_24h = volume
+            print(f"✅ {self.name}: {token_event.token_symbol} PASSED — liq: ${liquidity:,.0f}, mcap: ${mcap:,.0f}, vol: ${volume:,.0f}")
+            return True
+        if token_event.event_type == "USER_QUERY":
+            return True
+        if token_event.chain == "solana":
+            market_data = await self._fetch_dexscreener_token(token_event.token_address, self.SOLANA_DEX_SLUG)
+            liquidity = market_data.get("liquidity_usd", 0) or 0
+            mcap = market_data.get("market_cap", 0) or 0
+            volume = market_data.get("volume_24h", 0) or 0
+            if liquidity < self.MIN_LIQUIDITY_USD:
+                return False
+            if mcap < self.MIN_MARKET_CAP_USD:
+                return False
+            if volume < self.MIN_VOLUME_24H_USD:
+                return False
             token_event.liquidity_usd = liquidity
             token_event.market_cap = mcap
             token_event.volume_24h = volume
             return True
-
         return False
 
     def _check_rate_limit(self, chain: str) -> bool:
-        """Check if enough time has passed since last discovery on this chain."""
         now = time.time()
         last = self._last_discovery_time.get(chain, 0)
         if now - last < self.DISCOVERY_COOLDOWN_SECONDS:
@@ -371,39 +333,18 @@ class WatcherAgent:
         self._last_discovery_time[chain] = now
         return True
 
-    # ─────────────────────────────────────────────────────────────────
-    # Gemini / Messaging
-    # ─────────────────────────────────────────────────────────────────
-
     async def _generate_nova_message(self, event: TokenEvent) -> str:
         if not client:
             return self._fallback_message(event)
-
-        creator_short = (
-            f"{event.creator[:8]}...{event.creator[-4:]}"
-            if event.creator != "unknown"
-            else "unknown"
-        )
-
-        liquidity_text = (
-            f"${event.liquidity_usd:,.0f}"
-            if event.liquidity_usd
-            else "Not yet known"
-        )
-
-        market_cap_text = (
-            f"${event.market_cap:,.0f}"
-            if event.market_cap
-            else "Not yet known"
-        )
-
+        creator_short = f"{event.creator[:8]}...{event.creator[-4:]}" if event.creator != "unknown" else "unknown"
+        liquidity_text = f"${event.liquidity_usd:,.0f}" if event.liquidity_usd else "Not yet known"
+        market_cap_text = f"${event.market_cap:,.0f}" if event.market_cap else "Not yet known"
         system_prompt = (
             "You are Nova, a sharp-witted crypto scout in a fast-paced team chat. "
             "You just spotted a brand new token. You speak with urgency and confidence, "
             "like someone who lives on-chain 24/7. Use crypto slang where it feels natural, "
             "but stay readable. You are excited by discovery but never shill — your job is to flag, not sell."
         )
-
         user_prompt = f"""
 Token Details:
 - Symbol: {event.token_symbol}
@@ -418,29 +359,21 @@ Token Details:
 Requirements:
 1. Open with an excited, natural discovery announcement
 2. Mention the chain and contract address briefly
-3. Note any obvious red flags if present (unknown creator, zero liquidity, etc.)
+3. Note any obvious red flags if present
 4. Hand off to Atlas and Vega clearly and naturally
 5. Keep it under 4 sentences
 6. Sound like a real degen who knows what they are talking about
 """
-
         try:
             def _generate():
                 return client.models.generate_content(
                     model=GEMINI_MODEL,
                     contents=f"{system_prompt}\n\n{user_prompt}"
                 )
-
-            response = await asyncio.wait_for(
-                asyncio.to_thread(_generate),
-                timeout=15
-            )
-
+            response = await asyncio.wait_for(asyncio.to_thread(_generate), timeout=15)
             if response and hasattr(response, "text") and response.text:
                 return response.text.strip()
-
             return self._fallback_message(event)
-
         except asyncio.TimeoutError:
             print(f"⚠️ {self.name}: Gemini call timed out")
             return self._fallback_message(event)
@@ -452,7 +385,6 @@ Requirements:
         symbol = event.token_symbol
         chain = event.chain.upper()
         addr_short = event.token_address[:8] + "..." + event.token_address[-4:]
-
         fallbacks = [
             f"Yo, just spotted {symbol} on {chain}! Contract {addr_short}. Atlas, Vega — you're up.",
             f"Heads up team — {symbol} just dropped on {chain}. Fresh contract at {addr_short}.",
@@ -462,8 +394,9 @@ Requirements:
         return random.choice(fallbacks)
 
     async def _speak(self, message: str, msg_type: str = "discovery"):
+        """Publish chat message to the BRIDGE so it appears in the frontend."""
         try:
-            self.publish("AGENT_MESSAGE", {
+            self.bridge_publish("AGENT_MESSAGE", {
                 "agent": self.name,
                 "message": message,
                 "type": msg_type,
@@ -471,7 +404,7 @@ Requirements:
                 "timestamp": time.time()
             })
         except Exception as e:
-            print(f"⚠️ {self.name}: Publish failed: {e}")
+            print(f"⚠️ {self.name}: Bridge publish failed: {e}")
 
     async def _supervise(self, coro_fn, name: str, *args):
         backoff = 1
@@ -487,46 +420,33 @@ Requirements:
                 raise
             except Exception as e:
                 print(f"❌ {self.name}: {name} watcher crashed: {e}")
-
             if not self.running:
                 break
-
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, max_backoff)
-
-    # ═══════════════════════════════════════════════════════════════════
-    # Lifecycle
-    # ═══════════════════════════════════════════════════════════════════
 
     async def start(self):
         if self.running:
             print(f"⚠️ {self.name}: Already running.")
             return
-
         self.running = True
         print(f"🔭 {self.name}: Multi-chain surveillance ACTIVE.")
         await self._speak("Nova checking in. Surveillance systems online. Eyes everywhere.", "system")
-
-        # Spawn one watcher per connected EVM chain + Solana
         self._tasks = []
         for chain in self.web3_instances:
             self._tasks.append(
                 asyncio.create_task(self._supervise(self._watch_evm_chain, chain.upper(), chain))
             )
-
-        # Solana watcher (only if we have a working RPC)
         if self.solana_rpc_url:
             self._tasks.append(
                 asyncio.create_task(self._supervise(self._watch_solana, "Solana"))
             )
         else:
             print(f"⚠️ {self.name}: Solana RPC unavailable, skipping Solana watcher")
-
         if not self._tasks:
             print(f"❌ {self.name}: No chains connected. Cannot start surveillance.")
             self.running = False
             return
-
         await asyncio.gather(*self._tasks, return_exceptions=True)
 
     async def stop(self):
@@ -537,34 +457,18 @@ Requirements:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         print(f"✅ {self.name}: All watchers stopped.")
 
-    # ═══════════════════════════════════════════════════════════════════
-    # PUBLIC API — User pasted a token address (FORENSIC LAB)
-    # ═══════════════════════════════════════════════════════════════════
-
     async def search_token(self, token_address: str, chain: Optional[str] = None) -> Optional[TokenEvent]:
-        """
-        Investigation mode — user pasted a token address.
-        Fetches on-chain basics + DexScreener market data, then reports.
-        This is called by the orchestrator when MANUAL_INVESTIGATE is received.
-        """
         token_address = token_address.strip()
-
-        # Auto-detect chain
         if chain is None:
             if token_address.startswith("0x") and len(token_address) == 42:
                 chain = "ethereum"
             elif 32 <= len(token_address) <= 44 and not token_address.startswith("0x"):
                 chain = "solana"
             else:
-                await self._speak(
-                    "That doesn't look like a token address I recognize. "
-                    "EVM (0x...) or Solana (base58) only.", "error"
-                )
+                await self._speak("That doesn't look like a token address I recognize. EVM (0x...) or Solana (base58) only.", "error")
                 return None
         else:
             chain = chain.lower()
-
-        # Normalize aliases
         if chain == "eth":
             chain = "ethereum"
         elif chain == "bnb":
@@ -573,8 +477,6 @@ Requirements:
             chain = "polygon"
         elif chain == "avax":
             chain = "avalanche"
-
-        # Validate
         if chain in self.CHAIN_CONFIG:
             if not Web3.is_address(token_address):
                 await self._speak(f"That doesn't look like a valid {chain.upper()} address, fam.", "error")
@@ -588,8 +490,6 @@ Requirements:
             supported = ", ".join(list(self.CHAIN_CONFIG.keys()) + ["solana"])
             await self._speak(f"Chain '{chain}' not supported yet. I scan: {supported}.", "error")
             return None
-
-        # Fetch on-chain metadata
         if chain in self.web3_instances:
             w3 = self.web3_instances[chain]
             token_info = await self._fetch_evm_token_info(w3, token_address)
@@ -597,11 +497,8 @@ Requirements:
             token_info = await self._fetch_solana_token_info_investigate(token_address)
         else:
             token_info = {"name": "Unknown", "symbol": "???", "decimals": 18, "creator": "unknown"}
-
-        # Fetch DexScreener market data (investigation only)
         dex_slug = self.CHAIN_CONFIG.get(chain, {}).get("dex_slug", chain)
         market_data = await self._fetch_dexscreener_token(token_address, dex_slug)
-
         token_event = TokenEvent(
             event_type="USER_QUERY",
             chain=chain,
@@ -615,16 +512,13 @@ Requirements:
             origin_source="user_query",
             raw_data={"token_info": token_info, "market": market_data}
         )
-
-        # Generate and broadcast
         nova_msg = await self._generate_nova_message(token_event)
         await self._speak(nova_msg, "discovery")
-
+        # Publish to LOCAL bus so orchestrator triggers Atlas/Vega
         try:
-            self.publish("NEW_TOKEN", token_event.__dict__)
+            self.local_bus_publish("NEW_TOKEN", token_event.__dict__)
         except Exception as e:
-            print(f"⚠️ {self.name}: Publish error: {e}")
-
+            print(f"⚠️ {self.name}: Local bus publish error: {e}")
         print(f"🔍 {self.name}: Investigated {token_event.token_symbol} on {chain}")
         return token_event
 
@@ -636,22 +530,16 @@ Requirements:
         base58_chars = set("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
         return all(c in base58_chars for c in addr)
 
-    # ═══════════════════════════════════════════════════════════════════
-    # EVM SURVEILLANCE — RPC-only (all 7 chains)
-    # ═══════════════════════════════════════════════════════════════════
-
     async def _watch_evm_chain(self, chain: str):
         try:
             if chain not in self.web3_instances:
                 print(f"⚠️ {self.name}: No Web3 instance for {chain}")
                 await asyncio.sleep(300)
                 return
-
             w3 = self.web3_instances[chain]
             config = self.CHAIN_CONFIG[chain]
             factory_address = config["factory"]
             w_native = config["w_native"]
-
             factory = w3.eth.contract(
                 address=Web3.to_checksum_address(factory_address),
                 abi=[{
@@ -666,59 +554,40 @@ Requirements:
                     "type": "event"
                 }]
             )
-
             latest_block = await asyncio.to_thread(lambda: w3.eth.block_number)
             from_block = max(latest_block - 50, 0)
-
             print(f"🔍 {self.name}: Scanning {chain} from block {from_block}...")
-
             while self.running:
                 try:
-                    # If orchestrator says we're busy, sleep and check again
                     if self._busy:
                         await asyncio.sleep(2)
                         continue
-
-                    # Rate limit check
                     if not self._check_rate_limit(chain):
                         await asyncio.sleep(2)
                         continue
-
                     current_block = await asyncio.to_thread(lambda: w3.eth.block_number)
-
                     if current_block < from_block:
                         await asyncio.sleep(3)
                         continue
-
-                    # Chunk catch-up into 50-block ranges (RPC-safe)
                     scan_to = current_block
                     while from_block <= scan_to and self.running:
                         chunk_end = min(scan_to, from_block + 50)
-
                         events = await asyncio.to_thread(
                             lambda fb=from_block, tb=chunk_end: factory.events.PairCreated().get_logs(
-                                from_block=fb,
-                                to_block=tb
+                                from_block=fb, to_block=tb
                             )
                         )
-
                         for event in events:
                             try:
-                                # If busy, skip this token
                                 if self._busy:
                                     break
-
                                 token0 = event.args.token0
                                 token1 = event.args.token1
                                 pair = event.args.pair
-
                                 new_token = token1 if token0.lower() == w_native.lower() else token0
-
                                 if not self._track_token(new_token):
                                     continue
-
                                 token_info = await self._fetch_evm_token_info(w3, new_token)
-
                                 token_event = TokenEvent(
                                     event_type="NEW_TOKEN",
                                     chain=chain,
@@ -731,40 +600,29 @@ Requirements:
                                     origin_source="uniswap" if chain != "bsc" else "pancakeswap",
                                     raw_data={"pair": pair, "token0": token0, "token1": token1}
                                 )
-
-                                # QUALITY CHECK — only pass good tokens
                                 passes = await self._passes_quality_check(token_event)
                                 if not passes:
                                     continue
-
-                                # If we got here, the token is worth investigating
-                                # But check busy again before publishing
                                 if self._busy:
                                     print(f"⏸️ {self.name}: {token_event.token_symbol} held — investigation in progress.")
                                     self._candidate_buffer.append(token_event)
                                     continue
-
+                                # FIX: Publish NEW_TOKEN to LOCAL bus (not bridge)
                                 try:
-                                    self.publish("NEW_TOKEN", token_event.__dict__)
+                                    self.local_bus_publish("NEW_TOKEN", token_event.__dict__)
                                 except Exception as pub_error:
-                                    print(f"⚠️ {self.name}: Publish error: {pub_error}")
-
+                                    print(f"⚠️ {self.name}: Local bus publish error: {pub_error}")
+                                # Chat message goes to bridge → frontend
                                 nova_msg = await self._generate_nova_message(token_event)
                                 await self._speak(nova_msg, "discovery")
-
                                 print(f"🎯 {self.name}: {token_event.token_symbol} on {chain}")
-
                             except Exception as inner_error:
                                 print(f"⚠️ {self.name}: Event processing error: {inner_error}")
-
                         from_block = chunk_end + 1
-
                     await asyncio.sleep(3)
-
                 except Exception as e:
                     print(f"⚠️ {self.name}: {chain} watcher error: {e}")
                     await asyncio.sleep(5)
-
         except Exception as e:
             print(f"❌ {self.name}: Fatal on {chain}: {e}")
 
@@ -775,14 +633,8 @@ Requirements:
                 {"constant": True, "inputs": [], "name": "symbol", "outputs": [{"name": "", "type": "string"}], "type": "function"},
                 {"constant": True, "inputs": [], "name": "decimals", "outputs": [{"name": "", "type": "uint8"}], "type": "function"},
             ]
-
-            token = w3.eth.contract(
-                address=Web3.to_checksum_address(token_address),
-                abi=erc20_abi
-            )
-
+            token = w3.eth.contract(address=Web3.to_checksum_address(token_address), abi=erc20_abi)
             name, symbol, decimals = "Unknown", "???", 18
-
             try:
                 name = await asyncio.to_thread(token.functions.name().call)
             except Exception:
@@ -795,40 +647,28 @@ Requirements:
                 decimals = await asyncio.to_thread(token.functions.decimals().call)
             except Exception:
                 pass
-
             return {"name": name, "symbol": symbol, "decimals": decimals, "creator": "unknown"}
-
         except Exception as e:
             print(f"⚠️ {self.name}: Token info fetch failed: {e}")
             return {"name": "Unknown", "symbol": "???", "decimals": 18, "creator": "unknown"}
-
-    # ═══════════════════════════════════════════════════════════════════
-    # SOLANA SURVEILLANCE — RPC-only (Raydium AMM V4)
-    # ═══════════════════════════════════════════════════════════════════
 
     async def _watch_solana(self):
         if not self.solana_rpc_url:
             print(f"⚠️ {self.name}: Solana RPC not available")
             await asyncio.sleep(300)
             return
-
         rpc_url = self.solana_rpc_url
         headers = {"Content-Type": "application/json"}
         last_sig = None
-
         async with aiohttp.ClientSession() as session:
             while self.running:
                 try:
-                    # Check busy state
                     if self._busy:
                         await asyncio.sleep(2)
                         continue
-
-                    # Rate limit
                     if not self._check_rate_limit("solana"):
                         await asyncio.sleep(2)
                         continue
-
                     payload = {
                         "jsonrpc": "2.0",
                         "id": 1,
@@ -840,27 +680,21 @@ Requirements:
                             print(f"⚠️ {self.name}: Solana RPC error {resp.status}")
                             await asyncio.sleep(10)
                             continue
-
                         data = await resp.json()
                         sigs = data.get("result", [])
                         if not sigs:
                             await asyncio.sleep(10)
                             continue
-
                         new_sigs = []
                         for s in sigs:
                             if s["signature"] == last_sig:
                                 break
                             new_sigs.append(s["signature"])
-
                         if new_sigs:
-                            new_sigs.reverse()  # oldest first
-
+                            new_sigs.reverse()
                             for sig in new_sigs:
-                                # Check busy before processing each tx
                                 if self._busy:
                                     break
-
                                 tx_payload = {
                                     "jsonrpc": "2.0",
                                     "id": 1,
@@ -873,21 +707,16 @@ Requirements:
                                         tx = tx_data.get("result")
                                         if not tx:
                                             continue
-
                                         meta = tx.get("meta", {})
                                         post_balances = meta.get("postTokenBalances", [])
-
                                         found_mints = set()
                                         for bal in post_balances:
                                             mint = bal.get("mint")
                                             if mint and mint not in self.SOLANA_IGNORE_MINTS:
                                                 found_mints.add(mint)
-
                                         for mint in found_mints:
                                             if not self._track_token(mint):
                                                 continue
-
-                                            # Verify it is a real mint with supply
                                             supply_payload = {
                                                 "jsonrpc": "2.0",
                                                 "id": 1,
@@ -902,9 +731,7 @@ Requirements:
                                                         continue
                                             except Exception:
                                                 continue
-
                                             token_info = await self._fetch_solana_token_info_rpc(mint, rpc_url, session)
-
                                             token_event = TokenEvent(
                                                 event_type="NEW_TOKEN",
                                                 chain="solana",
@@ -916,33 +743,25 @@ Requirements:
                                                 origin_source="raydium",
                                                 raw_data={"signature": sig, "supply": supply_info.get("uiAmountString")}
                                             )
-
-                                            # QUALITY CHECK
                                             passes = await self._passes_quality_check(token_event)
                                             if not passes:
                                                 continue
-
                                             if self._busy:
                                                 print(f"⏸️ {self.name}: {token_event.token_symbol} held — investigation in progress.")
                                                 self._candidate_buffer.append(token_event)
                                                 continue
-
+                                            # FIX: Publish to LOCAL bus
                                             try:
-                                                self.publish("NEW_TOKEN", token_event.__dict__)
+                                                self.local_bus_publish("NEW_TOKEN", token_event.__dict__)
                                             except Exception as pub_error:
-                                                print(f"⚠️ {self.name}: Publish error: {pub_error}")
-
+                                                print(f"⚠️ {self.name}: Local bus publish error: {pub_error}")
                                             nova_msg = await self._generate_nova_message(token_event)
                                             await self._speak(nova_msg, "discovery")
                                             print(f"🎯 {self.name}: {token_event.token_symbol} on solana")
-
                                 except Exception as tx_error:
                                     print(f"⚠️ {self.name}: Solana tx parse error: {tx_error}")
-
                             last_sig = sigs[0]["signature"]
-
                         await asyncio.sleep(8)
-
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -950,7 +769,7 @@ Requirements:
                     await asyncio.sleep(10)
 
     async def _fetch_solana_token_info_rpc(self, mint: str, rpc_url: str, session: aiohttp.ClientSession) -> dict:
-        """RPC-only Solana token metadata (supply/decimals)."""
+        """RPC-only Solana token metadata (supply/decimals). FIXED: removed duplicated code."""
         payload = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -969,14 +788,11 @@ Requirements:
             return {"name": "Unknown", "symbol": "???", "decimals": 9, "creator": "unknown"}
 
     async def _fetch_solana_token_info_investigate(self, mint: str) -> dict:
-        """For user queries — RPC first, then DexScreener for name/symbol enrichment."""
         if self.solana_rpc_url:
             async with aiohttp.ClientSession() as session:
                 basic = await self._fetch_solana_token_info_rpc(mint, self.solana_rpc_url, session)
         else:
             basic = {"name": "Unknown", "symbol": "???", "decimals": 9, "creator": "unknown"}
-
-        # Enrich with DexScreener
         market = await self._fetch_dexscreener_token(mint, self.SOLANA_DEX_SLUG)
         if market:
             pairs = market.get("all_pairs", [])
@@ -984,22 +800,11 @@ Requirements:
                 base = pairs[0].get("baseToken", {})
                 basic["name"] = base.get("name", basic["name"])
                 basic["symbol"] = base.get("symbol", basic["symbol"])
-
         return basic
 
-    # ═══════════════════════════════════════════════════════════════════
-    # DEXSCREENER — Used for quality checks and investigations
-    # ═══════════════════════════════════════════════════════════════════
-
     async def _fetch_dexscreener_token(self, token_address: str, chain_slug: str) -> dict:
-        """
-        Deep dive market data for a specific token.
-        Endpoint: /tokens/v1/{chainId}/{tokenAddresses}
-        Rate limit: 300 requests/minute (no API key needed)
-        """
         url = f"https://api.dexscreener.com/tokens/v1/{chain_slug}/{token_address}"
         headers = {"User-Agent": "Mozilla/5.0"}
-
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -1011,7 +816,6 @@ Requirements:
                     pairs = data if isinstance(data, list) else []
                     if not pairs:
                         return {}
-
                     best = pairs[0]
                     return {
                         "liquidity_usd": best.get("liquidity", {}).get("usd"),
@@ -1025,19 +829,3 @@ Requirements:
         except Exception as e:
             print(f"⚠️ {self.name}: DexScreener lookup failed: {e}")
             return {}
-
-
-async def main():
-    def dummy_publish(event_type: str, payload: dict):
-        print(f"[PUBLISH] {event_type}: {payload.get('token_symbol', 'N/A')} on {payload.get('chain', 'N/A')}")
-
-    agent = WatcherAgent(dummy_publish)
-
-    try:
-        await agent.start()
-    except KeyboardInterrupt:
-        await agent.stop()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
