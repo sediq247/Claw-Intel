@@ -300,7 +300,7 @@ Requirements:
             def _generate():
                 kwargs = {
                     "model": GEMINI_MODEL,
-                    "contents": user_prompt,
+                    "contents": f"{system_prompt}\n\n{user_prompt}",
                 }
                 if genai_types:
                     kwargs["config"] = genai_types.GenerateContentConfig(

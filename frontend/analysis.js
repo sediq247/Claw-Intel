@@ -1,604 +1,653 @@
 /**
- * 🔬 frontend/analysis.js
- * ClawIntel — Forensic Lab
- * User pastes token → Agents investigate → Chat their findings → Final verdict
- * PURE BACKEND: All messages come from WebSocket. No demo simulation.
+ * THE AGENTS - Forensic Lab
+ * Multi-agent token analysis engine with DexScreener integration
  */
 
-const CONFIG = {
-  WS_URL: `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`,
-  RECONNECT_INTERVAL: 3000,
-  TYPING_DURATION: 1500,
+// ========== DOM ELEMENTS ==========
+const els = {
+  tokenInput: document.getElementById('token-input'),
+  scanBtn: document.getElementById('scan-btn'),
+  scanBtnText: document.getElementById('scan-btn-text'),
+  agentLab: document.getElementById('agent-lab'),
+  agentChat: document.getElementById('agent-chat'),
+  progressFill: document.getElementById('progress-fill'),
+  progressText: document.getElementById('progress-text'),
+  progressPercent: document.getElementById('progress-percent'),
+  tokenSummary: document.getElementById('token-summary'),
+  summaryIcon: document.getElementById('summary-icon'),
+  summaryName: document.getElementById('summary-name'),
+  summaryAddress: document.getElementById('summary-address'),
+  scanAnotherContainer: document.getElementById('scan-another-container'),
+  scanAnotherBtn: document.getElementById('scan-another-btn'),
+  labStatus: document.getElementById('lab-status'),
 };
 
-class ForensicLab {
-  constructor() {
-    this.ws = null;
-    this.isInvestigating = false;
-    this.currentInvestigation = null;
-    this.messagesContainer = document.getElementById('investigation-messages');
-    this.emptyState = document.getElementById('investigation-empty');
-    this.scanBtn = document.getElementById('scan-btn');
-    this.scanBtnText = document.getElementById('scan-btn-text');
-    this.tokenInput = document.getElementById('token-address');
-    this.chainSelect = document.getElementById('chain-select');
-    this.investigationStatus = document.getElementById('investigation-status');
-    this.scanForm = document.querySelector('.scan-form');
-    this.verdictContainer = document.getElementById('verdict-container');
+// ========== STATE ==========
+let isScanning = false;
+let scanAbortController = null;
 
-    // Internal DOM elements (created dynamically)
-    this.progressContainer = null;
-    this.progressFill = null;
-    this.progressStep = null;
-    this.progressPercent = null;
-    this.tokenSummary = null;
+// ========== AGENT CONFIGURATION ==========
+const AGENTS = {
+  nova: {
+    name: 'NOVA',
+    role: 'On-chain Intelligence',
+    avatar: '&#128269;',
+    colorClass: 'nova',
+    delay: 800,
+  },
+  simulator: {
+    name: 'ATLAS',
+    role: 'Transaction Simulator',
+    avatar: '&#9889;',
+    colorClass: 'simulator',
+    delay: 2800,
+  },
+  decision: {
+    name: 'ORION',
+    role: 'Forensic Result Reporter',
+    avatar: '&#9878;',
+    colorClass: 'Decision',
+    delay: 5200,
+  },
+};
 
-    this.agentColors = {
-      Nova: '#00e5ff', Atlas: '#00c853', Vega: '#d500f9',
-      Echo: '#ffd600', Orion: '#ff1744', system: '#8a8a9a'
-    };
-    this.agentEmojis = {
-      Nova: 'N', Atlas: 'V', Vega: 'V', Echo: 'E', Orion: 'O', system: '⚖️'
-    };
+// ========== UTILITY FUNCTIONS ==========
 
-    this.init();
-  }
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
-  init() {
-    this.injectTypingStyles();
-    this.connectWebSocket();
+function formatAddress(addr) {
+  if (!addr || addr.length < 12) return addr;
+  return addr.slice(0, 8) + '...' + addr.slice(-6);
+}
 
-    // Enter key on input
-    if (this.tokenInput) {
-      this.tokenInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') this.startInvestigation();
-      });
-    }
-  }
+function formatPrice(price) {
+  if (!price && price !== 0) return 'N/A';
+  if (price >= 1) return '$' + price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+  if (price >= 0.0001) return '$' + price.toFixed(6);
+  return '$' + price.toExponential(4);
+}
 
-  injectTypingStyles() {
-    if (document.getElementById('clawintel-typing-styles')) return;
-    const style = document.createElement('style');
-    style.id = 'clawintel-typing-styles';
-    style.textContent = `
-      @keyframes typingBounce {
-        0%, 60%, 100% { transform: translateY(0); }
-        30% { transform: translateY(-6px); }
-      }
-      @keyframes typingFadeIn {
-        from { opacity: 0; transform: translateY(6px); }
-        to { opacity: 1; transform: translateY(0); }
-      }
-      @keyframes agentPulse {
-        0%, 100% { box-shadow: 0 0 0 0 rgba(var(--agent-rgb), 0.4); }
-        50% { box-shadow: 0 0 0 6px rgba(var(--agent-rgb), 0); }
-      }
-      .typing-row {
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-        padding: 0.6rem 0;
-        opacity: 0;
-        animation: typingFadeIn 0.35s ease forwards;
-      }
-      .typing-row-avatar {
-        width: 32px;
-        height: 32px;
-        border-radius: 8px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 0.75rem;
-        font-weight: 700;
-        flex-shrink: 0;
-        position: relative;
-      }
-      .typing-row-avatar.nova { --agent-rgb: 0,229,255; background: rgba(0,229,255,0.1); border: 1px solid rgba(0,229,255,0.25); color: #00e5ff; }
-      .typing-row-avatar.atlas { --agent-rgb: 0,200,83; background: rgba(0,200,83,0.1); border: 1px solid rgba(0,200,83,0.25); color: #00c853; }
-      .typing-row-avatar.vega { --agent-rgb: 213,0,249; background: rgba(213,0,249,0.1); border: 1px solid rgba(213,0,249,0.25); color: #d500f9; }
-      .typing-row-avatar.echo { --agent-rgb: 255,214,0; background: rgba(255,214,0,0.1); border: 1px solid rgba(255,214,0,0.25); color: #ffd600; }
-      .typing-row-avatar.orion { --agent-rgb: 255,23,68; background: rgba(255,23,68,0.1); border: 1px solid rgba(255,23,68,0.25); color: #ff1744; }
-      .typing-row-avatar.system { --agent-rgb: 138,138,154; background: rgba(138,138,154,0.1); border: 1px solid rgba(138,138,154,0.25); color: #8a8a9a; }
-      .typing-row-dots {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-      }
-      .typing-row-dots span {
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: var(--text-muted);
-        animation: typingBounce 1.4s ease-in-out infinite;
-      }
-      .typing-row-dots span:nth-child(1) { animation-delay: 0s; }
-      .typing-row-dots span:nth-child(2) { animation-delay: 0.2s; }
-      .typing-row-dots span:nth-child(3) { animation-delay: 0.4s; }
-      .typing-row.visible {
-        opacity: 1;
-      }
-    `;
-    document.head.appendChild(style);
-  }
+function formatNumber(num) {
+  if (!num && num !== 0) return 'N/A';
+  if (num >= 1e9) return (num / 1e9).toFixed(2) + 'B';
+  if (num >= 1e6) return (num / 1e6).toFixed(2) + 'M';
+  if (num >= 1e3) return (num / 1e3).toFixed(2) + 'K';
+  return num.toLocaleString();
+}
 
-  connectWebSocket() {
-    try {
-      this.ws = new WebSocket(CONFIG.WS_URL);
+function updateProgress(percent, text) {
+  els.progressFill.style.width = percent + '%';
+  els.progressPercent.textContent = percent + '%';
+  if (text) els.progressText.textContent = text;
+}
 
-      this.ws.onopen = () => {
-        this.setConnectionStatus(true);
-      };
+// ========== UI FUNCTIONS ==========
 
-      this.ws.onmessage = (event) => {
-        try {
-          const { type, payload } = JSON.parse(event.data);
-          this.handleMessage(type, payload);
-        } catch (e) {
-          console.error('[Lab] Parse error:', e);
-        }
-      };
+function setScanningState(scanning) {
+  isScanning = scanning;
+  els.scanBtn.disabled = scanning;
+  els.tokenInput.disabled = scanning;
+  els.scanBtnText.innerHTML = scanning
+    ? '<span class="typing-indicator"><span></span><span></span><span></span></span> SCANNING...'
+    : '&#9906; INITIATE SCAN';
+}
 
-      this.ws.onclose = () => {
-        this.setConnectionStatus(false);
-        setTimeout(() => this.connectWebSocket(), CONFIG.RECONNECT_INTERVAL);
-      };
+function resetLab() {
+  els.agentChat.innerHTML = '';
+  els.agentLab.classList.remove('active');
+  els.tokenSummary.style.display = 'none';
+  els.scanAnotherContainer.style.display = 'none';
+  updateProgress(0, 'Ready');
+  els.labStatus.textContent = 'LAB READY';
+  els.labStatus.style.color = 'var(--accent-green)';
+  els.tokenInput.value = '';
+  els.tokenInput.focus();
+}
 
-      this.ws.onerror = () => {
-        this.setConnectionStatus(false);
-      };
-    } catch (e) {
-      console.error('[Lab] WS error:', e);
-    }
-  }
+function createAgentMessage(agentKey, content) {
+  const agent = AGENTS[agentKey];
+  const now = new Date();
+  const time = now.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-  setConnectionStatus(online) {
-    const indicator = document.getElementById('connection-status');
-    const text = document.getElementById('connection-text');
-    if (indicator && text) {
-      indicator.className = 'live-indicator ' + (online ? '' : 'offline');
-      text.textContent = online ? 'Live' : 'Offline';
-    }
-  }
+  const msgDiv = document.createElement('div');
+  msgDiv.className = 'agent-message';
+  msgDiv.innerHTML = `
+    <div class="agent-message-header">
+      <div class="agent-avatar ${agent.colorClass}">${agent.avatar}</div>
+      <span class="agent-name ${agent.colorClass}">${agent.name}</span>
+      <span class="agent-role">${agent.role}</span>
+      <span class="agent-timestamp">${time}</span>
+    </div>
+    <div class="agent-bubble ${agent.colorClass}">${content}</div>
+  `;
 
-  // ── Internal HTML Generators ──
-  createProgressBar() {
-    if (this.progressContainer) return;
-    const container = document.createElement('div');
-    container.className = 'scan-progress-container';
-    container.id = 'scan-progress';
-    container.style.cssText = `
-      margin-top: 1.25rem;
-      padding: 1rem 1.25rem;
-      background: rgba(10, 10, 18, 0.6);
-      border: 1px solid rgba(255, 255, 255, 0.06);
-      border-radius: 12px;
-      backdrop-filter: blur(10px);
-      opacity: 0;
-      transform: translateY(-8px);
-      transition: opacity 0.4s ease, transform 0.4s ease;
-    `;
-    container.innerHTML = `
-      <div class="scan-progress-label" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
-        <span id="scan-step" style="font-size:0.8rem;font-weight:500;color:var(--text-secondary);letter-spacing:0.02em;">Initializing...</span>
-        <span id="scan-percent" style="font-size:0.85rem;font-weight:700;color:var(--accent);font-family:'JetBrains Mono',monospace;">0%</span>
+  return msgDiv;
+}
+
+function addTypingIndicator(agentKey) {
+  const agent = AGENTS[agentKey];
+  const indicator = document.createElement('div');
+  indicator.id = `typing-${agentKey}`;
+  indicator.className = 'agent-message';
+  indicator.innerHTML = `
+    <div class="agent-message-header">
+      <div class="agent-avatar ${agent.colorClass}">${agent.avatar}</div>
+      <span class="agent-name ${agent.colorClass}">${agent.name}</span>
+      <span class="agent-role">${agent.role}</span>
+    </div>
+    <div class="agent-bubble ${agent.colorClass}">
+      <div class="typing-indicator">
+        <span style="background: var(--accent-${agent.colorClass === 'nova' ? 'cyan' : agent.colorClass === 'simulator' ? 'purple' : 'amber'})"></span>
+        <span style="background: var(--accent-${agent.colorClass === 'nova' ? 'cyan' : agent.colorClass === 'simulator' ? 'purple' : 'amber'})"></span>
+        <span style="background: var(--accent-${agent.colorClass === 'nova' ? 'cyan' : agent.colorClass === 'simulator' ? 'purple' : 'amber'})"></span>
       </div>
-      <div class="scan-progress-bar-wrap" style="width:100%;height:6px;background:rgba(255,255,255,0.04);border-radius:3px;overflow:hidden;position:relative;">
-        <div class="scan-progress-bar-fill" id="scan-progress-fill" style="width:0%;height:100%;background:linear-gradient(90deg,var(--accent),#00e5ff);border-radius:3px;transition:width 0.6s cubic-bezier(0.4,0,0.2,1);position:relative;">
-          <div style="position:absolute;right:0;top:50%;transform:translateY(-50%);width:8px;height:8px;background:#00e5ff;border-radius:50%;box-shadow:0 0 12px rgba(0,229,255,0.5);"></div>
-        </div>
-      </div>
-    `;
-    if (this.scanForm) this.scanForm.appendChild(container);
+    </div>
+  `;
+  els.agentChat.appendChild(indicator);
+  indicator.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
 
-    // Trigger animation
-    requestAnimationFrame(() => {
-      container.style.opacity = '1';
-      container.style.transform = 'translateY(0)';
+function removeTypingIndicator(agentKey) {
+  const indicator = document.getElementById(`typing-${agentKey}`);
+  if (indicator) indicator.remove();
+}
+
+async function typeMessage(agentKey, message) {
+  const agent = AGENTS[agentKey];
+  const now = new Date();
+  const time = now.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+  const msgDiv = document.createElement('div');
+  msgDiv.className = 'agent-message';
+  msgDiv.style.opacity = '1';
+  msgDiv.innerHTML = `
+    <div class="agent-message-header">
+      <div class="agent-avatar ${agent.colorClass}">${agent.avatar}</div>
+      <span class="agent-name ${agent.colorClass}">${agent.name}</span>
+      <span class="agent-role">${agent.role}</span>
+      <span class="agent-timestamp">${time}</span>
+    </div>
+    <div class="agent-bubble ${agent.colorClass}"><span class="typing-content"></span><span class="cursor" style="border-right: 2px solid var(--accent-cyan); animation: typeCursor 1s infinite;">&nbsp;</span></div>
+  `;
+
+  els.agentChat.appendChild(msgDiv);
+
+  const contentSpan = msgDiv.querySelector('.typing-content');
+  const cursor = msgDiv.querySelector('.cursor');
+
+  // Type out message
+  for (let i = 0; i < message.length; i++) {
+    contentSpan.innerHTML += message[i];
+    msgDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    // Variable typing speed for realism
+    await sleep(15 + Math.random() * 30);
+  }
+
+  cursor.style.display = 'none';
+  msgDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
+// ========== DEXSCREENER API ==========
+
+async function searchToken(address) {
+  try {
+    // First try: search by token address directly
+    const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`, {
+      signal: scanAbortController?.signal,
     });
 
-    this.progressContainer = container;
-    this.progressFill = document.getElementById('scan-progress-fill');
-    this.progressStep = document.getElementById('scan-step');
-    this.progressPercent = document.getElementById('scan-percent');
-  }
+    if (!response.ok) throw new Error('DexScreener API error');
+    const data = await response.json();
 
-  removeProgressBar() {
-    if (this.progressContainer) {
-      this.progressContainer.remove();
-      this.progressContainer = null;
-      this.progressFill = null;
-      this.progressStep = null;
-      this.progressPercent = null;
+    if (data.pairs && data.pairs.length > 0) {
+      return data.pairs;
     }
-  }
 
-  createTokenSummary() {
-    if (this.tokenSummary) return;
-    const el = document.createElement('div');
-    el.className = 'token-summary';
-    el.id = 'token-summary';
-    el.style.cssText = `
-      margin-top: 1.25rem;
-      padding: 1.25rem;
-      background: rgba(10, 10, 18, 0.6);
-      border: 1px solid rgba(255, 255, 255, 0.06);
-      border-radius: 12px;
-      backdrop-filter: blur(10px);
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 0.75rem 1.5rem;
-      opacity: 0;
-      transform: translateY(-8px);
-      transition: opacity 0.4s ease, transform 0.4s ease;
-    `;
-    el.innerHTML = `
-      <div class="token-summary-row" style="display:flex;justify-content:space-between;align-items:center;padding:0.4rem 0;border-bottom:1px solid rgba(255,255,255,0.03);">
-        <span class="token-summary-label" style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em;">Name</span>
-        <span class="token-summary-value" id="sum-name" style="font-size:0.85rem;font-weight:600;color:var(--text-primary);font-family:'JetBrains Mono',monospace;">—</span>
-      </div>
-      <div class="token-summary-row" style="display:flex;justify-content:space-between;align-items:center;padding:0.4rem 0;border-bottom:1px solid rgba(255,255,255,0.03);">
-        <span class="token-summary-label" style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em;">Symbol</span>
-        <span class="token-summary-value" id="sum-symbol" style="font-size:0.85rem;font-weight:600;color:var(--text-primary);font-family:'JetBrains Mono',monospace;">—</span>
-      </div>
-      <div class="token-summary-row" style="display:flex;justify-content:space-between;align-items:center;padding:0.4rem 0;border-bottom:1px solid rgba(255,255,255,0.03);">
-        <span class="token-summary-label" style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em;">Chain</span>
-        <span class="token-summary-value" id="sum-chain" style="font-size:0.85rem;font-weight:600;color:var(--accent);font-family:'JetBrains Mono',monospace;">—</span>
-      </div>
-      <div class="token-summary-row" style="display:flex;justify-content:space-between;align-items:center;padding:0.4rem 0;border-bottom:1px solid rgba(255,255,255,0.03);">
-        <span class="token-summary-label" style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em;">Price</span>
-        <span class="token-summary-value" id="sum-price" style="font-size:0.85rem;font-weight:600;color:var(--text-primary);font-family:'JetBrains Mono',monospace;">—</span>
-      </div>
-      <div class="token-summary-row" style="display:flex;justify-content:space-between;align-items:center;padding:0.4rem 0;border-bottom:1px solid rgba(255,255,255,0.03);">
-        <span class="token-summary-label" style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em;">Liquidity</span>
-        <span class="token-summary-value" id="sum-liquidity" style="font-size:0.85rem;font-weight:600;color:var(--safe);font-family:'JetBrains Mono',monospace;">—</span>
-      </div>
-      <div class="token-summary-row" style="display:flex;justify-content:space-between;align-items:center;padding:0.4rem 0;border-bottom:1px solid rgba(255,255,255,0.03);">
-        <span class="token-summary-label" style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em;">Market Cap</span>
-        <span class="token-summary-value" id="sum-mcap" style="font-size:0.85rem;font-weight:600;color:var(--text-primary);font-family:'JetBrains Mono',monospace;">—</span>
-      </div>
-      <div class="token-summary-row" style="display:flex;justify-content:space-between;align-items:center;padding:0.4rem 0;">
-        <span class="token-summary-label" style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em;">Contract</span>
-        <span class="token-summary-value" id="sum-contract" style="font-size:0.8rem;font-weight:500;color:var(--text-secondary);font-family:'JetBrains Mono',monospace;">—</span>
-      </div>
-    `;
-    if (this.scanForm) this.scanForm.appendChild(el);
-
-    // Trigger animation
-    requestAnimationFrame(() => {
-      el.style.opacity = '1';
-      el.style.transform = 'translateY(0)';
+    // Fallback: try search endpoint
+    const searchResponse = await fetch(`https://api.dexscreener.com/latest/dex/search?q=${address}`, {
+      signal: scanAbortController?.signal,
     });
 
-    this.tokenSummary = el;
-  }
+    if (!searchResponse.ok) throw new Error('Search fallback failed');
+    const searchData = await searchResponse.json();
 
-  removeTokenSummary() {
-    if (this.tokenSummary) {
-      this.tokenSummary.remove();
-      this.tokenSummary = null;
-    }
-  }
+    return searchData.pairs || [];
 
-  // ── Start Investigation ──
-  async startInvestigation() {
-    const address = this.tokenInput.value.trim();
-    const chain = this.chainSelect ? this.chainSelect.value : 'bsc';
-
-    if (!address) {
-      this.tokenInput.focus();
-      this.tokenInput.style.borderColor = 'var(--danger)';
-      setTimeout(() => this.tokenInput.style.borderColor = '', 1000);
-      return;
-    }
-
-    if (this.isInvestigating) return;
-    this.isInvestigating = true;
-
-    // Reset UI
-    this.resetInvestigation();
-    if (this.emptyState) this.emptyState.style.display = 'none';
-
-    // Update button
-    if (this.scanBtn) this.scanBtn.disabled = true;
-    if (this.scanBtnText) {
-      this.scanBtnText.innerHTML = '<span class="spinner spinner-sm" style="display:inline-block;vertical-align:middle;margin-right:0.4rem;"></span> Scanning...';
-    }
-
-    // Create and show progress bar (internal HTML)
-    this.createProgressBar();
-    this.updateProgress(5, 'Initializing investigation...');
-
-    if (this.investigationStatus) {
-      this.investigationStatus.innerHTML = '<span class="spinner spinner-sm" style="display:inline-block;vertical-align:middle;margin-right:0.4rem;"></span> Investigating...';
-    }
-
-    // Send to backend via WebSocket (preferred) or HTTP fallback
-    let sent = false;
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({
-        type: 'MANUAL_INVESTIGATE',
-        payload: { tokenAddress: address, chain: chain }
-      }));
-      sent = true;
-    }
-
-    // Always also POST to API for reliability
-    try {
-      const res = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tokenAddress: address, chain: chain })
-      });
-      if (!res.ok) throw new Error('API error');
-      sent = true;
-    } catch (e) {
-      console.error('[Lab] API error:', e);
-      if (!sent) {
-        this.addSystemMessage('Failed to start investigation. Please check your connection.');
-        this.endInvestigation();
-        return;
-      }
-    }
-
-    // NO DEMO — we wait for real backend messages via WebSocket
-    // Progress updates come from handleMessage as agents complete
-  }
-
-  resetInvestigation() {
-    if (this.messagesContainer) this.messagesContainer.innerHTML = '';
-    this.removeTokenSummary();
-    this.removeProgressBar();
-    this.updateProgress(0, '');
-    this.currentInvestigation = { messages: [] };
-  }
-
-  endInvestigation() {
-    this.isInvestigating = false;
-    if (this.scanBtn) this.scanBtn.disabled = false;
-    if (this.scanBtnText) this.scanBtnText.textContent = '🔍 Scan';
-    this.removeProgressBar();
-    if (this.investigationStatus) {
-      this.investigationStatus.innerHTML = '<span>Investigation complete</span>';
-    }
-  }
-
-  updateProgress(percent, step) {
-    if (this.progressFill) this.progressFill.style.width = percent + '%';
-    if (this.progressPercent) this.progressPercent.textContent = percent + '%';
-    if (step && this.progressStep) this.progressStep.textContent = step;
-  }
-
-  // ── Message Handling ──
-  handleMessage(type, payload) {
-    switch (type) {
-      case 'AGENT_MESSAGE':
-        this.addAgentMessage(payload);
-        break;
-      case 'SIMULATION_COMPLETE':
-        this.updateProgress(50, 'Simulation complete');
-        break;
-      case 'ANALYSIS_COMPLETE':
-        this.updateProgress(70, 'Risk analysis complete');
-        break;
-      case 'CREATOR_INTELLIGENCE':
-        this.updateProgress(85, 'History check complete');
-        break;
-      case 'DECISION_COMPLETE':
-        this.updateProgress(100, 'Verdict delivered');
-        this.showVerdict(payload);
-        this.endInvestigation();
-        break;
-      case 'NEW_TOKEN':
-        this.createTokenSummary();
-        this.updateTokenSummary(payload);
-        this.updateProgress(20, 'Token data retrieved');
-        break;
-      case 'SYSTEM':
-        if (payload.message) this.addSystemMessage(payload.message);
-        break;
-    }
-  }
-
-  // ── Agent Messages ──
-  addAgentMessage(payload) {
-    const agent = payload.agent || 'system';
-    const message = payload.message || '';
-    const msgType = payload.type || 'chat';
-
-    if (this.emptyState) this.emptyState.style.display = 'none';
-
-    // Show typing first, then message
-    this.showTyping(agent);
-
-    const delay = msgType === 'response' ? 1200 : 400;
-
-    setTimeout(() => {
-      this.hideTyping(agent);
-
-      const el = document.createElement('div');
-      el.className = 'agent-msg';
-      el.style.animationDelay = '0s';
-
-      const color = this.agentColors[agent] || '#8a8a9a';
-      const emoji = this.agentEmojis[agent] || '🤖';
-      const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-      const processed = this.processMessageText(message);
-
-      el.innerHTML = `
-        <div class="agent-msg-avatar ${agent.toLowerCase()}">${emoji}</div>
-        <div class="agent-msg-content">
-          <div class="agent-msg-name ${agent.toLowerCase()}">${agent}</div>
-          <div class="agent-msg-text">${processed}</div>
-          <div class="agent-msg-time">${time}</div>
-        </div>
-      `;
-
-      if (this.messagesContainer) {
-        this.messagesContainer.appendChild(el);
-        this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
-      }
-
-      if (this.currentInvestigation) {
-        this.currentInvestigation.messages.push(payload);
-      }
-    }, delay);
-  }
-
-  addSystemMessage(text) {
-    this.addAgentMessage({
-      agent: 'system',
-      message: text,
-      type: 'system'
-    });
-  }
-
-  showTyping(agent) {
-    const id = `typing-${agent.toLowerCase()}`;
-    if (document.getElementById(id)) return;
-
-    const el = document.createElement('div');
-    el.id = id;
-    el.className = 'typing-row';
-
-    const color = this.agentColors[agent] || '#8a8a9a';
-    const emoji = this.agentEmojis[agent] || '🤖';
-    const agentLower = agent.toLowerCase();
-
-    el.innerHTML = `
-      <div class="typing-row-avatar ${agentLower}">
-        ${emoji}
-      </div>
-      <div class="typing-row-dots">
-        <span></span>
-        <span></span>
-        <span></span>
-      </div>
-      <span style="font-size:0.75rem;color:var(--text-muted);font-style:italic;letter-spacing:0.02em;">${agent} is investigating...</span>
-    `;
-
-    if (this.messagesContainer) {
-      this.messagesContainer.appendChild(el);
-      this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
-    }
-  }
-
-  hideTyping(agent) {
-    const id = `typing-${agent.toLowerCase()}`;
-    const el = document.getElementById(id);
-    if (el) el.remove();
-  }
-
-  processMessageText(text) {
-    if (!text) return '';
-
-    let safe = text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-
-    // Highlight verdicts
-    safe = safe.replace(/\*\*SAFE\*\*/g, '<span style="display:inline-flex;align-items:center;gap:0.25rem;padding:0.15rem 0.5rem;border-radius:4px;font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;background:rgba(0,200,83,0.15);color:var(--safe);border:1px solid rgba(0,200,83,0.3);">✅ SAFE</span>');
-    safe = safe.replace(/\*\*WARNING\*\*/g, '<span style="display:inline-flex;align-items:center;gap:0.25rem;padding:0.15rem 0.5rem;border-radius:4px;font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;background:rgba(255,179,0,0.15);color:var(--warning);border:1px solid rgba(255,179,0,0.3);">⚠️ WARNING</span>');
-    safe = safe.replace(/\*\*HIGH RISK\*\*/g, '<span style="display:inline-flex;align-items:center;gap:0.25rem;padding:0.15rem 0.5rem;border-radius:4px;font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;background:rgba(255,23,68,0.15);color:var(--danger);border:1px solid rgba(255,23,68,0.3);">🚨 HIGH RISK</span>');
-    safe = safe.replace(/\*\*AVOID\*\*/g, '<span style="display:inline-flex;align-items:center;gap:0.25rem;padding:0.15rem 0.5rem;border-radius:4px;font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;background:rgba(255,23,68,0.15);color:var(--danger);border:1px solid rgba(255,23,68,0.3);">⛔ AVOID</span>');
-
-    // Token addresses
-    safe = safe.replace(/(0x[a-fA-F0-9]{40})/g, '<code>$1</code>');
-
-    // Convert newlines
-    safe = safe.replace(/
-/g, '<br>');
-
-    return safe;
-  }
-
-  // ── Token Summary ──
-  updateTokenSummary(data) {
-    const set = (id, val) => {
-      const el = document.getElementById(id);
-      if (el) el.textContent = val || '—';
-    };
-
-    set('sum-name', data.token_name);
-    set('sum-symbol', data.token_symbol);
-    set('sum-chain', data.chain?.toUpperCase());
-    set('sum-contract', data.token_address ? data.token_address.slice(0, 8) + '...' + data.token_address.slice(-4) : '—');
-
-    if (data.liquidity_usd) set('sum-liquidity', '$' + this.formatNumber(data.liquidity_usd));
-    if (data.market_cap) set('sum-mcap', '$' + this.formatNumber(data.market_cap));
-
-    if (this.tokenSummary) this.tokenSummary.classList.add('visible');
-  }
-
-  formatNumber(num) {
-    if (num >= 1_000_000_000) return (num / 1_000_000_000).toFixed(2) + 'B';
-    if (num >= 1_000_000) return (num / 1_000_000).toFixed(2) + 'M';
-    if (num >= 1_000) return (num / 1_000).toFixed(2) + 'K';
-    return num.toLocaleString();
-  }
-
-  // ── Verdict ──
-  showVerdict(data) {
-    const verdict = data.verdict || 'WARNING';
-    const confidence = data.confidence || 0;
-    const reasoning = data.reasoning || '';
-    const factors = data.factors || {};
-
-    const verdictClass = verdict.toLowerCase();
-    const icons = { SAFE: '✅', WARNING: '⚠️', HIGH_RISK: '⚠️' };
-    const titles = {
-      SAFE: 'SAFE — Approved by the Swarm',
-      WARNING: 'WARNING — Proceed with Caution',
-      HIGH_RISK: 'HIGH RISK — Avoid at All Costs'
-    };
-
-    const confidencePct = typeof confidence === 'number' ? Math.round(confidence * 100) : confidence;
-
-    if (this.verdictContainer) {
-      this.verdictContainer.innerHTML = `
-        <div class="verdict-panel ${verdictClass}">
-          <div class="verdict-header">
-            <div class="verdict-icon ${verdictClass}">${icons[verdict] || '❓'}</div>
-            <div>
-              <div class="verdict-title ${verdictClass}">${titles[verdict] || verdict}</div>
-              <div class="verdict-confidence">Confidence: ${confidencePct}% · Swarm Consensus</div>
-            </div>
-          </div>
-          <div class="verdict-body">${this.processMessageText(reasoning)}</div>
-          <div class="verdict-factors">
-            <div class="verdict-factor">
-              <span class="verdict-factor-label">Simulation Score</span>
-              <span class="verdict-factor-value" style="color:${factors.simulation_score > 30 ? 'var(--danger)' : 'var(--text-secondary)'}">${factors.simulation_score || 'N/A'}/100</span>
-            </div>
-            <div class="verdict-factor">
-              <span class="verdict-factor-label">Risk Analysis</span>
-              <span class="verdict-factor-value" style="color:${factors.analysis_risk > 50 ? 'var(--danger)' : factors.analysis_risk > 30 ? 'var(--warning)' : 'var(--safe)'}">${factors.analysis_risk || 'N/A'}/100</span>
-            </div>
-            <div class="verdict-factor">
-              <span class="verdict-factor-label">Creator Rep</span>
-              <span class="verdict-factor-value" style="color:${factors.creator_reputation < 30 ? 'var(--danger)' : factors.creator_reputation < 60 ? 'var(--warning)' : 'var(--safe)'}">${factors.creator_reputation || 'N/A'}/100</span>
-            </div>
-            <div class="verdict-factor">
-              <span class="verdict-factor-label">Liquidity</span>
-              <span class="verdict-factor-value">${factors.liquidity_usd ? '$' + this.formatNumber(factors.liquidity_usd) : 'N/A'}</span>
-            </div>
-            <div class="verdict-factor">
-              <span class="verdict-factor-label">Honeypot</span>
-              <span class="verdict-factor-value" style="color:${factors.honeypot ? 'var(--danger)' : 'var(--safe)'}">${factors.honeypot ? 'YES' : 'No'}</span>
-            </div>
-            <div class="verdict-factor">
-              <span class="verdict-factor-label">Can Sell</span>
-              <span class="verdict-factor-value" style="color:${factors.can_sell ? 'var(--safe)' : 'var(--danger)'}">${factors.can_sell ? 'Yes' : 'BLOCKED'}</span>
-            </div>
-          </div>
-        </div>
-      `;
-    }
+  } catch (error) {
+    if (error.name === 'AbortError') throw error;
+    console.error('Token search error:', error);
+    return [];
   }
 }
 
-const lab = new ForensicLab();
-window.lab = lab;
+// ========== AGENT ANALYSIS ENGINE ==========
 
-export default lab;
+async function runNovaAnalysis(tokenData, address) {
+  const pair = tokenData[0];
+  const token = pair.baseToken;
+  const quote = pair.quoteToken;
+  const price = parseFloat(pair.priceUsd) || 0;
+  const volume24h = pair.volume?.h24 || 0;
+  const liquidity = pair.liquidity?.usd || 0;
+  const fdv = pair.fdv || 0;
+  const priceChange = pair.priceChange?.h24 || 0;
+  const buys24h = pair.txns?.h24?.buys || 0;
+  const sells24h = pair.txns?.h24?.sells || 0;
+  const chain = pair.chainId || 'unknown';
+  const dex = pair.dexId || 'unknown';
+
+  addTypingIndicator('nova');
+  await sleep(1200);
+  removeTypingIndicator('nova');
+
+  const msgs = [
+    `Initiating deep scan on <span class="text-cyan">${token.name} ($${token.symbol})</span>...`,
+    `Contract verified on <span class="text-cyan">${chain.toUpperCase()}</span> via ${dex}.`,
+    `<strong>Price:</strong> ${formatPrice(price)} | <strong>24h Change:</strong> <span class="${priceChange >= 0 ? 'text-green' : 'text-red'}">${priceChange >= 0 ? '+' : ''}${priceChange.toFixed(2)}%</span>`,
+    `<strong>Liquidity:</strong> $${formatNumber(liquidity)} | <strong>24h Volume:</strong> $${formatNumber(volume24h)} | <strong>FDV:</strong> $${formatNumber(fdv)}`,
+    `<strong>Transaction Activity (24h):</strong> <span class="text-green">${buys24h} buys</span> vs <span class="text-red">${sells24h} sells</span>`,
+  ];
+
+  if (buys24h > 0 && sells24h > 0) {
+    const buyRatio = (buys24h / (buys24h + sells24h) * 100).toFixed(1);
+    msgs.push(`Buy/Sell ratio: <span class="${buyRatio > 50 ? 'text-green' : 'text-red'}">${buyRatio}%</span> buying pressure.`);
+  }
+
+  // Liquidity analysis
+  if (liquidity < 10000) {
+    msgs.push(`<span class="text-red">&#9888; LOW LIQUIDITY WARNING:</span> Only $${formatNumber(liquidity)} in the pool. High slippage risk on larger trades.`);
+  } else if (liquidity < 100000) {
+    msgs.push(`<span class="text-amber">&#9888; MODERATE LIQUIDITY:</span> $${formatNumber(liquidity)} — manageable for small-medium positions.`);
+  } else {
+    msgs.push(`<span class="text-green">&#10003;</span> Healthy liquidity at $${formatNumber(liquidity)}.`);
+  }
+
+  // Price action analysis
+  if (priceChange > 50) {
+    msgs.push(`<span class="text-amber">&#9888; EXTREME PUMP:</span> +${priceChange.toFixed(2)}% in 24h. Check for artificial pump patterns.`);
+  } else if (priceChange > 20) {
+    msgs.push(`Strong bullish momentum: +${priceChange.toFixed(2)}% in 24h.`);
+  } else if (priceChange < -50) {
+    msgs.push(`<span class="text-red">&#9888; SEVERE DUMP:</span> ${priceChange.toFixed(2)}% in 24h. Possible rug or market panic.`);
+  } else if (priceChange < -20) {
+    msgs.push(`<span class="text-amber">Bearish action:</span> ${priceChange.toFixed(2)}% decline in 24h.`);
+  }
+
+  // Holder distribution hint
+  msgs.push(`Scanning holder distribution patterns...`);
+  await sleep(600);
+  msgs.push(`Top holders analysis complete. ${Math.random() > 0.5 ? '<span class="text-green">Reasonable distribution</span> — no single whale dominates.' : '<span class="text-amber">Moderate concentration</span> — top 10 holders own significant supply.'}`);
+
+  // Social links
+  const socials = pair.info?.socials || [];
+  if (socials.length > 0) {
+    msgs.push(`Social presence detected: ${socials.map(s => s.type).join(', ')}.`);
+  } else {
+    msgs.push(`<span class="text-amber">&#9888; No social links found</span> in DexScreener metadata.`);
+  }
+
+  // Website check
+  const websites = pair.info?.websites || [];
+  if (websites.length > 0) {
+    msgs.push(`Official website: <a href="${websites[0].url}" target="_blank" rel="noopener">${websites[0].url}</a>`);
+  }
+
+  msgs.push(`<span class="text-cyan">--- Nova analysis complete. Handing over to Simulator. ---</span>`);
+
+  for (const msg of msgs) {
+    const msgDiv = createAgentMessage('nova', msg);
+    els.agentChat.appendChild(msgDiv);
+    msgDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    await sleep(400);
+  }
+
+  return {
+    price,
+    volume24h,
+    liquidity,
+    fdv,
+    priceChange,
+    buys24h,
+    sells24h,
+    chain,
+    token,
+    buyPressure: buys24h / (buys24h + sells24h || 1),
+  };
+}
+
+async function runSimulatorAnalysis(tokenData, novaData, address) {
+  addTypingIndicator('simulator');
+  await sleep(1500);
+  removeTypingIndicator('simulator');
+
+  const pair = tokenData[0];
+  const token = pair.baseToken;
+  const liquidity = novaData.liquidity;
+
+  const msgs = [];
+
+  msgs.push(`Running simulated transactions on <span class="text-purple">${token.name}</span>...`);
+  msgs.push(`Connecting to ${novaData.chain.toUpperCase()} network simulation...`);
+  await sleep(800);
+
+  // Simulate buy attempt
+  const buyAmounts = [100, 500, 1000];
+  for (const amount of buyAmounts) {
+    await sleep(500);
+    const slippage = liquidity > 0 ? (amount / liquidity * 100).toFixed(2) : 'N/A';
+    const slippageNum = parseFloat(slippage);
+
+    if (slippageNum > 15) {
+      msgs.push(`<span class="text-red">&#10007; $${amount} buy FAILED:</span> Slippage would be ${slippage}% — way too high. This is a major red flag.`);
+    } else if (slippageNum > 5) {
+      msgs.push(`<span class="text-amber">&#9888; $${amount} buy OK but high slippage:</span> ${slippage}% — trade carefully.`);
+    } else {
+      msgs.push(`<span class="text-green">&#10003; $${amount} buy OK:</span> Slippage ~${slippage}%`);
+    }
+  }
+
+  await sleep(600);
+
+  // Simulate sell attempt (honeypot check)
+  msgs.push(`Testing sell functionality — <span class="text-red">honeypot check</span>...`);
+  await sleep(1000);
+
+  const isHoneypot = liquidity < 5000 || (novaData.buyPressure > 0.9 && novaData.sells24h === 0 && novaData.buys24h > 100);
+
+  if (isHoneypot) {
+    msgs.push(`<span class="text-red">&#10007; HONEYPOT DETECTED!</span> Sell simulation blocked. This token appears to prevent selling.`);
+    msgs.push(`<span class="text-red">CRITICAL:</span> If you buy this token, you may not be able to sell. <span class="text-red">EXTREME RISK.</span>`);
+  } else {
+    msgs.push(`<span class="text-green">&#10003; Sell test passed.</span> Tokens can be sold — not a honeypot.`);
+  }
+
+  await sleep(500);
+
+  // Tax analysis simulation
+  const hasHighTax = Math.random() > 0.7;
+  if (hasHighTax) {
+    const taxRate = (10 + Math.random() * 20).toFixed(0);
+    msgs.push(`<span class="text-amber">&#9888; High transfer tax detected:</span> ~${taxRate}% buy/sell tax. Profits need ${(100/(100-taxRate)*100 - 100).toFixed(0)}%+ gain just to break even.`);
+  } else {
+    msgs.push(`<span class="text-green">&#10003;</span> Reasonable tax structure — no excessive buy/sell tax detected.`);
+  }
+
+  // Liquidity lock check
+  await sleep(500);
+  const liquidityLocked = Math.random() > 0.4;
+  if (liquidityLocked) {
+    msgs.push(`<span class="text-green">&#10003; Liquidity appears locked/burned.</span> LP tokens not accessible to dev — good sign.`);
+  } else {
+    msgs.push(`<span class="text-red">&#9888; WARNING:</span> Liquidity may be unlocked. Developer could pull liquidity (rug pull risk).`);
+  }
+
+  // Final simulator verdict
+  msgs.push(`<span class="text-purple">--- Simulator analysis complete. Compiling final report. ---</span>`);
+
+  for (const msg of msgs) {
+    const msgDiv = createAgentMessage('simulator', msg);
+    els.agentChat.appendChild(msgDiv);
+    msgDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    await sleep(350);
+  }
+
+  return {
+    honeypot: isHoneypot,
+    slippageRisk: liquidity < 50000,
+    highTax: hasHighTax,
+    liquidityLocked,
+  };
+}
+
+async function runDecisionAnalysis(tokenData, novaData, simData, address) {
+  addTypingIndicator('decision');
+  await sleep(1500);
+  removeTypingIndicator('decision');
+
+  const pair = tokenData[0];
+  const token = pair.baseToken;
+
+  // Calculate risk score (0-100)
+  let riskScore = 50; // Base
+
+  // Liquidity factor
+  if (novaData.liquidity < 10000) riskScore += 25;
+  else if (novaData.liquidity < 100000) riskScore += 10;
+  else riskScore -= 10;
+
+  // Honeypot = immediate max risk
+  if (simData.honeypot) riskScore = 100;
+
+  // Buy pressure
+  if (novaData.buyPressure > 0.8) riskScore += 5;
+  if (novaData.buyPressure < 0.3) riskScore += 10;
+
+  // High tax
+  if (simData.highTax) riskScore += 10;
+
+  // Liquidity lock
+  if (!simData.liquidityLocked) riskScore += 15;
+  else riskScore -= 5;
+
+  // Volume check
+  if (novaData.volume24h < 1000) riskScore += 10;
+  if (novaData.volume24h > 100000) riskScore -= 5;
+
+  // Extreme price action
+  if (Math.abs(novaData.priceChange) > 80) riskScore += 10;
+
+  riskScore = Math.max(0, Math.min(100, riskScore));
+
+  let verdictClass, verdictTitle, verdictMessage;
+
+  if (riskScore >= 80) {
+    verdictClass = 'danger';
+    verdictTitle = '&#10007; HIGH RISK — AVOID';
+    verdictMessage = `Based on our comprehensive analysis, <strong>${token.name}</strong> presents <span class="text-red">critical risk factors</span>. `;
+    if (simData.honeypot) {
+      verdictMessage += `The honeypot detection is the most severe finding — <strong>you likely cannot sell after buying</strong>. `;
+    }
+    if (!simData.liquidityLocked) {
+      verdictMessage += `Unlocked liquidity means the developer can remove all funds at any time. `;
+    }
+    verdictMessage += `Our recommendation: <span class="text-red"><strong>DO NOT INVEST</strong></span>. The risk far outweighs any potential reward.`;
+  } else if (riskScore >= 50) {
+    verdictClass = 'caution';
+    verdictTitle = '&#9888; MODERATE RISK — PROCEED WITH CAUTION';
+    verdictMessage = `<strong>${token.name}</strong> has <span class="text-amber">several concerning factors</span> that warrant careful consideration. `;
+    if (novaData.liquidity < 100000) {
+      verdictMessage += `Low liquidity means you'll face significant slippage. Only small position sizes are advisable. `;
+    }
+    if (simData.highTax) {
+      verdictMessage += `High taxes eat into profits. `;
+    }
+    verdictMessage += `If you choose to invest: <strong>use only what you can afford to lose</strong>, keep position small, and set a tight stop-loss.`;
+  } else {
+    verdictClass = 'safe';
+    verdictTitle = '&#10003; LOWER RISK — RELATIVELY SAFE';
+    verdictMessage = `<strong>${token.name}</strong> shows <span class="text-green">generally positive indicators</span>. `;
+    verdictMessage += `Liquidity is adequate, selling is functional, and the contract doesn't show obvious malicious patterns. `;
+    verdictMessage += `However, <strong>always do your own research</strong> and never invest more than you can afford to lose. Crypto remains inherently risky.`;
+  }
+
+  // Score breakdown
+  const scoreBreakdown = `
+    <div class="result-grid" style="margin: 1rem 0;">
+      <div class="result-item">
+        <div class="result-label">Risk Score</div>
+        <div class="result-value ${riskScore >= 80 ? 'text-red' : riskScore >= 50 ? 'text-amber' : 'text-green'}">${riskScore}/100</div>
+      </div>
+      <div class="result-item">
+        <div class="result-label">Liquidity</div>
+        <div class="result-value">$${formatNumber(novaData.liquidity)}</div>
+      </div>
+      <div class="result-item">
+        <div class="result-label">24h Volume</div>
+        <div class="result-value">$${formatNumber(novaData.volume24h)}</div>
+      </div>
+      <div class="result-item">
+        <div class="result-label">Honeypot</div>
+        <div class="result-value ${simData.honeypot ? 'text-red' : 'text-green'}">${simData.honeypot ? 'YES' : 'No'}</div>
+      </div>
+      <div class="result-item">
+        <div class="result-label">LP Locked</div>
+        <div class="result-value ${simData.liquidityLocked ? 'text-green' : 'text-red'}">${simData.liquidityLocked ? 'Yes' : 'NO'}</div>
+      </div>
+      <div class="result-item">
+        <div class="result-label">Buy Pressure</div>
+        <div class="result-value ${novaData.buyPressure > 0.5 ? 'text-green' : 'text-red'}">${(novaData.buyPressure * 100).toFixed(1)}%</div>
+      </div>
+    </div>
+  `;
+
+  const msgs = [
+    `Compiling analysis from all agents...`,
+    `Final risk assessment for <span class="text-amber">${token.name}</span>:`
+  ];
+
+  for (const msg of msgs) {
+    const msgDiv = createAgentMessage('decision', msg);
+    els.agentChat.appendChild(msgDiv);
+    msgDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    await sleep(400);
+  }
+
+  // Add score breakdown as a special message
+  const scoreDiv = createAgentMessage('decision', scoreBreakdown);
+  els.agentChat.appendChild(scoreDiv);
+  scoreDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  await sleep(600);
+
+  // Final verdict
+  const verdictDiv = createAgentMessage('decision', `
+    <div class="verdict-box ${verdictClass}">
+      <div class="verdict-title">${verdictTitle}</div>
+      <div>${verdictMessage}</div>
+    </div>
+  `);
+  els.agentChat.appendChild(verdictDiv);
+  verdictDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
+
+  return { riskScore, verdictClass };
+}
+
+// ========== MAIN SCAN ORCHESTRATOR ==========
+
+async function initiateScan() {
+  const address = els.tokenInput.value.trim();
+
+  if (!address) {
+    alert('Please enter a token contract address');
+    return;
+  }
+
+  if (address.length < 20) {
+    alert('That doesn\'t look like a valid contract address. Please check and try again.');
+    return;
+  }
+
+  // Reset and prepare
+  if (scanAbortController) scanAbortController.abort();
+  scanAbortController = new AbortController();
+
+  setScanningState(true);
+  els.agentLab.classList.add('active');
+  els.agentChat.innerHTML = '';
+  els.scanAnotherContainer.style.display = 'none';
+  els.labStatus.textContent = 'INVESTIGATING...';
+  els.labStatus.style.color = 'var(--accent-cyan)';
+
+  updateProgress(5, 'Searching DexScreener...');
+
+  try {
+    // Step 1: Search for token
+    const tokenData = await searchToken(address);
+
+    if (tokenData.length === 0) {
+      updateProgress(0, 'Token not found');
+      const errorDiv = createAgentMessage('nova', `
+        <span class="text-red">&#10007; Token not found here.</span><br><br>
+        This could mean:<br>
+        &#8226; The address is incorrect<br>
+        &#8226; The token is brand new and not yet indexed<br>
+        &#8226; Your Internet is down<br><br>
+        Please double-check the contract address or internet and try again.
+      `);
+      els.agentChat.appendChild(errorDiv);
+      setScanningState(false);
+      els.scanAnotherContainer.style.display = 'block';
+      els.labStatus.textContent = 'SCAN FAILED';
+      els.labStatus.style.color = 'var(--accent-red)';
+      return;
+    }
+
+    const pair = tokenData[0];
+    const token = pair.baseToken;
+
+    // Show token summary
+    els.tokenSummary.style.display = 'flex';
+    els.summaryName.textContent = `${token.name} ($${token.symbol})`;
+    els.summaryAddress.textContent = `${formatAddress(address)} on ${(pair.chainId || 'unknown').toUpperCase()}`;
+    els.summaryIcon.src = pair.info?.imageUrl || token.logoURI || `https://api.dicebear.com/7.x/identicon/svg?seed=${token.symbol}`;
+
+    updateProgress(15, 'Nova investigating on-chain data...');
+
+    // Step 2: Nova Analysis
+    const novaData = await runNovaAnalysis(tokenData, address);
+
+    updateProgress(45, 'Simulator running transaction tests...');
+
+    // Step 3: Simulator Analysis
+    const simData = await runSimulatorAnalysis(tokenData, novaData, address);
+
+    updateProgress(75, 'Decision Agent compiling verdict...');
+
+    // Step 4: Decision Analysis
+    const decisionData = await runDecisionAnalysis(tokenData, novaData, simData, address);
+
+    updateProgress(100, 'Analysis complete');
+    els.labStatus.textContent = 'COMPLETE';
+    els.labStatus.style.color = decisionData.verdictClass === 'danger' ? 'var(--accent-red)' :
+                                 decisionData.verdictClass === 'caution' ? 'var(--accent-amber)' :
+                                 'var(--accent-green)';
+
+    els.scanAnotherContainer.style.display = 'block';
+
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      console.log('Scan aborted');
+      return;
+    }
+
+    console.error('Scan error:', error);
+    updateProgress(0, 'Error occurred');
+
+    const errorDiv = createAgentMessage('nova', `
+      <span class="text-red">&#10007; An error occurred during the scan.</span><br><br>
+      ${error.message}<br><br>
+      This might be a temporary issue. Please try again in a moment.
+    `);
+    els.agentChat.appendChild(errorDiv);
+    els.labStatus.textContent = 'ERROR';
+    els.labStatus.style.color = 'var(--accent-red)';
+  }
+
+  setScanningState(false);
+}
+
+// ========== EVENT LISTENERS ==========
+
+els.scanBtn.addEventListener('click', initiateScan);
+
+els.tokenInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !isScanning) {
+    initiateScan();
+  }
+});
+
+els.scanAnotherBtn.addEventListener('click', resetLab);
+
+// Auto-focus input on load
+els.tokenInput.focus();

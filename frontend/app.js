@@ -366,7 +366,7 @@ class ClawIntelApp {
       Vega: 'V',
       Echo: 'E',
       Orion: 'O',
-      system: '🔧',
+      system: 'S',
     };
 
     this.init();

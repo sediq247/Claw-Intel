@@ -38,6 +38,8 @@ const PYTHON_API_URL = process.env.PYTHON_API_URL || 'http://localhost:8081';
 const app = express();
 const server = createServer(app);
 
+const casper = new CasperBridge(eventBus, streamManager);
+
 /**
 * Core Middleware
 */

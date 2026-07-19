@@ -3,71 +3,108 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ClawIntel — Lab</title>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css">
+  <title>ClawIntel | Forensic Lab</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="Fstyle.css">
 </head>
 <body>
-  <header class="page-header">
-    <div class="page-header-left">
-      <div class="logo-mark">CI</div>
-      <div class="logo-text">CLAW INTEL</div>
-      <nav class="page-nav">
+  <!-- Background Grid -->
+  <div class="grid-bg"></div>
+
+  <!-- Navigation -->
+  <nav class="main-nav">
+    <div class="nav-container">
+      <a href="../index.html" class="nav-brand">
+        <div class="brand-icon">CI</div>
+        <span>CLAW INTEL</span>
+      </a>
+      <ul class="nav-links">
         <a href="../index.html" class="nav-link">Dashboard</a>
         <a href="history.html" class="nav-link">Records</a>
         <a href="markets.html" class="nav-link">Markets</a>
         <a href="analysis.html" class="nav-link active">Forensic Lab</a>
-      </nav>
+      </ul>
     </div>
-  </header>
+  </nav>
 
-  <div class="page-container">
-    <div class="analysis-hero">
-      <h1>ClawIntel Lab</h1>
-      <p>Paste any token contract address and let the agent swarm conduct a full forensic analysis.</p>
-    </div>
+  <!-- Main Content -->
+  <main class="main-container">
 
-    <div class="scan-form">
-      <div class="scan-form-row">
+    <!-- Page Header -->
+    <header class="page-header">
+      <div style="display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
         <div>
-          <label>Token Contract Address</label>
-          <input type="text" class="form-input" id="token-address" placeholder="0x... or any token address">
+          <h1>ClawIntel Lab</h1>
+          <p>Paste any token contract address let the labs agents conduct a forensic investigation on it with full result details</p>
         </div>
-        <div>
-          <label>Chain</label>
-          <select class="form-input chain-select" id="chain-select">
-            <option value="bsc">BSC</option>
-            <option value="ethereum">Ethereum</option>
-            <option value="solana">Solana</option>
-            <option value="base">Base</option>
-          </select>
-        </div>
-        <div>
-          <label>&nbsp;</label>
-          <button class="btn btn-primary btn-lg scan-btn" id="scan-btn" onclick="lab.startInvestigation()">
-            <span id="scan-btn-text">Scan</span>
-          </button>
+        <div class="status-indicator" id="lab-status">LAB READY</div>
+      </div>
+    </header>
+
+    <!-- Scan Input Section -->
+    <section class="scan-section">
+      <label for="token-input" style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-secondary); display: block; margin-bottom: 0.5rem;">
+        TOKEN CONTRACT ADDRESS
+      </label>
+      <div class="scan-input-group">
+        <input
+          type="text"
+          id="token-input"
+          class="scan-input"
+          placeholder="0x... or Solana address... paste contract address here"
+          autocomplete="off"
+          spellcheck="false"
+        >
+        <button id="scan-btn" class="scan-btn">
+          <span id="scan-btn-text">&#9906; INITIATE SCAN</span>
+        </button>
+      </div>
+      <p style="font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-muted); margin-top: 0.75rem;">
+        &#9432; Supports Ethereum, BSC, Solana, Base, Arbitrum, and Polygon chains
+      </p>
+    </section>
+
+    <!-- Agent Lab Interface -->
+    <div id="agent-lab" class="agent-lab">
+
+      <!-- Token Summary Bar -->
+      <div id="token-summary" class="token-summary" style="display: none;">
+        <img id="summary-icon" src="" alt="" class="token-summary-icon">
+        <div class="token-summary-info">
+          <h3 id="summary-name">--</h3>
+          <p id="summary-address">--</p>
         </div>
       </div>
-      <!-- scan-progress and token-summary are generated internally by analysis.js -->
-    </div>
 
-    <div class="investigation-log">
-      <div class="investigation-log-header">
-        <h3>Investigation Log</h3>
-        <div class="investigation-status" id="investigation-status"><span>Waiting for input...</span></div>
-      </div>
-      <div class="investigation-messages" id="investigation-messages">
-        <div class="investigation-empty" id="investigation-empty">
-          <div class="empty-state-title">Lab agents are fully ready</div>
-          <div class="empty-state-desc">Paste a contract address above and click Scan to begin.</div>
+      <!-- Progress Bar -->
+      <div class="progress-container">
+        <div class="progress-label">
+          <span id="progress-text">Initializing agents...</span>
+          <span id="progress-percent">0%</span>
+        </div>
+        <div class="progress-bar">
+          <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
         </div>
       </div>
+
+      <!-- Agent Chat Terminal -->
+      <div id="agent-chat" class="agent-chat">
+        <!-- Agent messages will be injected here -->
+      </div>
+
     </div>
 
-    <div id="verdict-container"></div>
-  </div>
+    <!-- Scan Another Button (shown after completion) -->
+    <div id="scan-another-container" style="display: none; text-align: center; margin-top: 2rem;">
+      <button id="scan-another-btn" class="scan-btn" style="display: inline-block;">
+        &#8634; SCAN ANOTHER TOKEN
+      </button>
+    </div>
 
-  <script src="analysis.js" type="module"></script>
+  </main>
+
+  <script src="analysis.js"></script>
 </body>
 </html>

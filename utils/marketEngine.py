@@ -136,7 +136,7 @@ class MarketEngine:
             if verdict == "SAFE":
                 self.add_ai_verified(data)
                 print(f"✅ {self.name}: AI verified token added — {data.get('symbol', '???')} ({verdict})")
-            elif verdict in ("UNSAFE", "SUS"):
+            elif verdict in ("UNSAFE","WARNING","HIGH_RISK"):
                 # Remove from verified if it was previously SAFE
                 token_id = data.get("token", "")
                 if token_id in self.ai_verified_tokens:

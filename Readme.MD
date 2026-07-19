@@ -28,7 +28,7 @@
 
 ---
 
-## Current Problems In Crypto Industry
+## The Problem
 
 The modern crypto ecosystem produces an overwhelming volume of new digital assets every day.
 
@@ -38,14 +38,14 @@ Thousands of tokens launch across multiple blockchain ecosystems, yet most inves
 
 Common threats include:
 
-- **Rug pulls**
-- **Honeypots**
-- **Liquidity traps**
-- **Hidden transfer restrictions**
-- **Malicious contract permissions**
-- **Fake community growth**
-- **Repeat scam creators**
-- **Coordinated market manipulation**
+- 🎭 **Rug pulls**
+- 🍯 **Honeypots**
+- 🪤 **Liquidity traps**
+- 🔒 **Hidden transfer restrictions**
+- ⚠️ **Malicious contract permissions**
+- 🤖 **Fake community growth**
+- 👤 **Repeat scam creators**
+- 📉 **Coordinated market manipulation**
 
 Traditional tools provide **data**. They rarely provide **intelligence**.
 
@@ -55,7 +55,7 @@ As blockchain ecosystems continue to grow, manual investigation becomes increasi
 
 ---
 
-## Our Solution
+## ✅ Our Solution
 
 ClawIntel was built to solve this problem.
 
@@ -91,7 +91,7 @@ Unlike conventional analytics platforms that only present data, **ClawIntel acti
 
 ---
 
-## Vision
+##  Vision
 
 We believe the future of blockchain intelligence will not be powered by dashboards alone.
 
@@ -109,35 +109,7 @@ Our long-term mission is to build an intelligence layer for decentralized ecosys
 
 ---
 
-## How It Works
-
-Every investigation follows a structured intelligence pipeline:
-
-```
-┌─────────────┐
-│  Discovery  │
-└──────┬──────┘
-       ↓
-┌─────────────┐
-│ Simulation  │
-└──────┬──────┘
-       ↓
-┌─────────────┐
-│ Risk Analysis│
-└──────┬──────┘
-       ↓
-┌─────────────────────┐
-│ Historical Intelligence│
-└──────────┬──────────┘
-           ↓
-┌──────────────────┐
-│ Decision Synthesis│
-└─────────┬────────┘
-          ↓
-┌─────────────┐
-│ Final Verdict│
-└─────────────┘
-```
+##  How It Works
 
 When a token is discovered or submitted for analysis:
 
@@ -155,7 +127,7 @@ When a token is discovered or submitted for analysis:
 
 ClawIntel operates through **five specialized AI agents**. Each agent performs independent reasoning before contributing to the final investigation outcome.
 
-###  Nova — Discovery & Market Surveillance
+### 👁 Nova — Discovery & Market Surveillance
 **Role:** Intelligence Gathering
 
 Nova continuously monitors blockchain ecosystems for meaningful activity.
@@ -173,7 +145,7 @@ Nova continuously monitors blockchain ecosystems for meaningful activity.
 
 ---
 
-### Atlas — Behavioral Simulation Engine
+###  Atlas — Behavioral Simulation Engine
 **Role:** Execution Analysis
 
 Atlas investigates how a token behaves under real-world trading conditions.
@@ -254,7 +226,7 @@ Orion synthesizes evidence from all other agents.
 
 ---
 
-## Core Capabilities
+## 🚀 Core Capabilities
 
 | Feature | Description |
 |---------|-------------|
@@ -270,7 +242,7 @@ Orion synthesizes evidence from all other agents.
 
 ## Intelligence Interfaces
 
-### Detectives Room/Dashboard
+### 🕵️ Detectives Room
 A live operational intelligence center where AI agents communicate discoveries, investigations, and verdicts as events unfold.
 
 **Features:**
@@ -305,7 +277,7 @@ A dedicated investigation environment where users can submit contract addresses 
 
 ---
 
-## Tech Stack
+##  Tech Stack
 
 | Layer | Technologies |
 |-------|-------------|
@@ -330,7 +302,7 @@ A dedicated investigation environment where users can submit contract addresses 
 
 ---
 
-##  Getting Started
+## 🚀 Getting Started
 
 ### Prerequisites
 - Node.js 18+
@@ -392,7 +364,7 @@ Open: [http://localhost:3000](http://localhost:3000)
 
 ---
 
-## 🎯 Use Cases
+##  Use Cases
 
 ClawIntel is designed for:
 
@@ -423,7 +395,7 @@ The project explores how specialized AI agents can work together to investigate 
 
 ---
 
-## Disclaimer
+##  Disclaimer
 
 ClawIntel provides AI-generated intelligence for **informational and research purposes only**.
 
@@ -438,5 +410,3 @@ Nothing produced by the platform should be interpreted as financial advice, inve
 This project is licensed under the MIT License.
 
 See the [LICENSE](LICENSE) file for more information.
-
----

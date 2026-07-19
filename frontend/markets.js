@@ -38,9 +38,9 @@ class MarketsApp {
 
   // ── Tab Listeners ──
   setupTabListeners() {
-    document.querySelectorAll('.tab-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const tab = btn.dataset.tab;
+    document.querySelectorAll('.tab-bton').forEach(bton => {
+      bton.addEventListener('click', () => {
+        const tab = bton.dataset.tab;
         if (tab) this.switchTab(tab);
       });
     });
@@ -165,8 +165,8 @@ class MarketsApp {
     this.currentTab = tab;
 
     // Update tab buttons
-    document.querySelectorAll('.tab-btn').forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.tab === tab);
+    document.querySelectorAll('.tab-bton').forEach(bton => {
+      bton.classList.toggle('active', bton.dataset.tab === tab);
     });
 
     this.render();
