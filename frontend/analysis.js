@@ -597,12 +597,12 @@ async function initiateScan() {
     // Step 2: Nova Analysis
     const novaData = await runNovaAnalysis(tokenData, address);
 
-    updateProgress(45, 'Simulator running transaction tests...');
+    updateProgress(45, 'Atlas running transaction tests...');
 
     // Step 3: Simulator Analysis
     const simData = await runSimulatorAnalysis(tokenData, novaData, address);
 
-    updateProgress(75, 'Decision Agent compiling verdict...');
+    updateProgress(75, 'Orion compiling lab test result...');
 
     // Step 4: Decision Analysis
     const decisionData = await runDecisionAnalysis(tokenData, novaData, simData, address);

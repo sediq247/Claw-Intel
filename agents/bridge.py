@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 """
-agents/bridge.py
-Python ↔ Node EventBus Bridge — WITH CASPER SYNC SUPPORT
+🌉 agents/bridge.py
+Python ↔ Node EventBus Bridge.
 
 BIDIRECTIONAL:
 - Outbound: HTTP POST /api/publish → Node.js
-- Inbound: WebSocket → local dispatch to Python subscribers
-
-CHANGES from original:
-1. Added CASPER_SYNC_ENABLED check before publishing DECISION_COMPLETE
-2. Added casper_sync flag to investigation payload
-3. Added casper_contract field for on-chain verification
+- Inbound:  WebSocket → local dispatch to Python subscribers
 """
 
 import os
@@ -28,12 +23,10 @@ WS_PATH = os.getenv("CLAWINTEL_WS_PATH", "/")
 PUBLISH_ENDPOINT = f"{NODE_URL}/api/publish"
 HEALTH_ENDPOINT = f"{NODE_URL}/health"
 
-# Casper integration flags
-CASPER_SYNC_ENABLED = os.getenv("CASPER_SYNC_ENABLED", "false").lower() == "true"
-CASPER_CONTRACT_HASH = os.getenv("CONTRACT_HASH", "")
 
 def _log(msg: str):
     print(f"[bridge] {msg}", file=sys.stderr, flush=True)
+
 
 class NodeBridge:
     """Async bridge to Node.js event bus. HTTP out + WebSocket in."""
@@ -53,13 +46,14 @@ class NodeBridge:
         self._flush_task: Optional[asyncio.Task] = None
         self._ws_task: Optional[asyncio.Task] = None
 
+        # Local subscribers for events coming FROM Node.js
         self._local_subscribers: Dict[str, List[Callable[[Any], None]]] = defaultdict(list)
 
         _log(f"Initialized. Publish: {self.publish_endpoint} | WS: {self.ws_url}")
-        if CASPER_SYNC_ENABLED:
-            _log(f"Casper sync ENABLED. Contract: {CASPER_CONTRACT_HASH}")
-        else:
-            _log("Casper sync DISABLED")
+
+    # ─────────────────────────────────────────────────────────
+    # Local Subscribe — NEW: receive events from Node.js
+    # ─────────────────────────────────────────────────────────
 
     def subscribe(self, event_type: str, callback: Callable[[Any], None]) -> Callable[[], None]:
         """Subscribe to events arriving from Node.js via WebSocket."""
@@ -81,6 +75,10 @@ class NodeBridge:
             except Exception as e:
                 _log(f"Error in local subscriber for {event_type}: {e}")
 
+    # ─────────────────────────────────────────────────────────
+    # WebSocket Listener — NEW: receive events from Node.js
+    # ─────────────────────────────────────────────────────────
+
     async def _ws_listener(self):
         """Background task: maintain WebSocket connection to Node.js."""
         while not self._closed:
@@ -92,7 +90,8 @@ class NodeBridge:
                     heartbeat=30.0,
                     autoping=True,
                 ) as ws:
-                    _log("WebSocket connected")
+                    _log("✅ WebSocket connected")
+                    # Register as backend client
                     await ws.send_json({
                         "type": "REGISTER_BACKEND",
                         "events": ["MANUAL_INVESTIGATE", "REQUEST_MARKET_DATA", "USER_COMMAND"]
@@ -111,10 +110,14 @@ class NodeBridge:
                             break
             except Exception as e:
                 _log(f"WebSocket error: {type(e).__name__}: {e}")
-                if self._closed:
-                    break
-                _log("WebSocket reconnecting in 5s...")
-                await asyncio.sleep(5)
+            if self._closed:
+                break
+            _log("WebSocket reconnecting in 5s...")
+            await asyncio.sleep(5)
+
+    # ─────────────────────────────────────────────────────────
+    # HTTP Publish — existing outbound logic
+    # ─────────────────────────────────────────────────────────
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -132,16 +135,16 @@ class NodeBridge:
                 async with session.get(self.health_endpoint, timeout=2) as resp:
                     if resp.status == 200:
                         self._ready = True
-                        _log(f"Node is ready! (took {attempt + 1}s)")
+                        _log(f"✅ Node is ready! (took {attempt + 1}s)")
                         self._flush_task = asyncio.create_task(self._flush_loop())
                         if not self._ws_task or self._ws_task.done():
                             self._ws_task = asyncio.create_task(self._ws_listener())
                         return True
             except Exception as e:
                 if attempt % 5 == 0:
-                    _log(f" ... still waiting ({attempt + 1}s) — {type(e).__name__}")
-                await asyncio.sleep(1)
-        _log(f"Node failed after {max_wait}s")
+                    _log(f"  ... still waiting ({attempt + 1}s) — {type(e).__name__}")
+            await asyncio.sleep(1)
+        _log(f"❌ Node failed after {max_wait}s")
         return False
 
     async def publish(self, event_type: str, payload: Any, retries: int = 5) -> bool:
@@ -150,16 +153,9 @@ class NodeBridge:
             return False
         if not self._ready:
             self._pending_queue.append({"eventType": event_type, "payload": payload})
-            _log(f"Queued {event_type} — Node not ready ({len(self._pending_queue)} queued)")
+            _log(f"📦 Queued {event_type} — Node not ready ({len(self._pending_queue)} queued)")
             await self.wait_for_node(max_wait=5)
             return False
-
-        # Add Casper metadata to DECISION_COMPLETE events
-        if event_type == "DECISION_COMPLETE" and CASPER_SYNC_ENABLED:
-            if isinstance(payload, dict):
-                payload["casper_sync"] = True
-                payload["casper_contract"] = CASPER_CONTRACT_HASH
-                _log(f"DECISION_COMPLETE flagged for Casper sync: {payload.get('token_address', 'unknown')}")
 
         body = {"eventType": event_type, "payload": payload}
         for attempt in range(retries + 1):
@@ -200,7 +196,7 @@ class NodeBridge:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            _log(f"Background publish ({event_type}) failed: {e}")
+            _log(f"⚠️ Background publish ({event_type}) failed: {e}")
 
     async def _flush_loop(self):
         while not self._closed:
@@ -216,11 +212,11 @@ class NodeBridge:
                                 self._pending_queue.appendleft(msg)
                                 break
                         except Exception as e:
-                            _log(f"Flush error: {e}")
+                            _log(f"⚠️ Flush error: {e}")
                             self._pending_queue.appendleft(msg)
                             break
             except Exception as e:
-                _log(f"Flush loop error: {e}")
+                _log(f"⚠️ Flush loop error: {e}")
             await asyncio.sleep(5)
 
     async def close(self):
@@ -242,7 +238,8 @@ class NodeBridge:
                     pass
         if self._session and not self._session.closed:
             await self._session.close()
-        _log("Session closed")
+            _log("✅ Session closed")
+
 
 def make_publish_callable(node_url: str = None):
     bridge = NodeBridge(node_url)
