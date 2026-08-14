@@ -1,28 +1,27 @@
-#ClawIntel - Production Dockerfile
+FROM python:3.11-slim
 
-FROM node:18-slim
-
-RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    curl \
-    netcat-openbsd \
-    bash \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PORT=3000
 
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends     gcc     libffi-dev     && rm -rf /var/lib/apt/lists/*
 
-COPY . .
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-RUN npm install
-
-RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
-
-RUN chmod +x start.sh
-
-ENV NODE_ENV=production
-
+# Copy application code
+COPY main.py .
+COPY .env .
+COPY index.html .
+COPY Procfile .
+COPY runtime/ ./runtime/
+COPY agents/ ./agents/
+COPY utils/ ./utils/
+COPY frontend/ ./frontend/
 EXPOSE 3000
 
-CMD ["bash", "start.sh"]
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:3000/health')" || exit 1
+
+CMD ["python", "main.py"]
