@@ -1,35 +1,132 @@
 #!/usr/bin/env python3
 """
-💰 utils/marketEngine.py
-The Data Aggregator.
-Bridge between raw blockchain data and the UI.
-Fetches from DexScreener API, calculates metrics,
-normalizes multi-chain data, pushes live updates via eventBus.
+💰 MARKET ENGINE — v4.0
+The Data Aggregator. Fetches from DexScreener API, calculates metrics,
+normalizes multi-chain data, pushes live updates via server.broadcast.
+
+v4.0 CHANGES:
+- Constructor accepts `server` instead of event_bus publish/subscribe
+- Uses server.broadcast("MARKET_UPDATE", ...) for live updates
+- on_ai_verdict is a public method called directly by orchestrator
+- All original DexScreener logic preserved
+- utils.helpers imports are optional with fallbacks
 """
 
 import asyncio
 import json
 import os
 import time
-from typing import Dict, List, Optional, Callable
+from typing import Dict, List, Optional, Any
 import aiohttp
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
-from utils.helpers import (
-    normalize_symbol, normalize_name, format_currency, format_percentage,
-    format_price, format_large_number, unix_to_human, get_chain_display_name,
-    SimpleCache
-)
-
 load_dotenv()
 
+# ─────────────────────────────────────────────────────────────
+# Optional utils.helpers — fallbacks if not available
+# ─────────────────────────────────────────────────────────────
+
+try:
+    from utils.helpers import (
+        normalize_symbol, normalize_name, format_currency, format_percentage,
+        format_price, format_large_number, unix_to_human, get_chain_display_name,
+        SimpleCache
+    )
+    HAS_HELPERS = True
+except ImportError:
+    HAS_HELPERS = False
+    print("⚠️ MarketEngine: utils.helpers not found. Using fallback implementations.")
+
+    def normalize_symbol(s: str) -> str:
+        return str(s).strip().upper() if s else "???"
+
+    def normalize_name(s: str) -> str:
+        return str(s).strip() if s else "Unknown"
+
+    def format_currency(value: float) -> str:
+        try:
+            if value >= 1_000_000_000:
+                return f"${value/1_000_000_000:.2f}B"
+            if value >= 1_000_000:
+                return f"${value/1_000_000:.2f}M"
+            if value >= 1_000:
+                return f"${value/1_000:.2f}K"
+            return f"${value:,.2f}"
+        except (TypeError, ValueError):
+            return "$0"
+
+    def format_percentage(value: float) -> str:
+        try:
+            return f"{value:+.2f}%"
+        except (TypeError, ValueError):
+            return "0%"
+
+    def format_price(value: float) -> str:
+        try:
+            if value >= 1:
+                return f"${value:,.4f}"
+            return f"${value:.8f}"
+        except (TypeError, ValueError):
+            return "$0"
+
+    def format_large_number(value: float) -> str:
+        try:
+            if value >= 1_000_000_000:
+                return f"{value/1_000_000_000:.2f}B"
+            if value >= 1_000_000:
+                return f"{value/1_000_000:.2f}M"
+            if value >= 1_000:
+                return f"{value/1_000:.2f}K"
+            return f"{value:,.0f}"
+        except (TypeError, ValueError):
+            return "0"
+
+    def unix_to_human(ts: float) -> str:
+        from datetime import datetime
+        try:
+            return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError):
+            return "Unknown"
+
+    def get_chain_display_name(chain: str) -> str:
+        mapping = {
+            "solana": "Solana", "ethereum": "Ethereum", "base": "Base",
+            "bsc": "BSC", "arbitrum": "Arbitrum", "optimism": "Optimism",
+            "avalanche": "Avalanche", "polygon_pos": "Polygon",
+        }
+        return mapping.get(chain.lower(), chain.upper())
+
+    class SimpleCache:
+        def __init__(self, default_ttl: int = 60):
+            self._data: Dict[str, tuple] = {}
+            self.default_ttl = default_ttl
+
+        def get(self, key: str):
+            if key not in self._data:
+                return None
+            value, expiry = self._data[key]
+            if time.time() > expiry:
+                del self._data[key]
+                return None
+            return value
+
+        def set(self, key: str, value, ttl: Optional[int] = None):
+            self._data[key] = (value, time.time() + (ttl or self.default_ttl))
+
+        def clear(self):
+            self._data.clear()
+
+
+# ─────────────────────────────────────────────────────────────
 # API Configuration — DexScreener only
+# ─────────────────────────────────────────────────────────────
+
 DEXSCREENER_BASE = "https://api.dexscreener.com"
 
 # Rate limiting
-DEXSCREENER_RATE_LIMIT = 300  # pairs/search endpoints
-DEXSCREENER_SLOW_LIMIT = 60   # profiles, boosts, takeovers, metas
+DEXSCREENER_RATE_LIMIT = 300
+DEXSCREENER_SLOW_LIMIT = 60
 
 # Popular chains to scan for trending / gainers / losers
 POPULAR_CHAINS = [
@@ -91,20 +188,13 @@ class MarketEngine:
     """
     Market Data Aggregator.
     Fetches, normalizes, and caches market data from DexScreener API.
-    Pushes live updates via eventBus.
+    Pushes live updates via server.broadcast.
 
-    EventBus wiring (to be done by orchestrator):
-        publish:   event_bus.publish("MARKET_UPDATE", {...})
-        subscribe: event_bus.subscribe("AI_VERDICT", engine.on_ai_verdict)
+    v4.0: Receives AI verdicts directly from orchestrator via on_ai_verdict().
     """
 
-    def __init__(
-        self,
-        event_bus_publish: Callable[[str, dict], None],
-        event_bus_subscribe: Optional[Callable[[str, Callable], None]] = None
-    ):
-        self.publish = event_bus_publish
-        self.subscribe = event_bus_subscribe
+    def __init__(self, server: Optional[Any] = None):
+        self.server = server
         self.name = "MarketEngine"
         self.cache = SimpleCache(default_ttl=60)
         self.ai_verified_tokens: Dict[str, MarketToken] = {}
@@ -116,17 +206,17 @@ class MarketEngine:
         self.dexscreener_calls = []
         self._session: Optional[aiohttp.ClientSession] = None
         self._semaphore = asyncio.Semaphore(20)
-        self._subscribed = False
 
     def on_ai_verdict(self, data: dict):
         """Handle AI verdict events from the Decision agent (Orion).
+        Called directly by orchestrator — no event bus needed.
 
         Expected data format:
         {
             "token": "solana:So11111111111111111111111111111111111111112",
             "symbol": "SOL",
             "chain": "solana",
-            "verdict": "SAFE" | "UNSAFE" | "SUS",
+            "verdict": "SAFE",
             "confidence": 0.94,
             "timestamp": 1234567890
         }
@@ -136,8 +226,7 @@ class MarketEngine:
             if verdict == "SAFE":
                 self.add_ai_verified(data)
                 print(f"✅ {self.name}: AI verified token added — {data.get('symbol', '???')} ({verdict})")
-            elif verdict in ("UNSAFE","WARNING","HIGH_RISK"):
-                # Remove from verified if it was previously SAFE
+            elif verdict in ("UNSAFE", "WARNING", "HIGH_RISK"):
                 token_id = data.get("token", "")
                 if token_id in self.ai_verified_tokens:
                     del self.ai_verified_tokens[token_id]
@@ -150,15 +239,6 @@ class MarketEngine:
     async def start(self):
         """Start the market engine background loop."""
         self.running = True
-
-        # Wire up eventBus subscription for AI verdicts
-        if self.subscribe and not self._subscribed:
-            try:
-                self.subscribe("AI_VERDICT", self.on_ai_verdict)
-                self._subscribed = True
-                print(f"💰 {self.name}: Subscribed to AI_VERDICT events.")
-            except Exception as e:
-                print(f"⚠️ {self.name}: Failed to subscribe to AI_VERDICT: {e}")
 
         connector = aiohttp.TCPConnector(limit=50, limit_per_host=30)
         self._session = aiohttp.ClientSession(
@@ -199,32 +279,27 @@ class MarketEngine:
             had_success = True
 
         if not had_success:
-            print(f"⚠️ {self.name}: All fetch methods failed, skipping MARKET_UPDATE publish.")
+            print(f"⚠️ {self.name}: All fetch methods failed, skipping MARKET_UPDATE broadcast.")
             return
 
-        # Publish updates to eventBus — StreamManager broadcasts to all WS clients
-        self.publish("MARKET_UPDATE", {
-            "trending": [t.to_dict() for t in self.trending_tokens[:20]],
-            "gainers": [t.to_dict() for t in self.top_gainers[:20]],
-            "losers": [t.to_dict() for t in self.top_losers[:20]],
-            "ai_verified": [t.to_dict() for t in list(self.ai_verified_tokens.values())[:20]],
-            "timestamp": time.time(),
-        })
+        # v4.0: Broadcast via server instead of event bus
+        if self.server:
+            await self.server.broadcast("MARKET_UPDATE", {
+                "trending": [t.to_dict() for t in self.trending_tokens[:20]],
+                "gainers": [t.to_dict() for t in self.top_gainers[:20]],
+                "losers": [t.to_dict() for t in self.top_losers[:20]],
+                "ai_verified": [t.to_dict() for t in list(self.ai_verified_tokens.values())[:20]],
+                "timestamp": time.time(),
+            })
+        else:
+            print(f"⚠️ {self.name}: No server available — MARKET_UPDATE not broadcast")
 
     # ───────────────────────────────────────────────
-    #  DexScreener: Trending (top boosted + search discovery)
+    # DexScreener: Trending
     # ───────────────────────────────────────────────
     async def _fetch_trending(self) -> List[MarketToken]:
-        """Fetch trending tokens from DexScreener.
-
-        Strategy:
-        1. Fetch top boosted tokens (/token-boosts/top/v1)
-        2. Search across popular queries to discover active pairs
-        3. Deduplicate and sort by liquidity + volume score
-        """
         all_tokens: Dict[str, MarketToken] = {}
 
-        # 1. Top boosted tokens (DexScreener's "hot" signal)
         try:
             boosted = await self._ds_get("/token-boosts/top/v1")
             if boosted:
@@ -236,7 +311,6 @@ class MarketEngine:
         except Exception as e:
             print(f"⚠️ {self.name}: Boosted fetch failed: {e}")
 
-        # 2. Search popular queries to discover active pairs (limited to 6 for rate safety)
         search_tasks = [
             self._ds_search(q) for q in TRENDING_SEARCH_QUERIES[:6]
         ]
@@ -252,7 +326,6 @@ class MarketEngine:
                     if not existing or token.liquidity > existing.liquidity:
                         all_tokens[token.id] = token
 
-        # 3. Sort by composite score (liquidity * volume)
         tokens = list(all_tokens.values())
         tokens.sort(key=lambda t: (t.liquidity * t.volume_24h), reverse=True)
         for i, t in enumerate(tokens):
@@ -260,14 +333,9 @@ class MarketEngine:
         return tokens[:40]
 
     # ───────────────────────────────────────────────
-    #  DexScreener: Top Gainers (search + sort by 24h change)
+    # DexScreener: Top Gainers
     # ───────────────────────────────────────────────
     async def _fetch_top_gainers(self) -> List[MarketToken]:
-        """Fetch top gainers from DexScreener.
-
-        Strategy: Search across chains for active pairs, then sort by
-        priceChange.h24 descending.
-        """
         all_pairs = []
 
         search_tasks = [
@@ -294,13 +362,9 @@ class MarketEngine:
         return tokens[:20]
 
     # ───────────────────────────────────────────────
-    #  DexScreener: Top Losers (search + sort by 24h change)
+    # DexScreener: Top Losers
     # ───────────────────────────────────────────────
     async def _fetch_top_losers(self) -> List[MarketToken]:
-        """Fetch top losers from DexScreener.
-
-        Same strategy as gainers but sort ascending (most negative first).
-        """
         all_pairs = []
 
         search_tasks = [
@@ -327,10 +391,9 @@ class MarketEngine:
         return tokens[:20]
 
     # ───────────────────────────────────────────────
-    #  DexScreener HTTP helpers
+    # DexScreener HTTP helpers
     # ───────────────────────────────────────────────
-    async def _ds_get(self, endpoint: str, params: dict = None) -> dict or list:
-        """Make a GET request to DexScreener API with semaphore-controlled concurrency."""
+    async def _ds_get(self, endpoint: str, params: dict = None):
         url = f"{DEXSCREENER_BASE}{endpoint}"
         async with self._semaphore:
             async with self._session.get(url, params=params) as resp:
@@ -341,20 +404,18 @@ class MarketEngine:
                     await asyncio.sleep(2)
                 else:
                     print(f"⚠️ {self.name}: DS API {endpoint} returned {resp.status}")
-        return None
+                return None
 
     async def _ds_search(self, query: str) -> list:
-        """Search DexScreener for pairs matching a query."""
         data = await self._ds_get("/latest/dex/search", params={"q": query})
         if data and isinstance(data, dict):
             return data.get("pairs", []) or []
         return []
 
     # ───────────────────────────────────────────────
-    #  Data normalizers
+    # Data normalizers
     # ───────────────────────────────────────────────
     def _ds_pair_to_token(self, pair: dict, source: str) -> Optional[MarketToken]:
-        """Convert a DexScreener pair object into a MarketToken."""
         base = pair.get("baseToken", {})
         if not base:
             return None
@@ -364,7 +425,6 @@ class MarketEngine:
         name = normalize_name(base.get("name", symbol))
         chain = pair.get("chainId", "unknown")
 
-        # Build unique ID — fallback to pair address if token address missing
         pair_addr = pair.get("pairAddress", "")
         if token_addr:
             token_id = f"{chain}:{token_addr}"
@@ -374,7 +434,6 @@ class MarketEngine:
             token_id = f"{chain}:{symbol}:{int(time.time() * 1000)}"
 
         price_usd = self._safe_float(pair.get("priceUsd"), 0)
-
         price_change = pair.get("priceChange", {})
         change_24h = self._safe_float(price_change.get("h24"), 0)
         change_7d = 0.0
@@ -410,12 +469,6 @@ class MarketEngine:
         )
 
     async def _enrich_boosted_token(self, item: dict) -> Optional[MarketToken]:
-        """Convert a DexScreener boosted token item into a MarketToken.
-
-        The /token-boosts/top/v1 endpoint only returns chainId, tokenAddress,
-        icon, header, description, links, amount, totalAmount — NO symbol or name.
-        We look up the token's actual pair data via /token-pairs/v1 to get real metadata.
-        """
         chain = item.get("chainId", "unknown")
         token_addr = item.get("tokenAddress", "")
 
@@ -479,7 +532,6 @@ class MarketEngine:
 
     @staticmethod
     def _safe_float(value, default: float = 0.0) -> float:
-        """Safely convert a value to float."""
         try:
             if value is None:
                 return default
@@ -488,7 +540,7 @@ class MarketEngine:
             return default
 
     # ───────────────────────────────────────────────
-    #  AI Verified tokens
+    # AI Verified tokens
     # ───────────────────────────────────────────────
     def add_ai_verified(self, token_data: dict):
         """Add a token to the AI-verified list. Called internally on SAFE verdict."""
@@ -516,7 +568,7 @@ class MarketEngine:
         self.ai_verified_tokens[token_id] = token
 
     # ───────────────────────────────────────────────
-    #  Public getters (unchanged interface)
+    # Public getters (unchanged interface)
     # ───────────────────────────────────────────────
     def get_trending(self) -> List[dict]:
         return [t.to_dict() for t in self.trending_tokens[:20]]
@@ -547,50 +599,3 @@ class MarketEngine:
             await self._session.close()
             self._session = None
         print(f"🛑 {self.name}: Market engine stopped.")
-
-
-# ───────────────────────────────────────────────────
-#  Self-test
-# ───────────────────────────────────────────────────
-if __name__ == "__main__":
-    # Simple mock event bus for testing
-    subscriptions = {}
-
-    def mock_publish(event_type: str, data: dict):
-        print(f"\n📡 PUBLISH {event_type}: {json.dumps(data, indent=2, default=str)[:400]}...")
-
-    def mock_subscribe(event_type: str, handler: Callable):
-        subscriptions[event_type] = handler
-        print(f"📋 SUBSCRIBED to {event_type}")
-
-    # Simulate Orion sending a verdict
-    def simulate_orion_verdict():
-        time.sleep(1)
-        if "AI_VERDICT" in subscriptions:
-            subscriptions["AI_VERDICT"]({
-                "token": "solana:So11111111111111111111111111111111111111112",
-                "symbol": "SOL",
-                "chain": "solana",
-                "verdict": "SAFE",
-                "confidence": 0.97,
-                "timestamp": time.time()
-            })
-
-    engine = MarketEngine(mock_publish, mock_subscribe)
-
-    async def test():
-        task = asyncio.create_task(engine.start())
-        await asyncio.sleep(2)
-        simulate_orion_verdict()
-        await asyncio.sleep(1)
-        print(f"\n🧪 AI verified tokens count: {len(engine.ai_verified_tokens)}")
-        if engine.ai_verified_tokens:
-            print(f"   Token: {list(engine.ai_verified_tokens.values())[0].symbol}")
-        await engine.stop()
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-    asyncio.run(test())

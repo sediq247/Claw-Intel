@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
 """
-🎯 DECISION AGENT — Orion v2.1
+🎯 DECISION AGENT — Orion v4.0
 "The Judge" — Makes the final call. Weighs all evidence, delivers the verdict.
-Listens to Atlas, Vega, and Echo. Uses Gemini for natural spoken conversation.
+Called directly by the Orchestrator. Returns structured decision + spoken message.
 
-v2.1 FIXES:
-- on_memory_intelligence() now reads 'token_address' (matches memory.py output)
-- Added RUGGER_TAG, HONEYPOT_TAG, SCAMMER_TAG, LEGIT_TAG constants
-- Added pending decision timeout cleanup (memory leak fix)
-- Added on_decision_complete callback for orchestrator
-- Fixed key mismatch: memory.py publishes 'token_address', we now read 'token_address'
 """
 
 import json
@@ -20,6 +14,7 @@ from dataclasses import dataclass, asdict
 from typing import Dict, Callable, Any, Optional, List
 from enum import Enum
 from dotenv import load_dotenv
+
 try:
     from google import genai
     HAS_GENAI = True
@@ -41,7 +36,7 @@ load_dotenv()
 # ─────────────────────────────────────────────────────────────
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
 client = None
 
@@ -56,7 +51,6 @@ else:
     reason = "GEMINI_API_KEY missing" if not GEMINI_API_KEY else "google-genai unavailable"
     print(f"⚠️ Orion: {reason}. Using fallback mode.")
 
-
 # ─────────────────────────────────────────────────────────────
 # Data Models
 # ─────────────────────────────────────────────────────────────
@@ -65,7 +59,6 @@ class Verdict(Enum):
     SAFE = "SAFE"
     WARNING = "WARNING"
     HIGH_RISK = "HIGH_RISK"
-
 
 @dataclass
 class DecisionResult:
@@ -82,7 +75,6 @@ class DecisionResult:
     def to_json(self):
         return json.dumps(asdict(self), default=str)
 
-
 # ─────────────────────────────────────────────────────────────
 # Decision Agent
 # ─────────────────────────────────────────────────────────────
@@ -91,13 +83,7 @@ class DecisionAgent:
     """
     Orion — The Judge
     Makes the final call. Weighs all evidence, delivers the verdict.
-    Listens to Atlas, Vega, and Echo.
-
-    v2.1 FIXES:
-    - Tag constants added (were missing, causing crashes)
-    - Key fix: on_memory_intelligence reads 'token_address' to match memory.py
-    - Pending decision expiry prevents memory leaks
-    - on_decision_complete callback for orchestrator state management
+    v4.0: Orchestrator-driven. Receives data directly, returns structured verdict + message.
     """
 
     # TAG CONSTANTS — must match MemoryAgent tags
@@ -108,30 +94,34 @@ class DecisionAgent:
     RAPID_TAG = "rapid_launcher"
     NEWBIE_TAG = "new_wallet"
 
-    # Pending decision expiry (seconds) — prevent memory leak
-    PENDING_DECISION_TIMEOUT = 300  # 5 minutes
+    # v4.0: 180s timeout (reduced from old 300s)
+    PENDING_DECISION_TIMEOUT = 180
 
-    def __init__(self, event_bus_publish: Callable[[str, dict], None]):
-        self.publish = event_bus_publish
+    def __init__(self, server: Optional[Any] = None):
+        self.server = server
         self.name = "Orion"
         self._tasks: List[asyncio.Task] = []
 
         self.SAFE_THRESHOLD = 30
         self.WARNING_THRESHOLD = 60
 
+        # v4.0: Removed unused "market" weight (0.10) to avoid confusion
         self.weights = {
             "simulation": 0.30,
             "analysis": 0.35,
             "memory": 0.25,
-            "market": 0.10
         }
 
+        # v4.0: Keep backward-compat pending dict for old fire-and-forget mode
         self.pending_decisions: Dict[str, dict] = {}
-        self._pending_timestamps: Dict[str, float] = {}  # Track when each pending was created
+        self._pending_timestamps: Dict[str, float] = {}
 
-        # Callback for orchestrator — set by orchestrator after init
-        self.on_decision_complete: Optional[Callable] = None
+    # v4.0: Public entry point for the Orchestrator
+    async def decide(self, sim_data: dict, analysis_data: dict, memory_data: Optional[dict] = None) -> dict:
+        """Run full decision and return structured result + spoken message."""
+        return await self._make_decision(sim_data, analysis_data, memory_data)
 
+    # v4.0: Backward-compatible event handlers (not used by Orchestrator)
     def on_simulation_complete(self, sim_data: dict):
         """React to Atlas's simulation results."""
         try:
@@ -161,14 +151,8 @@ class DecisionAgent:
             print(f"⚠️ {self.name}: Error handling analysis: {e}")
 
     def on_memory_intelligence(self, memory_data: dict):
-        """
-        React to Echo's memory intelligence.
-
-        v2.1 FIX: memory.py publishes 'token_address', so we read that.
-        Falls back to 'token' for backward compatibility.
-        """
+        """React to Echo's memory intelligence."""
         try:
-            # v2.1: memory.py publishes 'token_address'
             token = memory_data.get("token_address") or memory_data.get("token")
             if not token:
                 print(f"⚠️ {self.name}: Memory data missing token_address/token")
@@ -193,14 +177,16 @@ class DecisionAgent:
             print(f"🧹 {self.name}: Cleaned up expired pending decision for {token[:12]}...")
 
     def _try_decide(self, token: str):
-        """Trigger decision only when we have minimum required data."""
+        """Trigger decision only when we have minimum required data (backward-compat)."""
         data = self.pending_decisions.get(token)
         if not data:
             return
         if "simulation" not in data or "analysis" not in data:
             return
         try:
-            task = asyncio.create_task(self._make_decision(token, data))
+            task = asyncio.create_task(
+                self._make_decision(data.get("simulation", {}), data.get("analysis", {}), data.get("memory"))
+            )
             task.add_done_callback(self._on_task_done)
             self._tasks.append(task)
         except Exception as e:
@@ -216,24 +202,25 @@ class DecisionAgent:
             print(f"⚠️ {self.name}: Decision task failed: {e}")
 
     async def _speak(self, message: str, msg_type: str = "decision"):
-        """Publish a spoken message to the room."""
+        """Broadcast a spoken message to the room via the WebSocket server."""
         try:
-            self.publish("AGENT_MESSAGE", {
-                "agent": self.name,
-                "message": message,
-                "type": msg_type,
-                "channel": "main",
-                "timestamp": time.time()
-            })
+            if self.server:
+                await self.server.broadcast("AGENT_MESSAGE", {
+                    "agent": self.name,
+                    "message": message,
+                    "type": msg_type,
+                    "channel": "main",
+                    "timestamp": time.time()
+                })
         except Exception as e:
-            print(f"⚠️ {self.name}: Publish failed: {e}")
+            print(f"⚠️ {self.name}: Broadcast failed: {e}")
 
     async def _generate_orion_message(
         self,
         result: DecisionResult,
         sim: dict,
         analysis: dict,
-        memory: dict
+        memory: Optional[dict]
     ) -> str:
 
         if not client:
@@ -249,7 +236,7 @@ class DecisionAgent:
             "You are Orion, the calm, authoritative team lead of an elite crypto intelligence squad. "
             "You synthesize reports from Atlas (the trader), Vega (the professional analyst), and Echo (the archivist) "
             "to deliver a final verdict. You speak with the measured confidence of a judge who has heard "
-            "every excuse and seen every trick. You never rush — your word is final. You reference your "
+            "every excuse and seen every trick. You never rush -- your word is final. You reference your "
             "team naturally but make it clear this is YOUR call."
         )
 
@@ -288,9 +275,9 @@ FINAL VERDICT:
 Requirements:
 1. Acknowledge your team naturally (Atlas found X, Vega flagged Y, Echo revealed Z)
 2. Walk through the logic that led to your verdict
-3. If HIGH_RISK: be firm and clear — this is a no-go
-4. If WARNING: be cautious — more data needed, trade carefully
-5. If SAFE: be measured — clean signals but never guarantee
+3. If HIGH_RISK: be firm and clear -- this is a no-go
+4. If WARNING: be cautious -- more data needed, trade carefully
+5. If SAFE: be measured -- clean signals but never guarantee
 6. End with the recommended action and a reminder to DYOR
 7. Keep it conversational and under 6 sentences
 8. Sound like a judge who respects the evidence but knows the final word is his
@@ -300,7 +287,7 @@ Requirements:
             def _generate():
                 kwargs = {
                     "model": GEMINI_MODEL,
-                    "contents": f"{system_prompt}\n\n{user_prompt}",
+                    "contents": f"{system_prompt}\\n\\n{user_prompt}",
                 }
                 if genai_types:
                     kwargs["config"] = genai_types.GenerateContentConfig(
@@ -333,7 +320,7 @@ Requirements:
         result: DecisionResult,
         sim: dict,
         analysis: dict,
-        memory: dict
+        memory: Optional[dict]
     ) -> str:
 
         verdict = result.verdict
@@ -360,16 +347,17 @@ Requirements:
                 f"Verdict: SAFE ({confidence:.0f}% confidence). Action: MONITOR. But always DYOR."
             )
 
-    async def _make_decision(self, token: str, data: dict):
+    async def _make_decision(self, sim: dict, analysis: dict, memory: Optional[dict] = None) -> dict:
+        """
+        v4.0: Orchestrator passes data directly. No pending dict needed.
+        Partial data handling: delivers verdict even with incomplete data.
+        """
         try:
-            sim = data.get("simulation", {})
-            analysis = data.get("analysis", {})
-            memory = data.get("memory", {})
-
+            token = sim.get("token_address", analysis.get("token_address", "unknown"))
             chain = sim.get("chain", analysis.get("chain", "unknown"))
             symbol = sim.get("token_symbol", analysis.get("token_symbol", "???"))
 
-            # Simulation score component
+            # ── Simulation score component ──
             sim_score = 0
             if sim.get("honeypot_risk"):
                 sim_score += 50
@@ -388,18 +376,17 @@ Requirements:
             elif liquidity < 1000:
                 sim_score += 10
 
-            # Analysis score component
+            # ── Analysis score component ──
             analysis_risk = analysis.get("risk_score", 50)
 
-            # Memory score component
+            # ── Memory score component ──
             profile = (memory or {}).get("profile", {}) or {}
             creator_rep = profile.get("reputation_score", 50)
             tags = profile.get("tags", [])
 
-            # v2.1: Check all tag constants
             is_scammer = (
-                self.RUGGER_TAG in tags or 
-                self.HONEYPOT_TAG in tags or 
+                self.RUGGER_TAG in tags or
+                self.HONEYPOT_TAG in tags or
                 self.SCAMMER_TAG in tags
             )
 
@@ -407,7 +394,8 @@ Requirements:
             if is_scammer:
                 memory_score += 30
 
-            # Weighted final score
+            # ── Weighted final score ──
+            # v4.0: market weight removed (was 0.10, unused)
             final_score = (
                 sim_score * self.weights["simulation"] +
                 analysis_risk * self.weights["analysis"] +
@@ -415,7 +403,7 @@ Requirements:
             )
             final_score = max(0, min(100, final_score))
 
-            # Determine verdict
+            # ── Determine verdict ──
             if final_score < self.SAFE_THRESHOLD:
                 verdict = Verdict.SAFE
                 action = "MONITOR"
@@ -431,12 +419,30 @@ Requirements:
                 verdict = Verdict.HIGH_RISK
                 action = "AVOID"
 
-            # Confidence calculation
-            confidence = (
-                sim.get("simulation_confidence", 0.5) * 0.4 +
-                (0.4 if analysis else 0.2) +
-                (0.2 if memory else 0.1)
-            )
+            # ── v4.0: Partial data confidence handling ──
+            has_sim = bool(sim and sim.get("token_address"))
+            has_analysis = bool(analysis and analysis.get("token_address"))
+            has_memory = bool(memory and memory.get("token_address"))
+
+            if has_sim and has_analysis and has_memory:
+                # Full data
+                confidence = (
+                    sim.get("simulation_confidence", 0.5) * 0.4 +
+                    (0.4 if analysis else 0.2) +
+                    (0.2 if memory else 0.1)
+                )
+            elif has_sim and has_analysis:
+                # Missing memory data
+                confidence = (
+                    sim.get("simulation_confidence", 0.5) * 0.4 +
+                    (0.4 if analysis else 0.2)
+                ) * 0.7
+                print(f"⚠️ {self.name}: Memory data missing — reducing confidence to 70%")
+            else:
+                # Any single failure
+                confidence = 0.4
+                print(f"⚠️ {self.name}: Incomplete data — confidence reduced to 40%")
+
             confidence = max(0.0, min(1.0, confidence))
 
             result = DecisionResult(
@@ -455,7 +461,12 @@ Requirements:
                     "is_known_scammer": is_scammer,
                     "liquidity_usd": liquidity,
                     "honeypot": sim.get("honeypot_risk", False),
-                    "can_sell": sim.get("can_sell", True)
+                    "can_sell": sim.get("can_sell", True),
+                    "data_completeness": {
+                        "simulation": has_sim,
+                        "analysis": has_analysis,
+                        "memory": has_memory,
+                    }
                 },
                 timestamp=time.time()
             )
@@ -464,54 +475,44 @@ Requirements:
             report = await self._generate_orion_message(result, sim, analysis, memory)
             await self._speak(report, "decision")
 
-            # Publish structured decision
-            try:
-                self.publish("DECISION_COMPLETE", result.__dict__)
-            except Exception as e:
-                print(f"⚠️ {self.name}: Publish decision failed: {e}")
+            # v4.0: Return structured result + message for Orchestrator
+            result_dict = {**result.__dict__, "message": report}
 
-            # Publish trading signal
-            try:
-                self.publish("SIGNAL", {
-                    "token": token,
-                    "chain": chain,
-                    "symbol": symbol,
-                    "signal": action,
-                    "verdict": verdict.value,
-                    "score": final_score,
-                    "confidence": confidence,
+            # v4.0: Backward-compat broadcast (not used by Orchestrator)
+            if self.server:
+                await self.server.broadcast("DECISION_COMPLETE", result_dict)
+                await self.server.broadcast("SIGNAL", {
+                    "token": token, "chain": chain, "symbol": symbol,
+                    "signal": action, "verdict": verdict.value,
+                    "score": final_score, "confidence": confidence,
                     "timestamp": time.time()
                 })
-            except Exception as e:
-                print(f"⚠️ {self.name}: Publish signal failed: {e}")
-
-            # Publish verified token if safe
-            if verdict == Verdict.SAFE:
-                try:
-                    self.publish("AI_VERDICT", {
-                        "token": token,
-                        "chain": chain,
-                        "symbol": symbol,
-                        "verdict": verdict.value,
-                        "confidence": confidence,
+                if verdict == Verdict.SAFE:
+                    await self.server.broadcast("AI_VERDICT", {
+                        "token": token, "chain": chain, "symbol": symbol,
+                        "verdict": verdict.value, "confidence": confidence,
                         "timestamp": time.time()
                     })
-                except Exception as e:
-                    print(f"⚠️ {self.name}: Publish verified failed: {e}")
 
-            # Notify orchestrator that decision is complete
-            if self.on_decision_complete and callable(self.on_decision_complete):
-                try:
-                    self.on_decision_complete(result.__dict__)
-                except Exception as e:
-                    print(f"⚠️ {self.name}: on_decision_complete callback failed: {e}")
-
-            # Clean up pending decision
+            # Clean up pending decision (backward-compat)
             self.pending_decisions.pop(token, None)
             self._pending_timestamps.pop(token, None)
 
+            return result_dict
+
         except Exception as e:
             print(f"❌ {self.name}: Fatal decision error: {e}")
+            return {
+                "token_address": sim.get("token_address", "unknown"),
+                "chain": sim.get("chain", "unknown"),
+                "symbol": sim.get("token_symbol", "???"),
+                "verdict": "HIGH_RISK",
+                "confidence": 0.0,
+                "action": "AVOID",
+                "reasoning": f"Decision engine crashed: {e}",
+                "message": f"Orion failed to render a verdict: {e}",
+                "error": str(e),
+            }
 
     def stop(self):
         """Cancel any pending tasks."""
@@ -519,7 +520,6 @@ Requirements:
         for t in self._tasks:
             t.cancel()
         print(f"✅ {self.name}: Stopped.")
-
 
 # ─────────────────────────────────────────────────────────────
 # Main Runner
@@ -535,53 +535,50 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"⚠️ Publish error: {e}")
 
-    orion = DecisionAgent(test_publish)
+    orion = DecisionAgent()
 
-    test_token = "0x1234567890abcdef1234567890abcdef12345678"
-
-    orion.pending_decisions[test_token] = {
-        "simulation": {
-            "token_address": test_token,
-            "chain": "bsc",
-            "token_symbol": "TEST",
-            "can_buy": True,
-            "can_sell": True,
-            "honeypot_risk": False,
-            "liquidity_usd": 15000,
-            "buy_tax": 2,
-            "sell_tax": 3,
-            "mint_function": False,
-            "blacklist_function": False,
-            "owner_renounced": True,
-            "simulation_confidence": 0.85
-        },
-        "analysis": {
-            "token_address": test_token,
-            "chain": "bsc",
-            "token_symbol": "TEST",
-            "risk_score": 25,
-            "risk_level": "SAFE",
-            "red_flags": [],
-            "yellow_flags": ["Moderate taxes: 2% buy / 3% sell"],
-            "green_flags": ["Healthy liquidity: $15,000", "Ownership renounced"]
-        },
-        "memory": {
-            "token_address": test_token,  # v2.1: matches memory.py output
-            "chain": "bsc",
-            "symbol": "TEST",
-            "creator": "0xabcdef1234567890abcdef1234567890abcdef12",
-            "profile": {
-                "reputation_score": 75,
-                "tags": ["legit_builder"],
-                "total_tokens_created": 3
-            },
-            "is_new": False
-        }
+    test_sim = {
+        "token_address": "0x1234567890abcdef1234567890abcdef12345678",
+        "chain": "bsc",
+        "token_symbol": "TEST",
+        "can_buy": True,
+        "can_sell": True,
+        "honeypot_risk": False,
+        "liquidity_usd": 15000,
+        "buy_tax": 2,
+        "sell_tax": 3,
+        "mint_function": False,
+        "blacklist_function": False,
+        "owner_renounced": True,
+        "simulation_confidence": 0.85
     }
-    orion._pending_timestamps[test_token] = time.time()
+
+    test_analysis = {
+        "token_address": "0x1234567890abcdef1234567890abcdef12345678",
+        "chain": "bsc",
+        "token_symbol": "TEST",
+        "risk_score": 25,
+        "risk_level": "SAFE",
+        "red_flags": [],
+        "yellow_flags": ["Moderate taxes: 2% buy / 3% sell"],
+        "green_flags": ["Healthy liquidity: $15,000", "Ownership renounced"]
+    }
+
+    test_memory = {
+        "token_address": "0x1234567890abcdef1234567890abcdef12345678",
+        "chain": "bsc",
+        "symbol": "TEST",
+        "creator": "0xabcdef1234567890abcdef1234567890abcdef12",
+        "profile": {
+            "reputation_score": 75,
+            "tags": ["legit_builder"],
+            "total_tokens_created": 3
+        },
+        "is_new": False
+    }
 
     try:
-        asyncio.run(orion._make_decision(test_token, orion.pending_decisions[test_token]))
+        asyncio.run(orion.decide(test_sim, test_analysis, test_memory))
     except KeyboardInterrupt:
         orion.stop()
         print("\n🛑 Orion stopped.")

@@ -695,7 +695,72 @@ var(--text-secondary);
         font-size: 0.85rem;
         max-width: 300px;
     }
-</style>
+
+  /* ── v4.0: Agent Working Spinner Cards ── */
+  .agent-working-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    margin: 8px 0;
+    background: rgba(10, 10, 15, 0.85);
+    border: 1px solid rgba(0, 229, 255, 0.2);
+    border-radius: 12px;
+    backdrop-filter: blur(10px);
+    animation: workingPulse 1.5s ease-in-out infinite;
+    transition: opacity 0.4s ease, transform 0.4s ease;
+  }
+  .agent-working-card.fade-out {
+    opacity: 0;
+    transform: translateX(-20px);
+    pointer-events: none;
+  }
+  .agent-working-card .working-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 14px;
+    color: #0a0a0f;
+    flex-shrink: 0;
+  }
+  .agent-working-card .working-text {
+    flex: 1;
+    min-width: 0;
+  }
+  .agent-working-card .working-text .working-agent {
+    font-weight: 600;
+    font-size: 13px;
+    color: #e0e0e8;
+  }
+  .agent-working-card .working-text .working-action {
+    font-size: 12px;
+    color: #8a8a9a;
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .agent-working-card .working-spinner {
+    width: 18px;
+    height: 18px;
+    border: 2px solid rgba(0, 229, 255, 0.15);
+    border-top-color: #00e5ff;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes workingPulse {
+    0%, 100% { border-color: rgba(0, 229, 255, 0.2); }
+    50% { border-color: rgba(0, 229, 255, 0.5); }
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  </style>
 </head>
 <body>
     <div id="boot-screen">

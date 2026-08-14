@@ -1,6 +1,7 @@
 /**
  * 📜 frontend/history.js
- * ClawIntel — Investigation History Browser
+ * ClawIntel v4.0 — Investigation History Browser
+ * Fetches from DB via REST API. No localStorage.
  */
 
 const CONFIG = {
@@ -11,10 +12,13 @@ const CONFIG = {
 class HistoryApp {
   constructor() {
     this.investigations = [];
+    this.chatHistory = [];
     this.filtered = [];
     this.stats = { total: 0, safe: 0, warning: 0, high_risk: 0 };
 
     this.listEl = document.getElementById('investigation-list');
+    this.chatSection = document.getElementById('chat-log-section');
+    this.chatListEl = document.getElementById('chat-history-list');
     this.statsEls = {
       total: document.getElementById('stat-total'),
       safe: document.getElementById('stat-safe'),
@@ -31,8 +35,6 @@ class HistoryApp {
   init() {
     this.fetchData();
     this.setupFilters();
-
-    // Auto-refresh
     setInterval(() => this.fetchData(), CONFIG.REFRESH_INTERVAL);
   }
 
@@ -44,17 +46,26 @@ class HistoryApp {
 
   async fetchData() {
     try {
-      // Fetch investigations from API
-      const res = await fetch('/api/investigations?limit=100');
-      if (!res.ok) throw new Error('API error');
-      const data = await res.json();
+      const [invRes, chatRes] = await Promise.all([
+        fetch('/api/investigations?limit=100'),
+        fetch('/api/chat/history?limit=50').catch(() => null)
+      ]);
 
-      this.investigations = data.investigations || [];
+      if (!invRes.ok) throw new Error(`Investigations API error: ${invRes.status}`);
+      const invData = await invRes.json();
+      this.investigations = invData.investigations || [];
+
+      if (chatRes?.ok) {
+        const chatData = await chatRes.json();
+        this.chatHistory = chatData.messages || [];
+        this.renderChatHistory();
+      }
+
       this.calculateStats();
       this.applyFilters();
     } catch (e) {
       console.error('[History] Fetch failed:', e);
-      this.listEl.innerHTML = '<div class="empty-state">Failed to load past analysis</div>';
+      this.listEl.innerHTML = '<div class="empty-state">Failed to load history from server. Is the backend running?</div>';
     }
   }
 
@@ -65,7 +76,10 @@ class HistoryApp {
       warning: this.investigations.filter(i => i.verdict === 'WARNING').length,
       high_risk: this.investigations.filter(i => i.verdict === 'HIGH_RISK').length,
     };
+    this.updateStatsUI();
+  }
 
+  updateStatsUI() {
     if (this.statsEls.total) this.statsEls.total.textContent = this.stats.total;
     if (this.statsEls.safe) this.statsEls.safe.textContent = this.stats.safe;
     if (this.statsEls.warning) this.statsEls.warning.textContent = this.stats.warning;
@@ -73,78 +87,138 @@ class HistoryApp {
   }
 
   applyFilters() {
-    const verdict = this.filterVerdict?.value || '';
-    const chain = this.filterChain?.value || '';
-    const search = this.searchInput?.value.toLowerCase() || '';
+    const verdict = this.filterVerdict?.value || 'all';
+    const chain = this.filterChain?.value || 'all';
+    const query = (this.searchInput?.value || '').toLowerCase().trim();
 
     this.filtered = this.investigations.filter(inv => {
-      if (verdict && inv.verdict !== verdict) return false;
-      if (chain && inv.chain !== chain) return false;
-      if (search) {
-        const match = (inv.symbol || '').toLowerCase().includes(search) ||
-                      (inv.token_address || '').toLowerCase().includes(search);
-        if (!match) return false;
+      if (verdict !== 'all' && inv.verdict !== verdict) return false;
+      if (chain !== 'all' && inv.chain !== chain) return false;
+      if (query) {
+        const symbol = (inv.symbol || '').toLowerCase();
+        const address = (inv.token_address || '').toLowerCase();
+        const name = (inv.name || '').toLowerCase();
+        const creator = (inv.creator || '').toLowerCase();
+        if (!symbol.includes(query) && !address.includes(query) && !name.includes(query) && !creator.includes(query)) {
+          return false;
+        }
       }
       return true;
     });
 
-    this.render();
+    this.renderList();
   }
 
-  render() {
-    if (!this.listEl) return;
-
-    if (this.filtered.length === 0) {
-      this.listEl.innerHTML = '<div class="empty-state">No analysis match your filters.</div>';
+  renderList() {
+    if (!this.filtered.length) {
+      this.listEl.innerHTML = '<div class="empty-state">No investigations match your filters</div>';
       return;
     }
-
-    this.listEl.innerHTML = this.filtered.map(inv => this.renderCard(inv)).join('');
+    this.listEl.innerHTML = this.filtered.map(inv => this.renderInvestigationCard(inv)).join('');
   }
 
-  renderCard(inv) {
-    const verdictClass = inv.verdict?.toLowerCase() || 'warning';
-    const icons = { safe: '✅', warning: '⚠️', high_risk: '🚨' };
-    const icon = icons[verdictClass] || '❓';
-    const time = inv.timestamp ? this.formatTime(inv.timestamp) : 'Unknown';
-    const shortAddr = inv.token_address 
-      ? inv.token_address.slice(0, 6) + '...' + inv.token_address.slice(-4)
-      : 'Unknown';
-    const confidence = typeof inv.confidence === 'number' 
-      ? Math.round(inv.confidence * 100) + '%'
-      : 'N/A';
+  renderInvestigationCard(inv) {
+    const verdictColors = {
+      SAFE: 'var(--safe)',
+      WARNING: 'var(--warning)',
+      HIGH_RISK: 'var(--danger)',
+    };
+    const color = verdictColors[inv.verdict] || 'var(--text-secondary)';
+    const time = inv.timestamp ? new Date(inv.timestamp * 1000).toLocaleString() : 'Unknown';
+    const chain = (inv.chain || 'unknown').toUpperCase();
+    const symbol = inv.symbol || '???';
+    const address = inv.token_address || '';
+    const addressShort = address ? `${address.slice(0, 8)}...${address.slice(-4)}` : 'N/A';
+    const confidence = (inv.confidence !== undefined) ? `${(inv.confidence * 100).toFixed(0)}%` : 'N/A';
+    const attention = (inv.attention_score !== undefined) ? inv.attention_score.toFixed(1) : null;
 
     return `
-      <div class="inv-card" onclick="historyApp.showDetail('${inv.token_address}')">
-        <div class="inv-verdict ${verdictClass}">${icon}</div>
-        <div class="inv-info">
-          <div class="inv-symbol">${inv.symbol || '???'} <span style="color:var(--text-muted);font-weight:400;">(${inv.chain?.toUpperCase() || '?'})</span></div>
-          <div class="inv-meta">${shortAddr} · Confidence: ${confidence}</div>
+      <div class="investigation-card" data-verdict="${inv.verdict}" data-chain="${inv.chain}">
+        <div class="card-header">
+          <div class="token-info">
+            <span class="token-symbol" style="color: ${color}">${this.escapeHtml(symbol)}</span>
+            <span class="token-chain">${chain}</span>
+          </div>
+          <div class="verdict-badge" style="background: ${color}20; color: ${color}; border: 1px solid ${color}40;">
+            ${inv.verdict || 'UNKNOWN'}
+          </div>
         </div>
-        <div class="inv-time">${time}</div>
+        <div class="card-body">
+          <div class="detail-row">
+            <span class="detail-label">Contract</span>
+            <span class="detail-value mono">${addressShort}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Confidence</span>
+            <span class="detail-value">${confidence}</span>
+          </div>
+          ${attention !== null ? `
+          <div class="detail-row">
+            <span class="detail-label">Attention</span>
+            <span class="detail-value">${attention}/100</span>
+          </div>
+          ` : ''}
+          <div class="detail-row">
+            <span class="detail-label">Time</span>
+            <span class="detail-value">${time}</span>
+          </div>
+          ${inv.action ? `
+          <div class="detail-row">
+            <span class="detail-label">Action</span>
+            <span class="detail-value" style="text-transform: uppercase; font-weight: 600; color: ${color};">${inv.action}</span>
+          </div>
+          ` : ''}
+          ${inv.creator && inv.creator !== 'unknown' ? `
+          <div class="detail-row">
+            <span class="detail-label">Creator</span>
+            <span class="detail-value mono">${inv.creator.slice(0, 10)}...${inv.creator.slice(-4)}</span>
+          </div>
+          ` : ''}
+        </div>
+        ${inv.reasoning ? `
+        <div class="card-reasoning">
+          <p>${this.escapeHtml(inv.reasoning)}</p>
+        </div>
+        ` : ''}
+        ${inv.nova_message ? `
+        <div class="card-reasoning">
+          <p style="color: var(--nova);"><strong>Nova:</strong> ${this.escapeHtml(inv.nova_message)}</p>
+        </div>
+        ` : ''}
       </div>
     `;
   }
 
-  formatTime(ts) {
-    if (!ts) return 'Unknown';
-    const date = new Date(ts * 1000);
-    const now = new Date();
-    const diff = (now - date) / 1000;
+  renderChatHistory() {
+    if (!this.chatHistory.length) {
+      if (this.chatSection) this.chatSection.style.display = 'none';
+      return;
+    }
+    if (this.chatSection) this.chatSection.style.display = 'block';
+    if (!this.chatListEl) return;
 
-    if (diff < 60) return 'Just now';
-    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-    return date.toLocaleDateString();
+    this.chatListEl.innerHTML = this.chatHistory.map(msg => {
+      const agent = msg.agent || 'system';
+      const time = msg.timestamp ? new Date(msg.timestamp * 1000).toLocaleTimeString() : '';
+      const text = msg.message || '';
+      return `
+        <div class="chat-message agent-${agent}">
+          <span class="chat-agent" style="color: var(--${agent.toLowerCase()}, var(--text-secondary));">${agent}</span>
+          <span class="chat-text">${this.escapeHtml(text)}</span>
+          <span class="chat-time">${time}</span>
+        </div>
+      `;
+    }).join('');
   }
 
-  showDetail(tokenAddress) {
-    // Navigate to analysis page with pre-filled token
-    window.location.href = `analysis.html?token=${tokenAddress}`;
+  escapeHtml(str) {
+    if (!str) return '';
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
 }
 
-const historyApp = new HistoryApp();
-window.historyApp = historyApp;
-
-export default historyApp;
+const app = new HistoryApp();

@@ -1,28 +1,28 @@
 #!/usr/bin/env python3
 """
-🧪 SIMULATOR AGENT — Atlas v3.1 PRODUCTION
+🧪 SIMULATOR AGENT — Atlas v4.0
 "The Tester" — Runs fake trades, checks if you can actually buy and sell.
-Responds to Nova's finds. Uses Gemini for natural, human-like conversation.
+Called directly by the Orchestrator. Returns structured results + spoken message.
 
-v3.1 CHANGES:
-- Added full Solana support via Jupiter API + RPC simulateTransaction
-- Added Solana address validation (base58)
-- Added Solana-specific simulation fields to SimulationResult
-- Solana contract analysis: SPL mint/freeze authority checks
-- EVM pipeline unchanged and fully backward-compatible
+v4.0 CHANGES:
+- Single shared aiohttp.ClientSession (created in __init__, closed in stop)
+- FUNDED_WALLETS uses zero address (eth_call needs any valid from address)
+- Solana: respects jupiter_failed flag, skips Jupiter sim if set
+- Returns dict with all simulation fields + 'message'
+- Supports 4 chains only: ethereum, bsc, base, solana
+- Gemini model defaults to gemini-1.5-flash
 """
 
 import asyncio
 import json
-import random
 import time
 import os
 import re
 import base64
 import struct
 from dataclasses import dataclass, asdict
-from typing import Dict, Callable, Optional
-from datetime import datetime, timedelta
+from typing import Dict, Optional, Any
+from datetime import datetime
 
 import aiohttp
 from web3 import Web3
@@ -45,7 +45,7 @@ except ImportError:
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
 client = None
 if GEMINI_API_KEY and HAS_GENAI:
@@ -58,7 +58,6 @@ if GEMINI_API_KEY and HAS_GENAI:
 else:
     reason = "GEMINI_API_KEY missing" if not GEMINI_API_KEY else "google-genai unavailable"
     print(f"⚠️ Atlas: {reason}. Using fallback mode.")
-
 
 # ═══════════════════════════════════════════════════════════
 # DATA MODELS
@@ -104,7 +103,6 @@ class SimulationResult:
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), default=str)
-
 
 # ═══════════════════════════════════════════════════════════
 # EVM DEX CONFIGURATION
@@ -152,7 +150,7 @@ ROUTER_ABIS = {
         },
         {
             "inputs": [{"internalType": "uint256", "name": "amountOut", "type": "uint256"},
-                        {"internalType": "address[]", "name": "path", "type": "address[]"}],
+                       {"internalType": "address[]", "name": "path", "type": "address[]"}],
             "name": "getAmountsIn",
             "outputs": [{"internalType": "uint256[]", "name": "amounts", "type": "uint256[]"}],
             "stateMutability": "view",
@@ -160,7 +158,7 @@ ROUTER_ABIS = {
         },
         {
             "inputs": [{"internalType": "uint256", "name": "amountIn", "type": "uint256"},
-                        {"internalType": "address[]", "name": "path", "type": "address[]"}],
+                       {"internalType": "address[]", "name": "path", "type": "address[]"}],
             "name": "getAmountsOut",
             "outputs": [{"internalType": "uint256[]", "name": "amounts", "type": "uint256[]"}],
             "stateMutability": "view",
@@ -185,9 +183,10 @@ WETH_ADDRESSES = {
     "ethereum": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
 }
 
+# v4.0: Zero address is valid for eth_call (no gas spent, any from address works)
 FUNDED_WALLETS = {
-    "bsc": "0xF977814e90dA44bFA03b6295A0616a897441aceC",
-    "ethereum": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+    "bsc": "0x0000000000000000000000000000000000000000",
+    "ethereum": "0x0000000000000000000000000000000000000000",
 }
 
 ERC20_ABI = [
@@ -201,7 +200,6 @@ OWNERSHIP_ABI = [
     {"constant": True, "inputs": [], "name": "owner", "outputs": [{"name": "", "type": "address"}], "type": "function"},
     {"constant": True, "inputs": [], "name": "getOwner", "outputs": [{"name": "", "type": "address"}], "type": "function"},
 ]
-
 
 # ═══════════════════════════════════════════════════════════
 # UTILITIES
@@ -224,7 +222,6 @@ class RateLimiter:
             self._last_call[domain] = time.time()
 
 rate_limiter = RateLimiter()
-
 
 class TTLCache:
     """Simple TTL cache with max size."""
@@ -258,7 +255,6 @@ class TTLCache:
             for k in expired:
                 del self._data[k]
 
-
 def validate_token_address(address: str, chain: Optional[str] = None) -> str:
     """Validate and checksum/normalize a token address. Raises ValueError if invalid."""
     if not address:
@@ -283,15 +279,14 @@ def validate_token_address(address: str, chain: Optional[str] = None) -> str:
     except Exception as e:
         raise ValueError(f"Invalid checksum for address {address}: {e}")
 
-
 def validate_chain(chain: str) -> str:
     """Validate chain identifier."""
     chain = chain.lower().strip()
-    supported = {"bsc", "ethereum", "base", "arbitrum", "polygon", "solana"}
+    # v4.0: 4 chains only
+    supported = {"bsc", "ethereum", "base", "solana"}
     if chain not in supported:
         raise ValueError(f"Unsupported chain: {chain}. Supported: {supported}")
     return chain
-
 
 # ═══════════════════════════════════════════════════════════
 # SOLANA SIMULATION ENGINE
@@ -301,6 +296,7 @@ class SolanaSimulator:
     """
     Solana swap simulation using Jupiter Quote API + RPC simulateTransaction.
     No capital required. No gas spent. No on-chain execution.
+    v4.0: Can reuse an external aiohttp.ClientSession.
     """
 
     JUPITER_QUOTE = "https://quote-api.jup.ag/v6"
@@ -308,14 +304,17 @@ class SolanaSimulator:
     WSOL = "So11111111111111111111111111111111111111112"
     DEFAULT_SIM_WALLET = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"
 
-    def __init__(self, rpc_url: str, sim_wallet: Optional[str] = None):
+    def __init__(self, rpc_url: str, sim_wallet: Optional[str] = None, session: Optional[aiohttp.ClientSession] = None):
         self.rpc_url = rpc_url
         self.sim_wallet = sim_wallet or os.getenv("SOLANA_SIM_WALLET", self.DEFAULT_SIM_WALLET)
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._session = session
+        self._owns_session = session is None
 
     async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
+        if self._session is not None and not self._session.closed:
+            return self._session
+        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
+        self._owns_session = True
         return self._session
 
     async def simulate_buy_sell(self, token_mint: str, sol_amount: float = 0.01) -> dict:
@@ -446,33 +445,33 @@ class SolanaSimulator:
                 if not swap_tx_b64:
                     return {"success": False, "error": "No swapTransaction in Jupiter response"}
 
-            rpc_payload = {
-                "jsonrpc": "2.0", "id": 1,
-                "method": "simulateTransaction",
-                "params": [
-                    swap_tx_b64,
-                    {
-                        "encoding": "base64",
-                        "commitment": "confirmed",
-                        "replaceRecentBlockhash": True,
-                        "sigVerify": False,
-                    }
-                ]
-            }
-            async with session.post(
-                self.rpc_url, json=rpc_payload, timeout=aiohttp.ClientTimeout(total=20)
-            ) as sim_resp:
-                if sim_resp.status != 200:
-                    return {"success": False, "error": f"RPC error: {sim_resp.status}"}
-                sim_result = await sim_resp.json()
-                value = sim_result.get("result", {}).get("value", {})
-                err = value.get("err")
-                logs = value.get("logs", [])
-                compute_units = value.get("unitsConsumed")
-                if err:
-                    error_str = json.dumps(err) if isinstance(err, dict) else str(err)
-                    return {"success": False, "error": error_str, "logs": logs, "compute_units": compute_units}
-                return {"success": True, "logs": logs, "compute_units": compute_units}
+                rpc_payload = {
+                    "jsonrpc": "2.0", "id": 1,
+                    "method": "simulateTransaction",
+                    "params": [
+                        swap_tx_b64,
+                        {
+                            "encoding": "base64",
+                            "commitment": "confirmed",
+                            "replaceRecentBlockhash": True,
+                            "sigVerify": False,
+                        }
+                    ]
+                }
+                async with session.post(
+                    self.rpc_url, json=rpc_payload, timeout=aiohttp.ClientTimeout(total=20)
+                ) as sim_resp:
+                    if sim_resp.status != 200:
+                        return {"success": False, "error": f"RPC error: {sim_resp.status}"}
+                    sim_result = await sim_resp.json()
+                    value = sim_result.get("result", {}).get("value", {})
+                    err = value.get("err")
+                    logs = value.get("logs", [])
+                    compute_units = value.get("unitsConsumed")
+                    if err:
+                        error_str = json.dumps(err) if isinstance(err, dict) else str(err)
+                        return {"success": False, "error": error_str, "logs": logs, "compute_units": compute_units}
+                    return {"success": True, "logs": logs, "compute_units": compute_units}
         except Exception as e:
             return {"success": False, "error": str(e)[:200]}
 
@@ -501,68 +500,52 @@ class SolanaSimulator:
                 if len(raw) < 82:
                     return {}
                 mint_auth_option = struct.unpack("<I", raw[0:4])[0]
+                mint_authority = None
+                if mint_auth_option == 1:
+                    mint_authority = base64.b64encode(raw[4:36]).decode()
                 freeze_auth_option = struct.unpack("<I", raw[46:50])[0]
+                freeze_authority = None
+                if freeze_auth_option == 1:
+                    freeze_authority = base64.b64encode(raw[50:82]).decode()
                 return {
-                    "mint_authority": "present" if mint_auth_option == 1 else None,
-                    "freeze_authority": "present" if freeze_auth_option == 1 else None,
-                    "decimals": raw[44],
-                    "is_initialized": raw[45] == 1
+                    "mint_authority": mint_authority,
+                    "freeze_authority": freeze_authority,
                 }
         except Exception as e:
-            print(f"⚠️ Solana mint analysis failed: {e}")
+            print(f"⚠️ Solana mint analysis error: {e}")
             return {}
 
     async def cleanup(self):
-        if self._session and not self._session.closed:
+        """Close session only if we own it (i.e., it was not shared from Atlas)."""
+        if self._owns_session and self._session and not self._session.closed:
             await self._session.close()
 
-
 # ═══════════════════════════════════════════════════════════
-# ATLAS AGENT
+# MAIN SIMULATOR AGENT
 # ═══════════════════════════════════════════════════════════
 
 class SimulatorAgent:
     """
-    Atlas -- The Tester
-    Three-tier simulation:
-    Tier 1: Static Analysis (honeypot.is, bytecode, DexScreener) -- FAST
-    Tier 2: eth_call Simulation (real DEX swap via RPC) -- FREE, NO CAPITAL
-    Tier 3: Tenderly API (fork simulation) -- FREE TIER
-    Tier 2b: Jupiter + Solana RPC (for Solana) -- FREE, NO CAPITAL
+    Atlas — The Tester
+    Runs fake trades, checks if you can actually buy and sell.
+    v4.0: Orchestrator-driven, returns structured results + spoken message.
     """
 
-    def __init__(self, event_bus_publish: Callable[[str, dict], None]):
-        self.publish = event_bus_publish
+    def __init__(self, server: Optional[Any] = None):
+        self.server = server
         self.name = "Atlas"
-        self.results_cache = TTLCache(maxsize=1000, ttl_seconds=3600)
-        self._session: Optional[aiohttp.ClientSession] = None
-
-        print(f"🚀 {self.name}: Booting Atlas v3.1 PRODUCTION...")
-
-        if not GEMINI_API_KEY:
-            print("⚠️ Atlas: No Gemini API key")
-        if not os.getenv("BSC_RPC_URL"):
-            print("⚠️ Atlas: Missing BSC RPC URL")
-        if not os.getenv("ETH_RPC_URL"):
-            print("⚠️ Atlas: Missing ETH RPC URL")
-        if not os.getenv("SOLANA_RPC_URL"):
-            print("⚠️ Atlas: Missing SOLANA RPC URL -- Solana sim disabled")
-
+        self.results_cache = TTLCache(maxsize=500, ttl_seconds=1800)
+        self.web3_instances: Dict[str, Web3] = {}
         self.honeypot_apis = {
             "bsc": "https://api.honeypot.is/v2/IsHoneypot",
-            "ethereum": "https://api.honeypot.is/v2/IsHoneypot"
+            "ethereum": "https://api.honeypot.is/v2/IsHoneypot",
         }
-
-        self.web3_instances = {}
+        # v4.0: Single shared session
+        self._session = aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(limit=10, limit_per_host=5, ttl_dns_cache=300, use_dns_cache=True),
+            timeout=aiohttp.ClientTimeout(total=30)
+        )
         self._init_web3()
-
-    async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
-                connector=aiohttp.TCPConnector(limit=10, limit_per_host=5, ttl_dns_cache=300, use_dns_cache=True),
-                timeout=aiohttp.ClientTimeout(total=30)
-            )
-        return self._session
 
     def _init_web3(self):
         chains = {"bsc": os.getenv("BSC_RPC_URL"), "ethereum": os.getenv("ETH_RPC_URL")}
@@ -580,6 +563,12 @@ class SimulatorAgent:
             except Exception as e:
                 print(f"❌ {self.name}: Web3 error for {chain}: {e}")
 
+    # v4.0: Public entry point for the Orchestrator
+    async def simulate(self, event_data: dict) -> dict:
+        """Run full simulation and return structured result + spoken message."""
+        return await self._simulate_token(event_data)
+
+    # v4.0: Backward-compatible fire-and-forget wrapper (not used by Orchestrator)
     def on_new_token(self, event_data: dict):
         """Schedule a simulation. Catches crashes so they never kill the event loop."""
         try:
@@ -603,14 +592,15 @@ class SimulatorAgent:
             print(f"⚠️ {self.name}: Simulation task failed: {e}")
 
     async def _speak(self, message: str, msg_type: str = "response"):
+        """Broadcast a spoken message to the room via the WebSocket server."""
         try:
-            self.publish("AGENT_MESSAGE", {
-                "agent": self.name, "message": message, "type": msg_type,
-                "channel": "main", "timestamp": time.time()
-            })
+            if self.server:
+                await self.server.broadcast("AGENT_MESSAGE", {
+                    "agent": self.name, "message": message, "type": msg_type,
+                    "channel": "main", "timestamp": time.time()
+                })
         except Exception as e:
-            print(f"⚠️ {self.name}: Publish failed: {e}")
-
+            print(f"⚠️ {self.name}: Broadcast failed: {e}")
 
     async def _generate_atlas_message(self, sim: SimulationResult, symbol: str, context: str) -> str:
         if not client:
@@ -760,31 +750,26 @@ Requirements:
         parts.append("Vega, your turn for deeper analysis.")
         return " ".join(parts)
 
-
     # ═══════════════════════════════════════════════════════════
     # MAIN SIMULATION PIPELINE
     # ═══════════════════════════════════════════════════════════
 
-    async def _simulate_token(self, event_data: dict):
-        try:
-            token_address = event_data.get("token_address")
-            chain = event_data.get("chain", "unknown")
-            symbol = event_data.get("token_symbol", "???")
+    async def _simulate_token(self, event_data: dict) -> dict:
+        token_address = event_data.get("token_address")
+        chain = event_data.get("chain", "unknown")
+        symbol = event_data.get("token_symbol", "???")
 
+        try:
             cached = await self.results_cache.get(token_address)
             if cached:
                 print(f"📦 {self.name}: Cache hit for {symbol}")
                 await self._speak(f"Already simulated {symbol} -- pulling from cache.", "cache_hit")
-                try:
-                    self.publish("SIMULATION_COMPLETE", cached.__dict__)
-                except Exception as e:
-                    print(f"⚠️ {self.name}: Publish failed: {e}")
-                return
+                report = await self._generate_atlas_message(cached, symbol, "Cache hit — returning previous simulation.")
+                return {**cached.__dict__, "message": report, "token_symbol": symbol, "token_address": token_address, "chain": chain}
 
             ack = f"Copy that, Nova. Running simulation on {symbol} now..."
             await self._speak(ack, "response")
             print(f"🧪 {self.name}: Simulating {symbol} ({chain})...")
-            await asyncio.sleep(random.uniform(0.5, 1.5))
 
             # Tier 1: Static Analysis
             print(f"🔍 {self.name}: Tier 1 -- Static analysis...")
@@ -808,11 +793,15 @@ Requirements:
                 print(f"🔍 {self.name}: Tier 2 -- Solana Jupiter + RPC simulation...")
                 sol_rpc = os.getenv("SOLANA_RPC_URL")
                 if sol_rpc:
-                    sol_sim = SolanaSimulator(sol_rpc)
+                    sol_sim = SolanaSimulator(sol_rpc, session=self._session)
                     try:
-                        solana_result = await asyncio.wait_for(
-                            sol_sim.simulate_buy_sell(token_address, sol_amount=0.01), timeout=60
-                        )
+                        # v4.0: Skip Jupiter if jupiter_failed flag is set
+                        if not event_data.get("jupiter_failed"):
+                            solana_result = await asyncio.wait_for(
+                                sol_sim.simulate_buy_sell(token_address, sol_amount=0.01), timeout=60
+                            )
+                        else:
+                            print(f"⚠️ {self.name}: Jupiter failed flag set — skipping Jupiter simulation")
                         solana_contract = await asyncio.wait_for(
                             sol_sim.analyze_mint_account(token_address), timeout=15
                         )
@@ -854,19 +843,30 @@ Requirements:
             )
 
             await self.results_cache.set(token_address, simulation)
-            try:
-                self.publish("SIMULATION_COMPLETE", simulation.__dict__)
-            except Exception as e:
-                print(f"⚠️ {self.name}: Publish failed: {e}")
 
             context = f"Token discovered by Nova on {chain}. Running trade simulation."
             report = await self._generate_atlas_message(simulation, symbol, context)
-            await self._speak(report, "simulation_report")
+
+            # v4.0: Return structured result + message for Orchestrator to broadcast
+            result = {**simulation.__dict__, "message": report, "token_symbol": symbol, "token_address": token_address, "chain": chain}
+            return result
 
         except asyncio.TimeoutError:
             print(f"⚠️ {self.name}: Simulation timed out")
+            return {
+                "token_address": token_address, "chain": chain, "token_symbol": symbol,
+                "error": "timeout", "message": f"Simulation on {symbol} timed out. Treat with caution.",
+                "can_buy": False, "can_sell": False, "honeypot_risk": True,
+                "liquidity_usd": 0, "simulation_confidence": 0,
+            }
         except Exception as e:
             print(f"❌ {self.name}: Fatal simulation error: {e}")
+            return {
+                "token_address": token_address, "chain": chain, "token_symbol": symbol,
+                "error": str(e), "message": f"Simulation crashed on {symbol}: {e}",
+                "can_buy": False, "can_sell": False, "honeypot_risk": True,
+                "liquidity_usd": 0, "simulation_confidence": 0,
+            }
 
     # ═══════════════════════════════════════════════════════════
     # TIER 1: STATIC ANALYSIS
@@ -878,8 +878,7 @@ Requirements:
                 return {"buyable": True, "sellable": True, "is_honeypot": False, "buyTax": 0, "sellTax": 0}
             await rate_limiter.wait("honeypot.is")
             url = f"{self.honeypot_apis[chain]}?address={token_address}"
-            session = await self._get_session()
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     simulation = data.get("simulationResult", {})
@@ -905,8 +904,7 @@ Requirements:
         try:
             await rate_limiter.wait("dexscreener.com")
             url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
-            session = await self._get_session()
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     pairs = data.get("pairs", [])
@@ -915,11 +913,6 @@ Requirements:
                         liquidity = top_pair.get("liquidity", {})
                         liquidity_usd = liquidity.get("usd", 0) or 0
                         return {"liquidity_usd": liquidity_usd, "locked": liquidity_usd > 1000, "dex": top_pair.get("dexId")}
-                elif resp.status == 429:
-                    print(f"⚠️ {self.name}: DexScreener rate limited")
-                else:
-                    text = await resp.text()
-                    print(f"⚠️ {self.name}: DexScreener HTTP {resp.status}: {text[:100]}")
                 return {"liquidity_usd": 0, "locked": False}
         except Exception as e:
             print(f"⚠️ {self.name}: Liquidity check failed: {e}")
@@ -964,7 +957,6 @@ Requirements:
         except Exception as e:
             print(f"⚠️ {self.name}: Contract analysis failed: {e}")
             return {}
-
 
     # ═══════════════════════════════════════════════════════════
     # TIER 2: eth_call SIMULATION
@@ -1097,7 +1089,6 @@ Requirements:
                 "revert_reason": error_msg[:200], "simulation_method": "eth_call",
             }
 
-
     # ═══════════════════════════════════════════════════════════
     # TIER 3: TENDERLY SIMULATION
     # ═══════════════════════════════════════════════════════════
@@ -1143,10 +1134,10 @@ Requirements:
                 "value": str(amount_in_wei), "save": True, "simulation_type": "full"
             }
 
-            session = await self._get_session()
-
-            async with session.post(buy_url, json=buy_body, headers={"X-Access-Key": api_key},
-                                    timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            async with self._session.post(
+                buy_url, json=buy_body, headers={"X-Access-Key": api_key},
+                timeout=aiohttp.ClientTimeout(total=20)
+            ) as resp:
                 if resp.status != 200:
                     text = await resp.text()
                     print(f"⚠️ {self.name}: Tenderly BUY error {resp.status}: {text[:200]}")
@@ -1157,12 +1148,12 @@ Requirements:
                 buy_gas = tx.get("gas_used")
                 buy_revert = tx.get("error_message")
 
-            if not buy_success:
-                return {
-                    "buy_success": False, "sell_success": False,
-                    "gas_used": buy_gas, "revert_reason": buy_revert or "Buy simulation failed",
-                    "simulation_method": "tenderly",
-                }
+                if not buy_success:
+                    return {
+                        "buy_success": False, "sell_success": False,
+                        "gas_used": buy_gas, "revert_reason": buy_revert or "Buy simulation failed",
+                        "simulation_method": "tenderly",
+                    }
 
             print(f"🔬 {self.name}: Tenderly SELL simulation...")
             try:
@@ -1191,8 +1182,10 @@ Requirements:
                 "value": "0", "save": True, "simulation_type": "full"
             }
 
-            async with session.post(buy_url, json=sell_body, headers={"X-Access-Key": api_key},
-                                    timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            async with self._session.post(
+                buy_url, json=sell_body, headers={"X-Access-Key": api_key},
+                timeout=aiohttp.ClientTimeout(total=20)
+            ) as resp:
                 if resp.status != 200:
                     text = await resp.text()
                     print(f"⚠️ {self.name}: Tenderly SELL error {resp.status}: {text[:200]}")
@@ -1215,7 +1208,6 @@ Requirements:
         except Exception as e:
             print(f"⚠️ {self.name}: Tenderly simulation failed: {e}")
             return {"error": str(e)}
-
 
     # ═══════════════════════════════════════════════════════════
     # RESULT BUILDER
@@ -1353,8 +1345,10 @@ Requirements:
 
     async def cleanup(self):
         await self.results_cache.clear_expired()
+
+    async def stop(self):
+        """v4.0: Close the shared session."""
+        print(f"🛑 {self.name}: Simulator stopped.")
+        await self.cleanup()
         if self._session and not self._session.closed:
             await self._session.close()
-
-    def stop(self):
-        print(f"🛑 {self.name}: Simulator stopped.")

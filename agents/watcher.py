@@ -1,30 +1,23 @@
 #!/usr/bin/env python3
 """
-WATCHER AGENT — Nova v3.1-FIXED
+WATCHER AGENT — Nova v4.0
 "The Scout" — Multi-chain token detection engine.
 
-FIXES v3.1:
-- _supervise() now uses functools.partial for bulletproof arg binding
-- _passes_quality_check() initializes all locals before any await + wraps in try/except
-- _fetch_dexscreener_token() returns {} for ANY non-200 status (was falling through)
-- get_logs() uses correct Web3.py v6 camelCase kwargs: fromBlock / toBlock
-- Added defensive null checks on all DexScreener market_data accesses
-- Solana watcher outer loop wrapped in broader exception handling
 """
 
 import asyncio
 import json
 import os
 import time
-import random
+import math
 from functools import partial
-from collections import deque
 from dataclasses import dataclass, asdict
-from typing import Optional, Callable
+from typing import Optional
 
 import aiohttp
 from web3 import Web3
 from dotenv import load_dotenv
+
 try:
     from google import genai
     HAS_GENAI = True
@@ -36,7 +29,7 @@ except ImportError:
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
 client = None
 if GEMINI_API_KEY and HAS_GENAI:
@@ -66,6 +59,8 @@ class TokenEvent:
     volume_24h: Optional[float] = None
     origin_source: str = "unknown"
     raw_data: Optional[dict] = None
+    attention_score: float = 0.0
+    jupiter_failed: bool = False
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), default=str)
@@ -74,7 +69,8 @@ class TokenEvent:
 class WatcherAgent:
     """
     Nova — The Scout
-    RPC-based surveillance across 7 EVM chains + Solana.
+    RPC-based surveillance across 4 chains (ETH, BSC, Base, Solana).
+    Discovers tokens, scores them, and saves to DB. Never triggers investigations.
     """
 
     RPC_POOLS = {
@@ -82,49 +78,21 @@ class WatcherAgent:
             "https://ethereum-rpc.publicnode.com",
             "https://rpc.ankr.com/eth",
             "https://eth.llamarpc.com",
-            "https://eth.rpc.grove.city",
         ],
         "bsc": [
             "https://bsc-rpc.publicnode.com",
             "https://rpc.ankr.com/bsc",
             "https://bsc-dataseed.binance.org/",
-            "https://bsc.rpc.grove.city",
         ],
         "base": [
             "https://base-rpc.publicnode.com",
             "https://rpc.ankr.com/base",
             "https://mainnet.base.org/",
-            "https://base.rpc.grove.city",
-        ],
-        "arbitrum": [
-            "https://arbitrum-one-rpc.publicnode.com",
-            "https://rpc.ankr.com/arbitrum",
-            "https://arb1.arbitrum.io/rpc",
-            "https://arbitrum.rpc.grove.city",
-        ],
-        "optimism": [
-            "https://optimism-rpc.publicnode.com",
-            "https://rpc.ankr.com/optimism",
-            "https://mainnet.optimism.io/",
-            "https://optimism.rpc.grove.city",
-        ],
-        "polygon": [
-            "https://polygon-bor-rpc.publicnode.com",
-            "https://rpc.ankr.com/polygon",
-            "https://polygon-rpc.com",
-            "https://polygon.rpc.grove.city",
-        ],
-        "avalanche": [
-            "https://avalanche-c-chain-rpc.publicnode.com",
-            "https://rpc.ankr.com/avalanche",
-            "https://api.avax.network/ext/bc/C/rpc",
-            "https://avalanche.rpc.grove.city",
         ],
         "solana": [
             "https://solana-rpc.publicnode.com",
             "https://rpc.ankr.com/solana",
             "https://api.mainnet-beta.solana.com",
-            "https://solana.rpc.grove.city",
         ],
     }
 
@@ -144,26 +112,6 @@ class WatcherAgent:
             "w_native": "0x4200000000000000000000000000000000000006",
             "dex_slug": "base",
         },
-        "arbitrum": {
-            "factory": "0xf1D7CC64Fb4452F05c498126312eBE29f30Fbcf9",
-            "w_native": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
-            "dex_slug": "arbitrum",
-        },
-        "optimism": {
-            "factory": "0x0c3c1c532F1e39EdF36BE9Fe0bE1410313E074Bf",
-            "w_native": "0x4200000000000000000000000000000000000006",
-            "dex_slug": "optimism",
-        },
-        "polygon": {
-            "factory": "0x9e5A52f57b3038F1B8EeE45F28b3C1967e22799C",
-            "w_native": "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270",
-            "dex_slug": "polygon",
-        },
-        "avalanche": {
-            "factory": "0x9e5A52f57b3038F1B8EeE45F28b3C1967e22799C",
-            "w_native": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
-            "dex_slug": "avalanche",
-        },
     }
 
     RAYDIUM_AMM_V4 = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
@@ -180,44 +128,36 @@ class WatcherAgent:
         "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9"
     )
 
-    MIN_LIQUIDITY_USD = 500
-    MIN_MARKET_CAP_USD = 1000
-    MIN_VOLUME_24H_USD = 100
-    MAX_TOKEN_AGE_HOURS = 48
+    # v4.0 quality gates
+    MIN_LIQUIDITY_USD = 5000
+    MIN_MARKET_CAP_USD = 10000
+    MIN_VOLUME_24H_USD = 2000
+    MAX_TOKEN_AGE_HOURS = 24
     DISCOVERY_COOLDOWN_SECONDS = 10
 
-    def __init__(
-        self,
-        event_bus_publish: Callable[[str, dict], None],
-        local_bus_publish: Optional[Callable[[str, dict], None]] = None,
-        bridge_publish: Optional[Callable[[str, dict], None]] = None,
-    ):
-        self._publish = event_bus_publish
-        self.local_bus_publish = local_bus_publish or event_bus_publish
-        self.bridge_publish = bridge_publish or event_bus_publish
+    JUPITER_QUOTE = "https://quote-api.jup.ag/v6"
+    WSOL = "So11111111111111111111111111111111111111112"
+
+    def __init__(self, db, server):
+        self.db = db
+        self.server = server
         self.name = "Nova"
 
         self.web3_instances: dict[str, Web3] = {}
+        self._active_rpc_urls: dict[str, str] = {}
         self.solana_rpc_url: Optional[str] = None
-        self.known_tokens: set[str] = set()
-        self.token_queue: deque[str] = deque(maxlen=10000)
         self.running = False
         self._tasks: list[asyncio.Task] = []
 
         self._last_discovery_time: dict[str, float] = {}
         self._candidate_buffer: list[TokenEvent] = []
-        self._busy = False
 
         self._init_connections()
 
-    def set_busy(self, busy: bool):
-        self._busy = busy
-        if busy:
-            print(f"🔇 {self.name}: Pausing discoveries — investigation in progress.")
-        else:
-            print(f"🔊 {self.name}: Resuming discoveries.")
+    # ── CONNECTIONS ──
 
     def _init_connections(self):
+        """Connect to RPCs. Store successful URL per chain for rotation on failure."""
         for chain, urls in self.RPC_POOLS.items():
             if chain == "solana":
                 self._init_solana(urls)
@@ -231,6 +171,7 @@ class WatcherAgent:
                         block_num = w3.eth.block_number
                         if block_num and block_num > 0:
                             self.web3_instances[chain] = w3
+                            self._active_rpc_urls[chain] = url
                             host = url.split("/")[2]
                             print(f"✅ {self.name}: Connected to {chain} via {host}")
                             connected = True
@@ -262,24 +203,84 @@ class WatcherAgent:
                 print(f"⚠️ {self.name}: Solana endpoint {host} failed: {e}")
         print(f"❌ {self.name}: All Solana RPC endpoints failed")
 
-    def _track_token(self, token: str) -> bool:
-        token = token.lower()
-        if token in self.known_tokens:
+    # ── RPC HEALTH & ROTATION ──
+
+    async def _rpc_health_check(self):
+        """Every 60s, ping each active RPC. Rotate on stale (>30s) or error."""
+        while self.running:
+            try:
+                for chain, w3 in list(self.web3_instances.items()):
+                    try:
+                        block = await asyncio.to_thread(lambda: w3.eth.block_number)
+                        _ = block
+                    except Exception as e:
+                        print(f"⚠️ {self.name}: {chain} RPC health check failed: {e}")
+                        await self._rotate_rpc(chain)
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"⚠️ {self.name}: Health check loop error: {e}")
+                await asyncio.sleep(60)
+
+    async def _rotate_rpc(self, chain: str):
+        """Rotate to the next working RPC URL in the pool."""
+        current_url = self._active_rpc_urls.get(chain)
+        urls = self.RPC_POOLS.get(chain, [])
+        if not urls:
+            return
+        start_idx = 0
+        if current_url in urls:
+            start_idx = urls.index(current_url) + 1
+        for i in range(len(urls)):
+            url = urls[(start_idx + i) % len(urls)]
+            try:
+                provider = Web3.HTTPProvider(url, request_kwargs={"timeout": 15})
+                w3 = Web3(provider)
+                if w3.is_connected():
+                    block_num = w3.eth.block_number
+                    if block_num and block_num > 0:
+                        self.web3_instances[chain] = w3
+                        self._active_rpc_urls[chain] = url
+                        host = url.split("/")[2]
+                        print(f"✅ {self.name}: Rotated {chain} to {host}")
+                        return
+            except Exception:
+                continue
+        print(f"❌ {self.name}: All RPC endpoints failed for {chain}")
+
+    # ── ATTENTION SCORING ──
+
+    def _calculate_attention(self, event: TokenEvent) -> float:
+        """Deterministic attention score based on market metrics and age."""
+        liq = event.liquidity_usd or 0
+        vol = event.volume_24h or 0
+        mcap = event.market_cap or 0
+        score = 0.0
+        if liq > 0:
+            score += min(math.log10(liq) * 15, 40)
+        if vol > 0:
+            score += min(math.log10(vol) * 15, 35)
+        if mcap > 0:
+            score += min(math.log10(mcap) * 10, 20)
+        age_hours = (time.time() - event.timestamp) / 3600
+        if age_hours < 2:
+            score += 5
+        return min(score, 100)
+
+    # ── QUALITY GATES ──
+
+    def _check_rate_limit(self, chain: str) -> bool:
+        now = time.time()
+        last = self._last_discovery_time.get(chain, 0)
+        if now - last < self.DISCOVERY_COOLDOWN_SECONDS:
             return False
-        if len(self.token_queue) >= 10000:
-            old = self.token_queue.popleft()
-            self.known_tokens.discard(old)
-        self.known_tokens.add(token)
-        self.token_queue.append(token)
+        self._last_discovery_time[chain] = now
         return True
 
     async def _passes_quality_check(self, token_event: TokenEvent) -> bool:
-        """
-        Defensive quality gate. All variables initialized before any await.
-        Wrapped in broad try/except so a single bad token never kills the watcher.
-        """
+        """Defensive quality gate. All variables initialized before any await."""
         try:
-            # Pre-checks using already-known data
             if token_event.liquidity_usd is not None:
                 if token_event.liquidity_usd < self.MIN_LIQUIDITY_USD:
                     print(f"🚫 {self.name}: {token_event.token_symbol} rejected — liquidity ${token_event.liquidity_usd:,.0f}")
@@ -289,13 +290,16 @@ class WatcherAgent:
                     print(f"🚫 {self.name}: {token_event.token_symbol} rejected — mcap ${token_event.market_cap:,.0f}")
                     return False
 
-            # EVM NEW_TOKEN path
+            age_hours = (time.time() - token_event.timestamp) / 3600
+            if age_hours > self.MAX_TOKEN_AGE_HOURS:
+                print(f"🚫 {self.name}: {token_event.token_symbol} rejected — age {age_hours:.1f}h > {self.MAX_TOKEN_AGE_HOURS}h")
+                return False
+
             if token_event.event_type == "NEW_TOKEN" and token_event.chain in self.CHAIN_CONFIG:
                 market_data = await self._fetch_dexscreener_token(
                     token_event.token_address,
                     self.CHAIN_CONFIG[token_event.chain]["dex_slug"]
                 )
-                # Defensive: ensure market_data is a dict
                 if not isinstance(market_data, dict):
                     market_data = {}
                 liquidity = market_data.get("liquidity_usd") or 0
@@ -316,11 +320,9 @@ class WatcherAgent:
                 print(f"✅ {self.name}: {token_event.token_symbol} PASSED — liq: ${liquidity:,.0f}, mcap: ${mcap:,.0f}, vol: ${volume:,.0f}")
                 return True
 
-            # User query always passes
             if token_event.event_type == "USER_QUERY":
                 return True
 
-            # Solana path (NEW_TOKEN or otherwise)
             if token_event.chain == "solana":
                 market_data = await self._fetch_dexscreener_token(token_event.token_address, self.SOLANA_DEX_SLUG)
                 if not isinstance(market_data, dict):
@@ -345,13 +347,98 @@ class WatcherAgent:
             print(f"⚠️ {self.name}: Quality check error for {token_event.token_symbol} ({token_event.chain}): {e}")
             return False
 
-    def _check_rate_limit(self, chain: str) -> bool:
-        now = time.time()
-        last = self._last_discovery_time.get(chain, 0)
-        if now - last < self.DISCOVERY_COOLDOWN_SECONDS:
-            return False
-        self._last_discovery_time[chain] = now
-        return True
+    # ── DISCOVERY FLOW (DB-driven) ──
+
+    async def _handle_discovery(self, token_event: TokenEvent):
+        """
+        Discovery pipeline: calculate attention, check queue cap, save to DB,
+        save chat message, broadcast to frontend.
+        """
+        try:
+            token_event.attention_score = self._calculate_attention(token_event)
+
+            # Queue cap logic
+            try:
+                pending_count = await self.db.count_pending_tokens()
+                if pending_count >= 100:
+                    lowest = await self.db.get_lowest_attention_in_queue()
+                    if lowest is not None and token_event.attention_score <= lowest:
+                        print(f"🚫 {self.name}: {token_event.token_symbol} dropped — queue full and attention {token_event.attention_score:.1f} <= {lowest:.1f}")
+                        return
+            except Exception as e:
+                print(f"⚠️ {self.name}: Queue cap check failed: {e}")
+
+            # Check if token already exists in non-pending status
+            try:
+                existing = await self.db.get_token(token_event.token_address, token_event.chain)
+                if existing and existing.get("status") in ("investigating", "completed"):
+                    print(f"⏭️ {self.name}: {token_event.token_symbol} already {existing['status']}, skipping")
+                    return
+            except Exception:
+                pass
+
+            # Generate Nova's message
+            nova_msg = await self._generate_nova_message(token_event)
+
+            doc = {
+                "token_address": token_event.token_address,
+                "chain": token_event.chain,
+                "symbol": token_event.token_symbol,
+                "name": token_event.token_name,
+                "creator": token_event.creator,
+                "liquidity_usd": token_event.liquidity_usd,
+                "market_cap": token_event.market_cap,
+                "volume_24h": token_event.volume_24h,
+                "attention_score": token_event.attention_score,
+                "status": "pending",
+                "discovered_at": token_event.timestamp,
+                "nova_message": nova_msg,
+                "origin_source": token_event.origin_source,
+                "raw_data": token_event.raw_data,
+                "jupiter_failed": token_event.jupiter_failed,
+            }
+
+            try:
+                await self.db.save_discovered_token(doc)
+            except Exception as e:
+                print(f"⚠️ {self.name}: Failed to save discovered token: {e}")
+                return
+
+            try:
+                await self.db.save_chat_message("Nova", nova_msg, "discovery")
+            except Exception as e:
+                print(f"⚠️ {self.name}: Failed to save chat message: {e}")
+
+            try:
+                await self.server.broadcast("AGENT_MESSAGE", {
+                    "agent": self.name,
+                    "message": nova_msg,
+                    "type": "discovery",
+                    "channel": "main",
+                    "timestamp": time.time()
+                })
+            except Exception as e:
+                print(f"⚠️ {self.name}: Broadcast failed: {e}")
+
+            print(f"🎯 {self.name}: {token_event.token_symbol} on {token_event.chain} saved (attention: {token_event.attention_score:.1f})")
+
+        except Exception as e:
+            print(f"❌ {self.name}: Discovery handling error: {e}")
+
+    # ── MESSAGING ──
+
+    async def _speak(self, message: str, msg_type: str = "discovery"):
+        """Publish chat message to the frontend via server broadcast."""
+        try:
+            await self.server.broadcast("AGENT_MESSAGE", {
+                "agent": self.name,
+                "message": message,
+                "type": msg_type,
+                "channel": "main",
+                "timestamp": time.time()
+            })
+        except Exception as e:
+            print(f"⚠️ {self.name}: Broadcast failed: {e}")
 
     async def _generate_nova_message(self, event: TokenEvent) -> str:
         if not client:
@@ -411,30 +498,13 @@ Requirements:
             f"New token alert: {symbol} ({chain}). Contract {addr_short}. Running checks now.",
             f"Something cooking on {chain} — {symbol} at {addr_short}. Let's see what Atlas finds.",
         ]
+        import random
         return random.choice(fallbacks)
 
-    async def _speak(self, message: str, msg_type: str = "discovery"):
-        """Publish chat message to the BRIDGE so it appears in the frontend."""
-        try:
-            self.bridge_publish("AGENT_MESSAGE", {
-                "agent": self.name,
-                "message": message,
-                "type": msg_type,
-                "channel": "main",
-                "timestamp": time.time()
-            })
-        except Exception as e:
-            print(f"⚠️ {self.name}: Bridge publish failed: {e}")
+    # ── SUPERVISION & LIFECYCLE ──
 
-    # ═══════════════════════════════════════════════════════════
-    # FIXED v3.1: _supervise now receives a pre-bound partial()
-    # so there is ZERO ambiguity about argument passing.
-    # ═══════════════════════════════════════════════════════════
     async def _supervise(self, coro_fn, name: str):
-        """
-        Restart-loop wrapper. coro_fn is a functools.partial()
-        with all arguments already bound (including self).
-        """
+        """Restart-loop wrapper. coro_fn is a functools.partial() with all args bound."""
         backoff = 1
         max_backoff = 60
         while self.running:
@@ -462,8 +532,6 @@ Requirements:
         await self._speak("Nova checking in. Surveillance systems online. Eyes everywhere.", "system")
         self._tasks = []
 
-        # FIXED v3.1: Use functools.partial to bind args explicitly.
-        # This eliminates the "missing 1 required positional argument" crash.
         for chain in self.web3_instances:
             self._tasks.append(
                 asyncio.create_task(
@@ -480,6 +548,10 @@ Requirements:
         else:
             print(f"⚠️ {self.name}: Solana RPC unavailable, skipping Solana watcher")
 
+        self._tasks.append(
+            asyncio.create_task(self._rpc_health_check())
+        )
+
         if not self._tasks:
             print(f"❌ {self.name}: No chains connected. Cannot start surveillance.")
             self.running = False
@@ -495,85 +567,8 @@ Requirements:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         print(f"✅ {self.name}: All watchers stopped.")
 
-    async def search_token(self, token_address: str, chain: Optional[str] = None) -> Optional[TokenEvent]:
-        token_address = token_address.strip()
-        if chain is None:
-            if token_address.startswith("0x") and len(token_address) == 42:
-                chain = "ethereum"
-            elif 32 <= len(token_address) <= 44 and not token_address.startswith("0x"):
-                chain = "solana"
-            else:
-                await self._speak("That doesn't look like a token address I recognize. EVM (0x...) or Solana (base58) only.", "error")
-                return None
-        else:
-            chain = chain.lower()
-            if chain == "eth":
-                chain = "ethereum"
-            elif chain == "bnb":
-                chain = "bsc"
-            elif chain == "matic":
-                chain = "polygon"
-            elif chain == "avax":
-                chain = "avalanche"
+    # ── EVM WATCHER ──
 
-        if chain in self.CHAIN_CONFIG:
-            if not Web3.is_address(token_address):
-                await self._speak(f"That doesn't look like a valid {chain.upper()} address, fam.", "error")
-                return None
-            token_address = Web3.to_checksum_address(token_address)
-        elif chain == "solana":
-            if not self._is_solana_address(token_address):
-                await self._speak("That doesn't look like a valid Solana mint address.", "error")
-                return None
-        else:
-            supported = ", ".join(list(self.CHAIN_CONFIG.keys()) + ["solana"])
-            await self._speak(f"Chain '{chain}' not supported yet. I scan: {supported}.", "error")
-            return None
-
-        if chain in self.web3_instances:
-            w3 = self.web3_instances[chain]
-            token_info = await self._fetch_evm_token_info(w3, token_address)
-        elif chain == "solana" and self.solana_rpc_url:
-            token_info = await self._fetch_solana_token_info_investigate(token_address)
-        else:
-            token_info = {"name": "Unknown", "symbol": "???", "decimals": 18, "creator": "unknown"}
-
-        dex_slug = self.CHAIN_CONFIG.get(chain, {}).get("dex_slug", chain)
-        market_data = await self._fetch_dexscreener_token(token_address, dex_slug)
-        token_event = TokenEvent(
-            event_type="USER_QUERY",
-            chain=chain,
-            token_address=token_address,
-            token_symbol=token_info.get("symbol", "UNKNOWN"),
-            token_name=token_info.get("name", "Unknown"),
-            creator=token_info.get("creator", "unknown"),
-            timestamp=time.time(),
-            liquidity_usd=market_data.get("liquidity_usd"),
-            market_cap=market_data.get("market_cap"),
-            origin_source="user_query",
-            raw_data={"token_info": token_info, "market": market_data}
-        )
-        nova_msg = await self._generate_nova_message(token_event)
-        await self._speak(nova_msg, "discovery")
-        # Publish to LOCAL bus so orchestrator triggers Atlas/Vega
-        try:
-            self.local_bus_publish("NEW_TOKEN", token_event.__dict__)
-        except Exception as e:
-            print(f"⚠️ {self.name}: Local bus publish error: {e}")
-        print(f"🔍 {self.name}: Investigated {token_event.token_symbol} on {chain}")
-        return token_event
-
-    def _is_solana_address(self, addr: str) -> bool:
-        if addr.startswith("0x"):
-            return False
-        if not (32 <= len(addr) <= 44):
-            return False
-        base58_chars = set("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
-        return all(c in base58_chars for c in addr)
-
-    # ═══════════════════════════════════════════════════════════
-    # FIXED v3.1: get_logs uses fromBlock / toBlock (Web3.py v6)
-    # ═══════════════════════════════════════════════════════════
     async def _watch_evm_chain(self, chain: str):
         try:
             if chain not in self.web3_instances:
@@ -598,15 +593,23 @@ Requirements:
                     "type": "event"
                 }]
             )
-            latest_block = await asyncio.to_thread(lambda: w3.eth.block_number)
-            from_block = max(latest_block - 50, 0)
-            print(f"🔍 {self.name}: Scanning {chain} from block {from_block}...")
+
+            saved_cursor = None
+            try:
+                saved_cursor = await self.db.get_cursor(chain)
+            except Exception as e:
+                print(f"⚠️ {self.name}: Could not load cursor for {chain}: {e}")
+
+            if saved_cursor:
+                from_block = saved_cursor
+                print(f"🔍 {self.name}: Resuming {chain} from block {from_block} (DB cursor)")
+            else:
+                latest_block = await asyncio.to_thread(lambda: w3.eth.block_number)
+                from_block = max(latest_block - 50, 0)
+                print(f"🔍 {self.name}: Scanning {chain} from block {from_block}...")
 
             while self.running:
                 try:
-                    if self._busy:
-                        await asyncio.sleep(2)
-                        continue
                     if not self._check_rate_limit(chain):
                         await asyncio.sleep(2)
                         continue
@@ -619,22 +622,18 @@ Requirements:
                     scan_to = current_block
                     while from_block <= scan_to and self.running:
                         chunk_end = min(scan_to, from_block + 50)
-                        # FIXED v3.1: Web3.py v6 uses camelCase fromBlock / toBlock
                         events = await asyncio.to_thread(
                             lambda fb=from_block, tb=chunk_end: factory.events.PairCreated().get_logs(
-                                fromBlock=fb, toBlock=tb
+                                from_block=fb, to_block=tb
                             )
                         )
                         for event in events:
                             try:
-                                if self._busy:
-                                    break
                                 token0 = event.args.token0
                                 token1 = event.args.token1
                                 pair = event.args.pair
                                 new_token = token1 if token0.lower() == w_native.lower() else token0
-                                if not self._track_token(new_token):
-                                    continue
+
                                 token_info = await self._fetch_evm_token_info(w3, new_token)
                                 token_event = TokenEvent(
                                     event_type="NEW_TOKEN",
@@ -651,26 +650,24 @@ Requirements:
                                 passes = await self._passes_quality_check(token_event)
                                 if not passes:
                                     continue
-                                if self._busy:
-                                    print(f"⏸️ {self.name}: {token_event.token_symbol} held — investigation in progress.")
-                                    self._candidate_buffer.append(token_event)
-                                    continue
-                                # Publish NEW_TOKEN to LOCAL bus (not bridge)
-                                try:
-                                    self.local_bus_publish("NEW_TOKEN", token_event.__dict__)
-                                except Exception as pub_error:
-                                    print(f"⚠️ {self.name}: Local bus publish error: {pub_error}")
-                                # Chat message goes to bridge → frontend
-                                nova_msg = await self._generate_nova_message(token_event)
-                                await self._speak(nova_msg, "discovery")
-                                print(f"🎯 {self.name}: {token_event.token_symbol} on {chain}")
+
+                                await self._handle_discovery(token_event)
+
                             except Exception as inner_error:
                                 print(f"⚠️ {self.name}: Event processing error: {inner_error}")
+
                         from_block = chunk_end + 1
+                        try:
+                            await self.db.save_cursor(chain, from_block)
+                        except Exception as e:
+                            print(f"⚠️ {self.name}: Failed to save cursor for {chain}: {e}")
+
                         await asyncio.sleep(3)
+
                 except Exception as e:
                     print(f"⚠️ {self.name}: {chain} watcher loop error: {e}")
                     await asyncio.sleep(5)
+
         except Exception as e:
             print(f"❌ {self.name}: Fatal error on {chain}: {e}")
 
@@ -700,6 +697,8 @@ Requirements:
             print(f"⚠️ {self.name}: Token info fetch failed: {e}")
             return {"name": "Unknown", "symbol": "???", "decimals": 18, "creator": "unknown"}
 
+    # ── SOLANA WATCHER ──
+
     async def _watch_solana(self):
         if not self.solana_rpc_url:
             print(f"⚠️ {self.name}: Solana RPC not available")
@@ -711,9 +710,6 @@ Requirements:
         async with aiohttp.ClientSession() as session:
             while self.running:
                 try:
-                    if self._busy:
-                        await asyncio.sleep(2)
-                        continue
                     if not self._check_rate_limit("solana"):
                         await asyncio.sleep(2)
                         continue
@@ -721,7 +717,7 @@ Requirements:
                     payload = {
                         "jsonrpc": "2.0",
                         "id": 1,
-                        "method": "getSignaturesForAddress",
+                        "method": "getSignatureForAddress",
                         "params": [self.RAYDIUM_AMM_V4, {"limit": 20}]
                     }
                     async with session.post(rpc_url, json=payload, headers=headers, timeout=15) as resp:
@@ -744,7 +740,7 @@ Requirements:
                         if new_sigs:
                             new_sigs.reverse()
                             for sig in new_sigs:
-                                if self._busy:
+                                if not self.running:
                                     break
                                 tx_payload = {
                                     "jsonrpc": "2.0",
@@ -766,8 +762,6 @@ Requirements:
                                             if mint and mint not in self.SOLANA_IGNORE_MINTS:
                                                 found_mints.add(mint)
                                         for mint in found_mints:
-                                            if not self._track_token(mint):
-                                                continue
                                             supply_payload = {
                                                 "jsonrpc": "2.0",
                                                 "id": 1,
@@ -797,30 +791,39 @@ Requirements:
                                             passes = await self._passes_quality_check(token_event)
                                             if not passes:
                                                 continue
-                                            if self._busy:
-                                                print(f"⏸️ {self.name}: {token_event.token_symbol} held — investigation in progress.")
-                                                self._candidate_buffer.append(token_event)
-                                                continue
-                                            # Publish to LOCAL bus
-                                            try:
-                                                self.local_bus_publish("NEW_TOKEN", token_event.__dict__)
-                                            except Exception as pub_error:
-                                                print(f"⚠️ {self.name}: Local bus publish error: {pub_error}")
-                                            nova_msg = await self._generate_nova_message(token_event)
-                                            await self._speak(nova_msg, "discovery")
-                                            print(f"🎯 {self.name}: {token_event.token_symbol} on solana")
+
+                                            jupiter_ok = await self._check_jupiter_available(session, mint)
+                                            if not jupiter_ok:
+                                                token_event.jupiter_failed = True
+                                                print(f"⚠️ {self.name}: Jupiter unavailable for {token_event.token_symbol}, flagging for Atlas skip")
+
+                                            await self._handle_discovery(token_event)
+
                                 except Exception as tx_error:
                                     print(f"⚠️ {self.name}: Solana tx parse error: {tx_error}")
                             last_sig = sigs[0]["signature"]
                         await asyncio.sleep(8)
+
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
                     print(f"⚠️ {self.name}: Solana watcher error: {e}")
                     await asyncio.sleep(10)
 
+    async def _check_jupiter_available(self, session: aiohttp.ClientSession, token_mint: str) -> bool:
+        """Quick Jupiter quote check with 10s timeout. Returns False if unavailable."""
+        try:
+            url = (
+                f"{self.JUPITER_QUOTE}/quote?"
+                f"inputMint={self.WSOL}&outputMint={token_mint}&amount=10000000"
+                f"&slippageBps=500&onlyDirectRoutes=false"
+            )
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
     async def _fetch_solana_token_info_rpc(self, mint: str, rpc_url: str, session: aiohttp.ClientSession) -> dict:
-        """RPC-only Solana token metadata (supply/decimals)."""
         payload = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -838,25 +841,8 @@ Requirements:
             print(f"⚠️ {self.name}: Solana token info fetch failed: {e}")
             return {"name": "Unknown", "symbol": "???", "decimals": 9, "creator": "unknown"}
 
-    async def _fetch_solana_token_info_investigate(self, mint: str) -> dict:
-        if self.solana_rpc_url:
-            async with aiohttp.ClientSession() as session:
-                basic = await self._fetch_solana_token_info_rpc(mint, self.solana_rpc_url, session)
-        else:
-            basic = {"name": "Unknown", "symbol": "???", "decimals": 9, "creator": "unknown"}
-        market = await self._fetch_dexscreener_token(mint, self.SOLANA_DEX_SLUG)
-        if market:
-            pairs = market.get("all_pairs", [])
-            if pairs:
-                base = pairs[0].get("baseToken", {})
-                basic["name"] = base.get("name", basic["name"])
-                basic["symbol"] = base.get("symbol", basic["symbol"])
-        return basic
+    # ── DEXSCREENER ──
 
-    # ═══════════════════════════════════════════════════════════
-    # FIXED v3.1: Return {} for ANY non-200 status, not just 429.
-    # Prevents falling through to parse error responses as JSON.
-    # ═══════════════════════════════════════════════════════════
     async def _fetch_dexscreener_token(self, token_address: str, chain_slug: str) -> dict:
         url = f"https://api.dexscreener.com/tokens/v1/{chain_slug}/{token_address}"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -886,3 +872,91 @@ Requirements:
         except Exception as e:
             print(f"⚠️ {self.name}: DexScreener lookup failed: {e}")
             return {}
+
+    # ── USER QUERY / FORENSIC LAB ──
+
+    async def search_token(self, token_address: str, chain: Optional[str] = None) -> Optional[TokenEvent]:
+        token_address = token_address.strip()
+        if chain is None:
+            if token_address.startswith("0x") and len(token_address) == 42:
+                chain = "ethereum"
+            elif 32 <= len(token_address) <= 44 and not token_address.startswith("0x"):
+                chain = "solana"
+            else:
+                await self._speak("That doesn't look like a token address I recognize. EVM (0x...) or Solana (base58) only.", "error")
+                return None
+        else:
+            chain = chain.lower()
+            if chain == "eth":
+                chain = "ethereum"
+            elif chain == "bnb":
+                chain = "bsc"
+
+        if chain in self.CHAIN_CONFIG:
+            if not Web3.is_address(token_address):
+                await self._speak(f"That doesn't look like a valid {chain.upper()} address, fam.", "error")
+                return None
+            token_address = Web3.to_checksum_address(token_address)
+        elif chain == "solana":
+            if not self._is_solana_address(token_address):
+                await self._speak("That doesn't look like a valid Solana mint address.", "error")
+                return None
+        else:
+            supported = ", ".join(list(self.CHAIN_CONFIG.keys()) + ["solana"])
+            await self._speak(f"Chain '{chain}' not supported yet. I scan: {supported}.", "error")
+            return None
+
+        if chain in self.web3_instances:
+            w3 = self.web3_instances[chain]
+            token_info = await self._fetch_evm_token_info(w3, token_address)
+        elif chain == "solana" and self.solana_rpc_url:
+            async with aiohttp.ClientSession() as session:
+                token_info = await self._fetch_solana_token_info_investigate(token_address, session)
+        else:
+            token_info = {"name": "Unknown", "symbol": "???", "decimals": 18, "creator": "unknown"}
+
+        dex_slug = self.CHAIN_CONFIG.get(chain, {}).get("dex_slug", chain)
+        market_data = await self._fetch_dexscreener_token(token_address, dex_slug)
+        token_event = TokenEvent(
+            event_type="USER_QUERY",
+            chain=chain,
+            token_address=token_address,
+            token_symbol=token_info.get("symbol", "UNKNOWN"),
+            token_name=token_info.get("name", "Unknown"),
+            creator=token_info.get("creator", "unknown"),
+            timestamp=time.time(),
+            liquidity_usd=market_data.get("liquidity_usd"),
+            market_cap=market_data.get("market_cap"),
+            origin_source="user_query",
+            raw_data={"token_info": token_info, "market": market_data}
+        )
+
+        token_event.attention_score = 100
+        nova_msg = await self._generate_nova_message(token_event)
+        await self._speak(nova_msg, "discovery")
+        await self._handle_discovery(token_event)
+
+        print(f"🔍 {self.name}: Investigated {token_event.token_symbol} on {chain}")
+        return token_event
+
+    async def _fetch_solana_token_info_investigate(self, mint: str, session: aiohttp.ClientSession) -> dict:
+        if self.solana_rpc_url:
+            basic = await self._fetch_solana_token_info_rpc(mint, self.solana_rpc_url, session)
+        else:
+            basic = {"name": "Unknown", "symbol": "???", "decimals": 9, "creator": "unknown"}
+        market = await self._fetch_dexscreener_token(mint, self.SOLANA_DEX_SLUG)
+        if market:
+            pairs = market.get("all_pairs", [])
+            if pairs:
+                base = pairs[0].get("baseToken", {})
+                basic["name"] = base.get("name", basic["name"])
+                basic["symbol"] = base.get("symbol", basic["symbol"])
+        return basic
+
+    def _is_solana_address(self, addr: str) -> bool:
+        if addr.startswith("0x"):
+            return False
+        if not (32 <= len(addr) <= 44):
+            return False
+        base58_chars = set("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
+        return all(c in base58_chars for c in addr)

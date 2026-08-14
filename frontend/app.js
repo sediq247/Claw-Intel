@@ -6,7 +6,7 @@
  */
 
 const CONFIG = {
-  WS_URL: `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`,
+  WS_URL: `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`,
   RECONNECT_INTERVAL: 3000,
   MAX_RECONNECT_ATTEMPTS: 10,
   TYPING_TIMEOUT: 5000,
@@ -504,6 +504,22 @@ class ClawIntelApp {
       case 'PONG':
         // Heartbeat response
         break;
+      // v4.0: Agent working spinners
+      case 'AGENT_WORKING':
+        this.renderAgentWorking(payload);
+        break;
+      case 'SIMULATION_COMPLETE':
+        this.hideAgentWorking('Atlas');
+        break;
+      case 'ANALYSIS_COMPLETE':
+        this.hideAgentWorking('Vega');
+        break;
+      case 'MEMORY_INTELLIGENCE':
+        this.hideAgentWorking('Echo');
+        break;
+      case 'DECISION_COMPLETE':
+        this.hideAgentWorking('Orion');
+        break;
       default:
         console.log('[WS] Unknown type:', type);
     }
@@ -682,6 +698,52 @@ class ClawIntelApp {
     }
   }
 
+  // ── v4.0: Agent Working Spinner Cards ──
+  renderAgentWorking(payload) {
+    const agent = payload.agent || 'system';
+    const token = payload.token || '???';
+    const action = payload.action || 'working...';
+    const chain = payload.chain || '';
+
+    // Remove existing working card for this agent
+    this.hideAgentWorking(agent);
+
+    if (this.emptyState) {
+      this.emptyState.style.display = 'none';
+    }
+
+    const el = document.createElement('div');
+    el.className = 'agent-working-card';
+    el.dataset.workingAgent = agent;
+
+    const color = this.agentColors[agent] || '#8a8a9a';
+    const emoji = this.agentEmojis[agent] || '🤖';
+    const chainLabel = chain ? ` on ${chain.toUpperCase()}` : '';
+
+    el.innerHTML = `
+      <div class="working-avatar" style="background: ${color};">${emoji}</div>
+      <div class="working-text">
+        <div class="working-agent">${agent}${chainLabel}</div>
+        <div class="working-action">${action} ${token}...</div>
+      </div>
+      <div class="working-spinner"></div>
+    `;
+
+    this.chatContainer.appendChild(el);
+
+    if (this.isScrolledToBottom) {
+      this.scrollToBottom();
+    }
+  }
+
+  hideAgentWorking(agent) {
+    const cards = this.chatContainer.querySelectorAll(`[data-working-agent="${agent}"]`);
+    cards.forEach(card => {
+      card.classList.add('fade-out');
+      setTimeout(() => card.remove(), 400);
+    });
+  }
+
   // ── Scroll Management ──
   onScroll() {
     const { scrollTop, scrollHeight, clientHeight } = this.chatContainer;
@@ -725,6 +787,31 @@ class ClawIntelApp {
     document.getElementById('stat-scanned').textContent = this.stats.scanned;
     document.getElementById('stat-safe').textContent = this.stats.safe;
     document.getElementById('stat-risk').textContent = this.stats.risk;
+  }
+
+  // v4.0: Fetch live stats from server
+  async fetchStats() {
+    try {
+      const res = await fetch('/api/stats');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.tokens_scanned !== undefined) {
+          this.stats.tokens = data.tokens_scanned;
+        }
+        if (data.investigations_completed !== undefined) {
+          this.stats.scanned = data.investigations_completed;
+        }
+        if (data.safe_count !== undefined) {
+          this.stats.safe = data.safe_count;
+        }
+        if (data.risk_count !== undefined) {
+          this.stats.risk = data.risk_count;
+        }
+        this.updateStats();
+      }
+    } catch (e) {
+      // Silently fail — stats are decorative
+    }
   }
 
   // ── Token Popup ──
@@ -863,6 +950,11 @@ class ClawIntelApp {
         this.ws.send(JSON.stringify({ type: 'PING', payload: {} }));
       }
     }, 30000);
+
+    // v4.0: Periodic stats refresh
+    setInterval(() => {
+      this.fetchStats();
+    }, 10000);
 
     // Visibility change
     document.addEventListener('visibilitychange', () => {

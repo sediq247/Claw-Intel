@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """
-⚖️ ANALYZER AGENT — Vega
+⚖️ ANALYZER AGENT — Vega v4.0
 "The Skeptic" — Deep risk analysis. Trusts nothing, verifies everything.
-Responds to Atlas's findings. Uses Gemini for natural, human-like conversation.
+Called directly by the Orchestrator. Returns structured analysis + spoken message.
+
+v4.0 CHANGES:
+- Deterministic scoring — no randomness in security logic
+- Returns dict with all analysis fields + 'message'
+- Uses server.broadcast for AGENT_MESSAGE
+- Gemini model defaults to gemini-1.5-flash
 """
 
 import asyncio
 import json
-import random
 import time
 import os
 from dataclasses import dataclass, asdict
-from typing import List, Callable, Optional
-import aiohttp
+from typing import List, Optional, Any
 from dotenv import load_dotenv
 
 try:
@@ -36,7 +40,7 @@ load_dotenv()
 # ─────────────────────────────────────────────────────────────
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
 client = None
 
@@ -50,7 +54,6 @@ if GEMINI_API_KEY and HAS_GENAI:
 else:
     reason = "GEMINI_API_KEY missing" if not GEMINI_API_KEY else "google-genai unavailable"
     print(f"⚠️ Vega: {reason}. Using fallback mode.")
-
 
 # ─────────────────────────────────────────────────────────────
 # Data Models
@@ -72,7 +75,6 @@ class AnalysisResult:
     def to_json(self) -> str:
         return json.dumps(asdict(self), default=str)
 
-
 # ─────────────────────────────────────────────────────────────
 # Analyzer Agent
 # ─────────────────────────────────────────────────────────────
@@ -81,11 +83,11 @@ class AnalyzerAgent:
     """
     Vega — The Skeptic
     Deep risk analysis. References Atlas's work, builds on it, disagrees when needed.
-    Uses Gemini for natural spoken conversation.
+    v4.0: Orchestrator-driven, returns structured results + spoken message.
     """
 
-    def __init__(self, event_bus_publish: Callable[[str, dict], None]):
-        self.publish = event_bus_publish
+    def __init__(self, server: Optional[Any] = None):
+        self.server = server
         self.name = "Vega"
         self.analysis_cache = {}
         self._tasks = []
@@ -105,6 +107,12 @@ class AnalyzerAgent:
             "high_confidence": -5,
         }
 
+    # v4.0: Public entry point for the Orchestrator
+    async def analyze(self, sim_data: dict) -> dict:
+        """Run full analysis and return structured result + spoken message."""
+        return await self._deep_analysis(sim_data)
+
+    # v4.0: Backward-compatible fire-and-forget wrapper
     def on_simulation_complete(self, sim_data: dict):
         """React to Atlas's simulation results. Schedule analysis safely."""
         try:
@@ -124,17 +132,18 @@ class AnalyzerAgent:
             print(f"⚠️ {self.name}: Analysis task failed: {e}")
 
     async def _speak(self, message: str, msg_type: str = "response"):
-        """Publish a spoken message to the room."""
+        """Broadcast a spoken message to the room via the WebSocket server."""
         try:
-            self.publish("AGENT_MESSAGE", {
-                "agent": self.name,
-                "message": message,
-                "type": msg_type,
-                "channel": "main",
-                "timestamp": time.time()
-            })
+            if self.server:
+                await self.server.broadcast("AGENT_MESSAGE", {
+                    "agent": self.name,
+                    "message": message,
+                    "type": msg_type,
+                    "channel": "main",
+                    "timestamp": time.time()
+                })
         except Exception as e:
-            print(f"⚠️ {self.name}: Publish failed: {e}")
+            print(f"⚠️ {self.name}: Broadcast failed: {e}")
 
     async def _generate_vega_message(
         self,
@@ -275,7 +284,7 @@ Requirements:
 
         return " ".join(parts)
 
-    async def _deep_analysis(self, sim_data: dict):
+    async def _deep_analysis(self, sim_data: dict) -> dict:
         try:
             token_address = sim_data.get("token_address")
             chain = sim_data.get("chain", "unknown")
@@ -283,8 +292,6 @@ Requirements:
 
             ack = "Got your report, Atlas. Now let me tear this thing apart."
             await self._speak(ack, "response")
-
-            await asyncio.sleep(random.uniform(1.0, 2.0))
 
             red_flags = []
             yellow_flags = []
@@ -360,23 +367,18 @@ Requirements:
             elif confidence < 0.4:
                 yellow_flags.append("Low simulation confidence — data may be incomplete")
 
-            # Randomized additional checks (simulated deeper analysis)
-            if random.random() < 0.3:
-                red_flags.append(random.choice([
-                    "Contract is unverified on explorer",
-                    "Deployer wallet is brand new — no history",
-                    "Top holder owns over 50% of supply",
-                    "No social media presence detected",
-                ]))
-                score += self.weights["unverified"]
+            # v4.0: Deterministic additional checks based on actual data
+            # No randomness — only flag what we can verify from simulation data
+            if sim_data.get("eth_call_revert_reason") or sim_data.get("solana_revert_reason"):
+                yellow_flags.append("On-chain simulation encountered errors — results may be incomplete")
 
-            if random.random() < 0.4:
-                green_flags.append(random.choice([
-                    "Contract is verified on explorer",
-                    "Healthy holder distribution",
-                    "Active social media detected",
-                    "Previous successful projects by same dev",
-                ]))
+            if sim_data.get("solana_mint_authority"):
+                red_flags.append("Solana mint authority is active — supply can be inflated")
+                score += self.weights["mint"] // 2
+
+            if sim_data.get("solana_freeze_authority"):
+                red_flags.append("Solana freeze authority is active — accounts can be frozen")
+                score += self.weights["blacklist"] // 2
 
             score = max(0, min(100, score))
 
@@ -402,27 +404,30 @@ Requirements:
 
             self.analysis_cache[token_address] = analysis
 
-            # Publish to eventBus
-            try:
-                self.publish("ANALYSIS_COMPLETE", analysis.__dict__)
-            except Exception as e:
-                print(f"⚠️ {self.name}: Publish failed: {e}")
-
-            # ORCHESTRATOR HOOK
-            if hasattr(self, 'on_analysis_complete') and callable(self.on_analysis_complete):
-                try:
-                    self.on_analysis_complete(analysis.__dict__)
-                except Exception as e:
-                    print(f"⚠️ {self.name}: Orchestrator hook failed: {e}")
-
-            # Generate spoken report
+            # v4.0: Return structured result + message for Orchestrator
             report = await self._generate_vega_message(analysis, sim_data, symbol)
-            await self._speak(report, "analysis_report")
+            return {
+                **analysis.__dict__,
+                "message": report,
+                "token_symbol": symbol,
+                "token_address": token_address,
+                "chain": chain,
+            }
 
-        except asyncio.TimeoutError:
-            print(f"⚠️ {self.name}: Analysis timed out")
         except Exception as e:
             print(f"❌ {self.name}: Fatal analysis error: {e}")
+            return {
+                "token_address": sim_data.get("token_address", ""),
+                "chain": sim_data.get("chain", "unknown"),
+                "token_symbol": sim_data.get("token_symbol", "???"),
+                "risk_score": 50,
+                "risk_level": "WARNING",
+                "red_flags": ["Analysis engine error — treat with caution"],
+                "yellow_flags": [],
+                "green_flags": [],
+                "message": f"Analysis crashed on {sim_data.get('token_symbol', '???')}: {e}",
+                "error": str(e),
+            }
 
     def stop(self):
         """Cancel any pending analysis tasks."""
@@ -430,7 +435,6 @@ Requirements:
         for t in self._tasks:
             t.cancel()
         print(f"✅ {self.name}: Stopped.")
-
 
 # ─────────────────────────────────────────────────────────────
 # Main Runner
@@ -446,7 +450,7 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"⚠️ Publish error: {e}")
 
-    analyzer = AnalyzerAgent(test_publish)
+    analyzer = AnalyzerAgent()
 
     test_sim = {
         "token_address": "0x1234567890abcdef1234567890abcdef12345678",
@@ -466,7 +470,7 @@ if __name__ == "__main__":
     }
 
     try:
-        asyncio.run(analyzer._deep_analysis(test_sim))
+        asyncio.run(analyzer.analyze(test_sim))
     except KeyboardInterrupt:
         analyzer.stop()
         print("\n🛑 Vega stopped.")
