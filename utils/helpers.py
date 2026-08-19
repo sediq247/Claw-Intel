@@ -13,10 +13,6 @@ from typing import Optional, Union
 import hashlib
 
 
-# ═══════════════════════════════════════════════════
-# STRING NORMALIZATION
-# ═══════════════════════════════════════════════════
-
 def normalize_symbol(symbol: str) -> str:
     """
     Standardize token symbol for consistent display.

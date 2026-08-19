@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-"""
-🖥 runtime/server.py
-ClawIntel Server v4.0 — Python aiohttp replaces Node.js completely.
-Serves static files, WebSocket at /ws, REST API, and broadcasts to frontend.
-"""
-
 import asyncio
 import json
 import os
@@ -20,11 +13,12 @@ PORT = int(os.getenv("PORT", "3000"))
 
 class ClawIntelServer:
     """
-    Single-runtime Python server.
+    Standalone Python server.
     - Static file serving from repo root
     - WebSocket at /ws with 30s heartbeat
-    - REST API for health, analyze, chat history, stats, tokens, investigations
-    - broadcast() method for agent → frontend communication
+    - REST API for health, analyze, chat history, stats, tokens, investigations, markets
+    - broadcast() method for agent -> frontend communication
+    - Event polling loop for decoupled engine->server communication
     """
 
     def __init__(self, db=None):
@@ -35,10 +29,12 @@ class ClawIntelServer:
         self.ws_clients: Set[web.WebSocketResponse] = set()
         self.running = False
         self._start_time = time.time()
+        self._poll_task: Optional[asyncio.Task] = None
+        self._last_event_ts = 0.0
         self._setup_routes()
 
     def _setup_routes(self):
-        # Explicit routes first (static routes registered last)
+        
         self.app.router.add_get("/", self._index)
         self.app.router.add_get("/ws", self._ws_handler)
         self.app.router.add_get("/health", self._health)
@@ -47,40 +43,69 @@ class ClawIntelServer:
         self.app.router.add_get("/api/stats", self._api_stats)
         self.app.router.add_get("/api/tokens", self._api_tokens)
         self.app.router.add_get("/api/investigations", self._api_investigations)
+        self.app.router.add_get("/api/markets", self._api_markets)
 
-        # Static assets
         frontend_path = Path(__file__).parent.parent / "frontend"
         if frontend_path.exists():
             self.app.router.add_static("/frontend", path=frontend_path, name="frontend")
 
-    # ── STATIC FILES ──
     async def _index(self, request: web.Request) -> web.Response:
         index_path = Path(__file__).parent.parent / "index.html"
         if index_path.exists():
             return web.FileResponse(index_path)
         return web.Response(
-            text="ClawIntel v4.0 — index.html not found", status=404
+            text="ClawIntel  index.html not found", status=404
         )
 
-    # ── WEBSOCKET ──
     async def _ws_handler(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(heartbeat=30.0)
         await ws.prepare(request)
-        self.ws_clients.add(ws)
-        print(f"[server] WS client connected. Total: {len(self.ws_clients)}")
 
         try:
             await ws.send_json(
                 {
                     "type": "SYSTEM",
                     "payload": {
-                        "message": "Connected to ClawIntel v4.0",
+                        "message": "Connected to Intel Claw ",
                         "timestamp": time.time(),
                     },
                 }
             )
         except Exception:
             pass
+
+        if self.db is not None:
+            try:
+                history = await self.db.get_chat_history(limit=50)
+                history.reverse()
+                for msg in history:
+                    await ws.send_json(
+                        {
+                            "type": "AGENT_MESSAGE",
+                            "payload": {
+                                "agent": msg.get("agent", "system"),
+                                "message": msg.get("message", ""),
+                                "type": msg.get("type", "chat"),
+                                "channel": msg.get("channel", "main"),
+                                "timestamp": msg.get("timestamp", time.time()),
+                            },
+                        }
+                    )
+                if history:
+                    await ws.send_json(
+                        {
+                            "type": "SYSTEM",
+                            "payload": {
+                                "message": f"--- Loaded {len(history)} past messages ---",
+                                "timestamp": time.time(),
+                            },
+                        }
+                    )
+            except Exception as e:
+                print(f"[server] History push failed: {e}")
+
+        self.ws_clients.add(ws)
+        print(f"[server] WS client connected. Total: {len(self.ws_clients)}")
 
         try:
             async for msg in ws:
@@ -102,7 +127,6 @@ class ClawIntelServer:
             )
         return ws
 
-    # ── BROADCAST ──
     async def broadcast(self, event_type: str, payload: dict):
         """Send JSON event to all connected WebSocket clients. Prune dead connections."""
         if not self.ws_clients:
@@ -121,7 +145,34 @@ class ClawIntelServer:
                 dead.add(ws)
         self.ws_clients -= dead
 
-    # ── REST ENDPOINTS ──
+    async def _poll_events_loop(self):
+        """
+        Poll MongoDB events collection every second and broadcast
+        new events to all connected WebSocket clients.
+        This is the bridge between the engine (separate process) and the frontend.
+        """
+        self._last_event_ts = time.time() - 5
+
+        while self.running:
+            try:
+                if self.db is not None and hasattr(self.db, "get_recent_events"):
+                    events = await self.db.get_recent_events(
+                        since=self._last_event_ts, limit=100
+                    )
+                    for event in events:
+                        event_type = event.get("event_type", "AGENT_MESSAGE")
+                        payload = event.get("payload", {})
+                        await self.broadcast(event_type, payload)
+
+                        ts = event.get("timestamp", 0)
+                        if ts > self._last_event_ts:
+                            self._last_event_ts = ts
+
+                await asyncio.sleep(1)
+            except Exception as e:
+                print(f"[server] Event poll error: {e}")
+                await asyncio.sleep(2)
+
     async def _health(self, request: web.Request) -> web.Response:
         uptime = int(time.time() - self._start_time)
         pending = 0
@@ -136,7 +187,7 @@ class ClawIntelServer:
                 "uptime_seconds": uptime,
                 "ws_clients": len(self.ws_clients),
                 "queue_size": pending,
-                "version": "4.0",
+                "version": "4.1",
             }
         )
 
@@ -153,8 +204,6 @@ class ClawIntelServer:
             return web.json_response(
                 {"error": "tokenAddress required"}, status=400
             )
-
-        # Save to DB as high-priority pending token
         if self.db:
             try:
                 await self.db.save_discovered_token(
@@ -173,7 +222,6 @@ class ClawIntelServer:
             except Exception as e:
                 print(f"[server] DB save error: {e}")
 
-        # Broadcast to frontend
         try:
             await self.broadcast(
                 "AGENT_MESSAGE",
@@ -196,15 +244,16 @@ class ClawIntelServer:
         )
 
     async def _api_chat_history(self, request: web.Request) -> web.Response:
+        """Return chat history. Key is 'history' (matches frontend app.js expectation)."""
         limit = int(request.query.get("limit", "50"))
         if self.db:
             try:
                 history = await self.db.get_chat_history(limit=limit)
                 history.reverse()
-                return web.json_response({"messages": history})
+                return web.json_response({"history": history})
             except Exception as e:
                 return web.json_response({"error": str(e)}, status=500)
-        return web.json_response({"messages": []})
+        return web.json_response({"history": []})
 
     async def _api_stats(self, request: web.Request) -> web.Response:
         if self.db:
@@ -249,7 +298,19 @@ class ClawIntelServer:
                 return web.json_response({"error": str(e)}, status=500)
         return web.json_response({"investigations": []})
 
-    # ── LIFECYCLE ──
+    async def _api_markets(self, request: web.Request) -> web.Response:
+        """Return latest market data from DB (populated by MarketEngine)."""
+        if self.db and hasattr(self.db, "get_market_data"):
+            try:
+                data = await self.db.get_market_data()
+                return web.json_response(data)
+            except Exception as e:
+                return web.json_response({"error": str(e)}, status=500)
+        return web.json_response({
+            "trending": [], "gainers": [], "losers": [],
+            "ai_verified": [], "timestamp": 0,
+        })
+
     async def start(self):
         self.running = True
         self.runner = web.AppRunner(self.app)
@@ -259,8 +320,19 @@ class ClawIntelServer:
         print(f"[server] ✅ ClawIntel server running on http://0.0.0.0:{PORT}")
         print(f"[server] 📡 WebSocket endpoint: ws://0.0.0.0:{PORT}/ws")
 
+        self._poll_task = asyncio.create_task(self._poll_events_loop())
+        print("[server] 🔄 Event polling started (DB-driven broadcasts)")
+
     async def stop(self):
         self.running = False
+
+        if self._poll_task is not None:
+            self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                pass
+
         for ws in list(self.ws_clients):
             if not ws.closed:
                 try:
@@ -268,6 +340,7 @@ class ClawIntelServer:
                 except Exception:
                     pass
         self.ws_clients.clear()
+
         if self.site:
             await self.site.stop()
         if self.runner:

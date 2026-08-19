@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
-💰 MARKET ENGINE — v4.0
+💰 MARKET ENGINE — v4.1
 The Data Aggregator. Fetches from DexScreener API, calculates metrics,
-normalizes multi-chain data, pushes live updates via server.broadcast.
+normalizes multi-chain data, pushes live updates via EventPublisher.
 
-v4.0 CHANGES:
-- Constructor accepts `server` instead of event_bus publish/subscribe
-- Uses server.broadcast("MARKET_UPDATE", ...) for live updates
-- on_ai_verdict is a public method called directly by orchestrator
-- All original DexScreener logic preserved
-- utils.helpers imports are optional with fallbacks
+v4.1 CHANGES (decoupled architecture):
+  - Constructor accepts `publisher` (EventPublisher) for DB persistence + WS broadcast
+  - Falls back to `server` for backward compatibility during migration
+  - Uses publisher.market_update() to persist snapshots to MongoDB
+  - All original DexScreener logic preserved
 """
 
 import asyncio
@@ -22,11 +21,6 @@ from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
 load_dotenv()
-
-# ─────────────────────────────────────────────────────────────
-# Optional utils.helpers — fallbacks if not available
-# ─────────────────────────────────────────────────────────────
-
 try:
     from utils.helpers import (
         normalize_symbol, normalize_name, format_currency, format_percentage,
@@ -117,24 +111,16 @@ except ImportError:
         def clear(self):
             self._data.clear()
 
-
-# ─────────────────────────────────────────────────────────────
-# API Configuration — DexScreener only
-# ─────────────────────────────────────────────────────────────
-
 DEXSCREENER_BASE = "https://api.dexscreener.com"
 
-# Rate limiting
 DEXSCREENER_RATE_LIMIT = 300
 DEXSCREENER_SLOW_LIMIT = 60
 
-# Popular chains to scan for trending / gainers / losers
 POPULAR_CHAINS = [
     "solana", "ethereum", "base", "bsc", "arbitrum", "optimism",
     "avalanche", "polygon_pos", "sonic", "sui"
 ]
 
-# Search queries to discover active tokens across chains
 TRENDING_SEARCH_QUERIES = [
     "SOL", "ETH", "BTC", "USDC", "USDT", "BONK", "PEPE", "SHIB",
     "WIF", "FLOKI", "DOGE", "JUP", "RAY", "BOME", "WETH", "WBTC"
@@ -188,12 +174,23 @@ class MarketEngine:
     """
     Market Data Aggregator.
     Fetches, normalizes, and caches market data from DexScreener API.
-    Pushes live updates via server.broadcast.
+    Pushes live updates via EventPublisher (DB persistence + optional WS broadcast).
 
-    v4.0: Receives AI verdicts directly from orchestrator via on_ai_verdict().
+    v4.1: Uses publisher.market_update() for decoupled architecture.
     """
 
-    def __init__(self, server: Optional[Any] = None):
+    def __init__(
+        self,
+        publisher: Optional[Any] = None,
+        server: Optional[Any] = None,
+    ):
+        """
+        publisher: EventPublisher instance (v4.1 decoupled mode).
+                   Writes market snapshots to MongoDB + optional live broadcast.
+        server:    Legacy ClawIntelServer instance (backward compat during migration).
+                   If publisher is None, falls back to server.broadcast().
+        """
+        self.publisher = publisher
         self.server = server
         self.name = "MarketEngine"
         self.cache = SimpleCache(default_ttl=60)
@@ -282,21 +279,29 @@ class MarketEngine:
             print(f"⚠️ {self.name}: All fetch methods failed, skipping MARKET_UPDATE broadcast.")
             return
 
-        # v4.0: Broadcast via server instead of event bus
-        if self.server:
-            await self.server.broadcast("MARKET_UPDATE", {
-                "trending": [t.to_dict() for t in self.trending_tokens[:20]],
-                "gainers": [t.to_dict() for t in self.top_gainers[:20]],
-                "losers": [t.to_dict() for t in self.top_losers[:20]],
-                "ai_verified": [t.to_dict() for t in list(self.ai_verified_tokens.values())[:20]],
-                "timestamp": time.time(),
-            })
-        else:
-            print(f"⚠️ {self.name}: No server available — MARKET_UPDATE not broadcast")
+        market_payload = {
+            "trending": [t.to_dict() for t in self.trending_tokens[:20]],
+            "gainers": [t.to_dict() for t in self.top_gainers[:20]],
+            "losers": [t.to_dict() for t in self.top_losers[:20]],
+            "ai_verified": [t.to_dict() for t in list(self.ai_verified_tokens.values())[:20]],
+            "timestamp": time.time(),
+        }
 
-    # ───────────────────────────────────────────────
-    # DexScreener: Trending
-    # ───────────────────────────────────────────────
+        if self.publisher is not None and hasattr(self.publisher, "market_update"):
+            try:
+                await self.publisher.market_update(market_payload)
+                print(f"💰 {self.name}: MARKET_UPDATE persisted + broadcast")
+            except Exception as e:
+                print(f"⚠️ {self.name}: Publisher market_update failed: {e}")
+        elif self.server is not None and hasattr(self.server, "broadcast"):
+            try:
+                await self.server.broadcast("MARKET_UPDATE", market_payload)
+                print(f"💰 {self.name}: MARKET_UPDATE broadcast (legacy mode)")
+            except Exception as e:
+                print(f"⚠️ {self.name}: Server broadcast failed: {e}")
+        else:
+            print(f"⚠️ {self.name}: No publisher or server available — MARKET_UPDATE dropped")
+
     async def _fetch_trending(self) -> List[MarketToken]:
         all_tokens: Dict[str, MarketToken] = {}
 
@@ -332,9 +337,6 @@ class MarketEngine:
             t.rank = i + 1
         return tokens[:40]
 
-    # ───────────────────────────────────────────────
-    # DexScreener: Top Gainers
-    # ───────────────────────────────────────────────
     async def _fetch_top_gainers(self) -> List[MarketToken]:
         all_pairs = []
 
@@ -361,9 +363,6 @@ class MarketEngine:
             t.rank = i + 1
         return tokens[:20]
 
-    # ───────────────────────────────────────────────
-    # DexScreener: Top Losers
-    # ───────────────────────────────────────────────
     async def _fetch_top_losers(self) -> List[MarketToken]:
         all_pairs = []
 
@@ -390,9 +389,6 @@ class MarketEngine:
             t.rank = i + 1
         return tokens[:20]
 
-    # ───────────────────────────────────────────────
-    # DexScreener HTTP helpers
-    # ───────────────────────────────────────────────
     async def _ds_get(self, endpoint: str, params: dict = None):
         url = f"{DEXSCREENER_BASE}{endpoint}"
         async with self._semaphore:
@@ -412,9 +408,6 @@ class MarketEngine:
             return data.get("pairs", []) or []
         return []
 
-    # ───────────────────────────────────────────────
-    # Data normalizers
-    # ───────────────────────────────────────────────
     def _ds_pair_to_token(self, pair: dict, source: str) -> Optional[MarketToken]:
         base = pair.get("baseToken", {})
         if not base:
@@ -539,9 +532,6 @@ class MarketEngine:
         except (ValueError, TypeError):
             return default
 
-    # ───────────────────────────────────────────────
-    # AI Verified tokens
-    # ───────────────────────────────────────────────
     def add_ai_verified(self, token_data: dict):
         """Add a token to the AI-verified list. Called internally on SAFE verdict."""
         token_id = token_data.get("token", "")
@@ -567,9 +557,6 @@ class MarketEngine:
         )
         self.ai_verified_tokens[token_id] = token
 
-    # ───────────────────────────────────────────────
-    # Public getters (unchanged interface)
-    # ───────────────────────────────────────────────
     def get_trending(self) -> List[dict]:
         return [t.to_dict() for t in self.trending_tokens[:20]]
 

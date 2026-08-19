@@ -1,26 +1,17 @@
-#!/usr/bin/env python3
+
 """
-🎭 ORCHESTRATOR — Conductor v4.0
+ ORCHESTRATOR — Conductor v4.1
 Theatrical multi-agent investigation conductor.
 Polls MongoDB for pending tokens, runs 5-stage theatrical pipeline,
 broadcasts AGENT_WORKING spinners, enforces minimum stage duration.
 
-v4.0 CHANGES:
-- Constructor accepts server + db
-- Deleted PyEventBus, local_bus, event-driven pipeline
-- Deleted INVESTIGATION_TIMEOUT, REST_DURATION
-- STAGE_MIN_SECONDS = 15, REST_SECONDS = 45, MAX_QUEUE_SIZE = 100
-- Reads from DB (get_next_pending_token), not from Nova events
-- 5-stage theatrical _run_investigation with AGENT_WORKING broadcasts
-- Saves full investigation to DB
-- USER_QUERY gets attention_score = 100 (handled in server.py)
-- No HTTP API — server handles REST/WebSocket
 """
 
 import asyncio
 import time
 from typing import Optional, Any, Dict
 
+from utils.publisher import EventPublisher
 from agents.watcher import WatcherAgent
 from agents.simulator import SimulatorAgent
 from agents.analyzer import AnalyzerAgent
@@ -32,7 +23,7 @@ class AgentOrchestrator:
     """
     The Conductor.
     Reads pending tokens from DB, runs theatrical 5-stage investigations,
-    broadcasts progress to frontend, saves results to DB.
+    broadcasts progress to frontend via EventPublisher, saves results to DB.
     """
 
     STAGE_MIN_SECONDS = 15
@@ -40,52 +31,50 @@ class AgentOrchestrator:
     MAX_QUEUE_SIZE = 100
 
     def __init__(self, server: Any, db: Any):
+        """
+        server: ClawIntelServer instance (monolithic) or None (decoupled).
+                In decoupled mode, the publisher handles all persistence.
+        db:     Database instance for reading/writing token queues, investigations.
+        """
         self.server = server
         self.db = db
         self.name = "Orchestrator"
         self.running = False
-        self.state = "IDLE"  # IDLE, INVESTIGATING, RESTING
+        self.state = "IDLE"          
         self.rest_until = 0.0
         self._tasks: list[asyncio.Task] = []
         self.agents: Dict[str, Any] = {}
         self.nova: Optional[WatcherAgent] = None
 
+        self.publisher = EventPublisher(db=db, server=server)
+
     async def start(self):
         """Initialize agents and start the main loop."""
         self.running = True
-        print(f"🎭 {self.name}: Conductor v4.0 starting...")
+        print(f"🎭 {self.name}: Conductor v4.1 starting...")
 
-        # Initialize agents with server (and db for Echo)
         self.agents = {
-            "atlas": SimulatorAgent(server=self.server),
-            "vega": AnalyzerAgent(server=self.server),
-            "echo": MemoryAgent(server=self.server, db=self.db),
-            "orion": DecisionAgent(server=self.server),
+            "atlas": SimulatorAgent(server=self.publisher),
+            "vega":  AnalyzerAgent(server=self.publisher),
+            "echo":  MemoryAgent(server=self.publisher, db=self.db),
+            "orion": DecisionAgent(server=self.publisher),
         }
         print(f"✅ {self.name}: Agents initialized — Atlas, Vega, Echo, Orion")
 
-        # Start Nova as independent background scraper
-        self.nova = WatcherAgent(server=self.server, db=self.db)
+        self.nova = WatcherAgent(server=self.publisher, db=self.db)
         self._tasks.append(asyncio.create_task(self.nova.start()))
         print(f"✅ {self.name}: Nova (Watcher) started as background task")
 
-        # Start main investigation loop
         self._tasks.append(asyncio.create_task(self._main_loop()))
         print(f"✅ {self.name}: Main loop started")
 
-        # Broadcast system startup
-        await self.server.broadcast("AGENT_MESSAGE", {
-            "agent": "system",
-            "message": (
-                f"ClawIntel v4.0 online. Investigation cycle: ~2-3min per token, "
-                f"{self.REST_SECONDS}s rest between cases. Nova scanning 4 chains..."
-            ),
-            "type": "system",
-            "channel": "main",
-            "timestamp": time.time()
-        })
+       
+        await self.publisher.system_message(
+            f"ClawIntel v4.1 online. Investigation cycle: ~2-3min per token, "
+            f"{self.REST_SECONDS}s rest between cases. Nova scanning 4 chains..."
+        )
 
-        # Keep orchestrator alive
+        
         while self.running:
             await asyncio.sleep(1)
 
@@ -94,7 +83,7 @@ class AgentOrchestrator:
         print(f"🎭 {self.name}: Stopping conductor...")
         self.running = False
 
-        # Stop Nova
+
         if self.nova and hasattr(self.nova, "stop"):
             try:
                 stop_result = self.nova.stop()
@@ -104,7 +93,7 @@ class AgentOrchestrator:
             except Exception as e:
                 print(f"⚠️ {self.name}: Error stopping Nova: {e}")
 
-        # Stop agents
+    
         for name, agent in self.agents.items():
             if hasattr(agent, "stop"):
                 try:
@@ -115,7 +104,7 @@ class AgentOrchestrator:
                 except Exception as e:
                     print(f"⚠️ {self.name}: Error stopping {name}: {e}")
 
-        # Cancel tasks
+        
         for task in self._tasks:
             if not task.done():
                 task.cancel()
@@ -126,9 +115,7 @@ class AgentOrchestrator:
 
         print(f"✅ {self.name}: Conductor stopped")
 
-    # ═══════════════════════════════════════════════════════════
-    # MAIN LOOP
-    # ═══════════════════════════════════════════════════════════
+    
 
     async def _main_loop(self):
         """Poll DB for pending tokens and run investigations."""
@@ -164,10 +151,6 @@ class AgentOrchestrator:
             print(f"⚠️ {self.name}: Failed to get next token: {e}")
             return None
 
-    # ═══════════════════════════════════════════════════════════
-    # 5-STAGE THEATRICAL INVESTIGATION
-    # ═══════════════════════════════════════════════════════════
-
     async def _run_investigation(self, token: dict):
         """Run the full 5-stage investigation with theatrical pacing."""
         token_address = token.get("token_address", "unknown")
@@ -180,14 +163,9 @@ class AgentOrchestrator:
         print(f"🎭 {self.name}: Starting investigation on {symbol} ({chain})")
         self.state = "INVESTIGATING"
 
-        # ── Stage 0: Nova's discovery message (read from DB) ──
-        await self.server.broadcast("AGENT_MESSAGE", {
-            "agent": "Nova",
-            "message": nova_message,
-            "type": "discovery",
-            "channel": "main",
-            "timestamp": time.time()
-        })
+        await self.publisher.agent_message(
+            "Nova", nova_message, "discovery"
+        )
 
         # ── Stage 1: Atlas (Simulation) ──
         sim_data = await self._run_stage(
@@ -199,7 +177,6 @@ class AgentOrchestrator:
             work_args=(token,)
         )
 
-        # ── Stage 2: Vega (Analysis) ──
         analysis_data = await self._run_stage(
             agent_name="Vega",
             token=token,
@@ -208,8 +185,6 @@ class AgentOrchestrator:
             work_fn=self.agents["vega"].analyze,
             work_args=(sim_data,)
         )
-
-        # ── Stage 3: Echo (Memory) ──
         memory_data = await self._run_stage(
             agent_name="Echo",
             token=token,
@@ -219,7 +194,6 @@ class AgentOrchestrator:
             work_args=(token,)
         )
 
-        # ── Stage 4: Orion (Decision) ──
         decision_data = await self._run_stage(
             agent_name="Orion",
             token=token,
@@ -228,8 +202,6 @@ class AgentOrchestrator:
             work_fn=self.agents["orion"].decide,
             work_args=(sim_data, analysis_data, memory_data)
         )
-
-        # ── Save full investigation to DB ──
         investigation = {
             "token_address": token_address,
             "chain": chain,
@@ -254,7 +226,17 @@ class AgentOrchestrator:
         except Exception as e:
             print(f"⚠️ {self.name}: Failed to save investigation: {e}")
 
-        # ── Mark token completed ──
+        await self.publisher.investigation_complete(investigation)
+
+        await self.publisher.signal(
+            token=token_address,
+            chain=chain,
+            symbol=symbol,
+            verdict=decision_data.get("verdict", "UNKNOWN"),
+            score=decision_data.get("final_score", 0),
+            confidence=decision_data.get("confidence", 0),
+        )
+
         try:
             if self.db and hasattr(self.db, "mark_token_completed"):
                 verdict = decision_data.get("verdict", "UNKNOWN")
@@ -263,16 +245,12 @@ class AgentOrchestrator:
         except Exception as e:
             print(f"⚠️ {self.name}: Failed to mark token completed: {e}")
 
-        # ── Transition to RESTING ──
         self.state = "RESTING"
         self.rest_until = time.time() + self.REST_SECONDS
-        await self.server.broadcast("AGENT_MESSAGE", {
-            "agent": "system",
-            "message": f"Investigation complete on {symbol}. Verdict: {decision_data.get('verdict', 'UNKNOWN')}. Agents resting for {self.REST_SECONDS}s.",
-            "type": "system",
-            "channel": "main",
-            "timestamp": time.time()
-        })
+        await self.publisher.system_message(
+            f"Investigation complete on {symbol}. Verdict: {decision_data.get('verdict', 'UNKNOWN')}. "
+            f"Agents resting for {self.REST_SECONDS}s."
+        )
         print(f"😴 {self.name}: Investigation complete. Resting for {self.REST_SECONDS}s.")
 
     async def _run_stage(
@@ -296,17 +274,14 @@ class AgentOrchestrator:
         chain = token.get("chain", "unknown")
         stage_start = time.time()
 
-        # 1. Broadcast AGENT_WORKING spinner
-        await self.server.broadcast("AGENT_WORKING", {
-            "agent": agent_name,
-            "token": symbol,
-            "action": action,
-            "chain": chain,
-            "timestamp": time.time()
-        })
+        await self.publisher.agent_working(
+            agent=agent_name,
+            token=symbol,
+            action=action,
+            chain=chain,
+        )
         print(f"🎭 {self.name}: Stage {agent_name} started — {action} on {symbol}")
 
-        # 2. Run actual work
         try:
             result = await work_fn(*work_args)
             if result is None:
@@ -321,25 +296,20 @@ class AgentOrchestrator:
                 "message": f"{agent_name} encountered an error analyzing {symbol}: {e}",
             }
 
-        # 3. Enforce minimum stage duration
         elapsed = time.time() - stage_start
         if elapsed < self.STAGE_MIN_SECONDS:
             remaining = self.STAGE_MIN_SECONDS - elapsed
             print(f"⏱️ {self.name}: Stage {agent_name} done in {elapsed:.1f}s — waiting {remaining:.1f}s for theatrical minimum")
             await asyncio.sleep(remaining)
 
-        # 4. Broadcast completion event
-        await self.server.broadcast(completion_event, result)
+        await self.publisher.broadcast(completion_event, result)
         print(f"✅ {self.name}: Stage {agent_name} complete — {completion_event}")
 
-        # 5. Broadcast AGENT_MESSAGE if the agent produced a spoken message
         if result and result.get("message"):
-            await self.server.broadcast("AGENT_MESSAGE", {
-                "agent": agent_name,
-                "message": result["message"],
-                "type": "response",
-                "channel": "main",
-                "timestamp": time.time()
-            })
+            await self.publisher.agent_message(
+                agent=agent_name,
+                message=result["message"],
+                msg_type="response",
+            )
 
         return result

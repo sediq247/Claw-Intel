@@ -1,350 +1,268 @@
-#!/usr/bin/env python3
-"""
-Async MongoDB client — the single source of truth for tokens, investigations,
-creators, and chat history. Singleton pattern, connection pooling.
-"""
-
 import os
-import asyncio
 import time
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
-from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
-from pymongo import ReturnDocument
-from bson import ObjectId
-from bson.errors import InvalidId
+from typing import List, Dict, Any, Optional
 
-MONGO_URI = os.getenv("MONGO_URI") or os.getenv("MONGODB_URI", "mongodb://localhost:27017/clawintel")
-DB_NAME = os.getenv("MONGODB_DB_NAME", "clawintel")
+from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ASCENDING, DESCENDING
+
+MONGO_URI = os.getenv("MONGODB_URI") or os.getenv("MONGO_URI", "mongodb://localhost:27017/clawintel")
 
 
 class Database:
-    """
-    Async MongoDB interface for ClawIntel.
-    Singleton pattern — one connection per process.
-    """
-
-    _instance = None
-    _lock = asyncio.Lock()
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
-            cls._instance.client = None
-        return cls._instance
+    def __init__(self):
+        self.client: Optional[AsyncIOMotorClient] = None
+        self.db = None
 
     async def init(self):
-        if self._initialized:
-            return
-
-        print(f"[db] Connecting to MongoDB...")
         self.client = AsyncIOMotorClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-        self.db: AsyncIOMotorDatabase = self.client[DB_NAME]
-
-        # Verify connection
+        self.db = self.client.clawintel
         await self.client.admin.command("ping")
-        print(f"[db] ✅ Connected to MongoDB: {DB_NAME}")
-
-        # Create indexes for performance
+        print("[db] ✅ Connected to MongoDB: clawintel")
         await self._create_indexes()
-        self._initialized = True
 
     async def _create_indexes(self):
-        """Create indexes for common queries."""
-        try:
-            # Tokens collection (upsert by compound key)
-            await self.db.tokens.create_index(
-                [("token_address", 1), ("chain", 1)], unique=True
-            )
-            await self.db.tokens.create_index("status")
-            await self.db.tokens.create_index(
-                [("attention_score", -1), ("discovered_at", 1)]
-            )
-            await self.db.tokens.create_index([("discovered_at", -1)])
-
-            # Creators collection
-            await self.db.creators.create_index("address", unique=True)
-            await self.db.creators.create_index([("reputation_score", -1)])
-
-            # Investigations collection
-            await self.db.investigations.create_index("token_address")
-            await self.db.investigations.create_index([("timestamp", -1)])
-            await self.db.investigations.create_index("verdict")
-
-            # Agent messages (chat history)
-            await self.db.agent_messages.create_index([("timestamp", -1)])
-            await self.db.agent_messages.create_index("investigation_id")
-
-            # Market snapshots
-            await self.db.market_snapshots.create_index([("timestamp", -1)])
-
-            # Cursors for Nova block tracking
-            await self.db.cursors.create_index("chain", unique=True)
-
-            print("[db] ✅ Indexes created")
-        except Exception as e:
-            print(f"[db] ⚠️ Index creation warning (may already exist): {e}")
-
-    # ── DISCOVERED TOKENS (Nova's queue) ──
-
-    async def save_discovered_token(self, doc: dict) -> str:
-        """Save or update a discovered token. Upsert by {token_address, chain}."""
-        doc.setdefault("discovered_at", datetime.now(timezone.utc))
-        doc.setdefault("timestamp", time.time())
-        doc.setdefault("status", "pending")
-        doc.setdefault("attention_score", 0)
-
-        token_address = doc["token_address"]
-        chain = doc["chain"]
-
-        result = await self.db.tokens.update_one(
-            {"token_address": token_address, "chain": chain},
-            {
-                "$set": doc,
-                "$setOnInsert": {"created_at": datetime.now(timezone.utc)},
-            },
-            upsert=True,
+        await self.db.chat_messages.create_index([("timestamp", DESCENDING)])
+        await self.db.chat_messages.create_index([("agent", ASCENDING)])
+        await self.db.discovered_tokens.create_index([("discovered_at", DESCENDING)])
+        await self.db.discovered_tokens.create_index([("status", ASCENDING)])
+        await self.db.discovered_tokens.create_index([("token_address", ASCENDING)])
+        await self.db.tokens_queue.create_index([("timestamp", DESCENDING)])
+        await self.db.tokens_queue.create_index([("status", ASCENDING)])
+        await self.db.investigations.create_index([("timestamp", DESCENDING)])
+        await self.db.investigations.create_index([("token_address", ASCENDING)])
+        await self.db.creator_profiles.create_index([("address", ASCENDING)], unique=True)
+        await self.db.events.create_index([("timestamp", ASCENDING)])
+        await self.db.events.create_index(
+            [("created_at", ASCENDING)], expireAfterSeconds=86400
         )
-        return str(result.upserted_id or f"{chain}:{token_address}")
+        await self.db.market_data.create_index([("updated_at", DESCENDING)])
+        await self.db.signals.create_index([("timestamp", DESCENDING)])
+        await self.db.discovered_tokens.create_index([("symbol", ASCENDING)])
+        await self.db.discovered_tokens.create_index([("name", ASCENDING)])
+        await self.db.discovered_tokens.create_index([("address", ASCENDING)])
 
-    async def get_next_pending_token(self) -> Optional[dict]:
-        """
-        Atomically pick the highest-attention pending token,
-        set status to 'investigating', and return it.
-        """
-        token = await self.db.tokens.find_one_and_update(
-            {"status": "pending"},
-            {"$set": {"status": "investigating", "investigated_at": time.time()}},
-            sort=[("attention_score", -1), ("discovered_at", 1)],
-            return_document=ReturnDocument.AFTER,
-        )
-        return token
+        print("[db] ✅ Indexes created")
 
-    async def mark_token_completed(self, token_address: str, chain: str, verdict: str):
-        """Mark a token as completed with a verdict."""
-        await self.db.tokens.update_one(
-            {"token_address": token_address, "chain": chain},
-            {
-                "$set": {
-                    "status": "completed",
-                    "verdict": verdict,
-                    "completed_at": time.time(),
-                }
-            },
-        )
-
-    async def count_pending_tokens(self) -> int:
-        return await self.db.tokens.count_documents({"status": "pending"})
-
-    async def get_lowest_attention_in_queue(self) -> Optional[float]:
-        """Get the minimum attention_score among pending tokens."""
-        doc = await self.db.tokens.find_one(
-            {"status": "pending"}, sort=[("attention_score", 1)]
-        )
-        return doc.get("attention_score") if doc else None
-
-    async def get_discovered_tokens(self, limit: int = 100) -> List[dict]:
-        cursor = self.db.tokens.find().sort("discovered_at", -1).limit(limit)
-        return await cursor.to_list(length=limit)
-
-    async def get_completed_investigations(self, limit: int = 100) -> List[dict]:
-        """Return full investigation records from the investigations collection."""
-        cursor = self.db.investigations.find().sort("timestamp", -1).limit(limit)
-        return await cursor.to_list(length=limit)
-
-    # ── TOKEN (legacy compat) ──
-    async def save_token(self, token_data: dict) -> str:
-        """Legacy compat — forwards to save_discovered_token."""
-        return await self.save_discovered_token(token_data)
-
-    async def get_token(
-        self, token_address: str, chain: Optional[str] = None
-    ) -> Optional[dict]:
-        query = {"token_address": token_address}
-        if chain:
-            query["chain"] = chain
-        return await self.db.tokens.find_one(query)
-
-    async def get_recent_tokens(
-        self, limit: int = 50, chain: str = None
-    ) -> List[dict]:
-        query = {}
-        if chain:
-            query["chain"] = chain
-        cursor = self.db.tokens.find(query).sort("timestamp", -1).limit(limit)
-        return await cursor.to_list(length=limit)
-
-    async def get_token_count(self) -> int:
-        return await self.db.tokens.estimated_document_count()
-
-    # ── INVESTIGATIONS ──
-    async def save_investigation(self, investigation: dict) -> str:
-        """Save a complete investigation pipeline result."""
-        investigation.setdefault("timestamp", time.time())
-        investigation.setdefault("created_at", datetime.now(timezone.utc))
-        result = await self.db.investigations.insert_one(investigation)
-        return str(result.inserted_id)
-
-    async def get_investigation(self, investigation_id: str) -> Optional[dict]:
-        try:
-            return await self.db.investigations.find_one(
-                {"_id": ObjectId(investigation_id)}
-            )
-        except InvalidId:
-            return None
-
-    async def get_investigations_by_token(self, token_address: str) -> List[dict]:
-        cursor = (
-            self.db.investigations.find({"token_address": token_address})
-            .sort("timestamp", -1)
-        )
-        return await cursor.to_list(length=100)
-
-    async def get_recent_investigations(
-        self, limit: int = 50, verdict: str = None
-    ) -> List[dict]:
-        query = {}
-        if verdict:
-            query["verdict"] = verdict
-        cursor = self.db.investigations.find(query).sort("timestamp", -1).limit(limit)
-        return await cursor.to_list(length=limit)
-
-    # ── CREATORS ──
-    async def save_creator_profile(self, profile: dict) -> str:
-        """Save or update a creator profile. Upsert by address."""
-        address = profile.get("address")
-        if not address:
-            raise ValueError("Creator profile missing 'address'")
-        profile.setdefault("updated_at", datetime.now(timezone.utc))
-        result = await self.db.creators.update_one(
-            {"address": address.lower()},
-            {
-                "$set": profile,
-                "$setOnInsert": {"created_at": datetime.now(timezone.utc)},
-            },
-            upsert=True,
-        )
-        return str(result.upserted_id or address)
-
-    async def get_creator_profile(self, address: str) -> Optional[dict]:
-        return await self.db.creators.find_one({"address": address.lower()})
-
-    async def get_top_ruggers(self, limit: int = 20) -> List[dict]:
-        cursor = (
-            self.db.creators.find(
-                {"tags": {"$in": ["repeat_rugger", "honeypot_dev"]}}
-            )
-            .sort("scam_flags", -1)
-            .limit(limit)
-        )
-        return await cursor.to_list(length=limit)
-
-    # ── CHAT / AGENT MESSAGES ──
     async def save_chat_message(
         self,
         agent: str,
         message: str,
         msg_type: str = "chat",
-        investigation_id: str = None,
+        channel: str = "main",
     ) -> str:
-        """Save an agent chat message."""
         doc = {
             "agent": agent,
             "message": message,
             "type": msg_type,
-            "channel": "main",
+            "channel": channel,
             "timestamp": time.time(),
-            "investigation_id": investigation_id,
             "created_at": datetime.now(timezone.utc),
         }
-        result = await self.db.agent_messages.insert_one(doc)
+        result = await self.db.chat_messages.insert_one(doc)
         return str(result.inserted_id)
 
-    async def get_chat_history(
-        self, limit: int = 50, investigation_id: str = None
-    ) -> List[dict]:
-        query = {}
-        if investigation_id:
-            query["investigation_id"] = investigation_id
+    async def get_chat_history(self, limit: int = 50) -> List[dict]:
         cursor = (
-            self.db.agent_messages.find(query).sort("timestamp", -1).limit(limit)
+            self.db.chat_messages.find()
+            .sort("timestamp", DESCENDING)
+            .limit(limit)
         )
-        return await cursor.to_list(length=limit)
+        msgs = await cursor.to_list(length=limit)
+        for m in msgs:
+            m["_id"] = str(m["_id"])
+        return msgs
 
-    # Legacy compat
-    async def save_agent_message(
-        self, msg: dict, investigation_id: str = None
-    ) -> str:
-        return await self.save_chat_message(
-            msg.get("agent", "system"),
-            msg.get("message", ""),
-            msg.get("type", "chat"),
-            investigation_id,
-        )
-
-    # ── MARKET SNAPSHOTS ──
-    async def save_market_snapshot(self, snapshot: dict) -> str:
+    async def save_discovered_token(self, token: dict) -> str:
         doc = {
-            "trending": snapshot.get("trending", []),
-            "gainers": snapshot.get("gainers", []),
-            "losers": snapshot.get("losers", []),
-            "ai_verified": snapshot.get("ai_verified", []),
-            "timestamp": snapshot.get("timestamp", time.time()),
+            **token,
             "created_at": datetime.now(timezone.utc),
         }
-        result = await self.db.market_snapshots.insert_one(doc)
+        result = await self.db.discovered_tokens.insert_one(doc)
         return str(result.inserted_id)
 
-    async def get_latest_market_snapshot(self) -> Optional[dict]:
-        return await self.db.market_snapshots.find_one(sort=[("timestamp", -1)])
+    async def get_discovered_tokens(self, limit: int = 100) -> List[dict]:
+        cursor = (
+            self.db.discovered_tokens.find()
+            .sort("discovered_at", DESCENDING)
+            .limit(limit)
+        )
+        tokens = await cursor.to_list(length=limit)
+        for t in tokens:
+            t["_id"] = str(t["_id"])
+        return tokens
 
-    # ── CURSORS (Nova block tracking) ──
-    async def get_cursor(self, chain: str) -> Optional[int]:
-        doc = await self.db.cursors.find_one({"chain": chain})
-        return doc.get("last_block") if doc else None
+    async def add_token_to_queue(self, token: dict) -> str:
+        doc = {
+            **token,
+            "status": "pending",
+            "timestamp": time.time(),
+            "created_at": datetime.now(timezone.utc),
+        }
+        result = await self.db.tokens_queue.insert_one(doc)
+        return str(result.inserted_id)
 
-    async def save_cursor(self, chain: str, last_block: int):
-        await self.db.cursors.update_one(
-            {"chain": chain},
-            {"$set": {"last_block": last_block, "updated_at": time.time()}},
+    async def get_token_queue(self, limit: int = 100) -> List[dict]:
+        cursor = (
+            self.db.tokens_queue.find({"status": "pending"})
+            .sort("timestamp", ASCENDING)
+            .limit(limit)
+        )
+        tokens = await cursor.to_list(length=limit)
+        for t in tokens:
+            t["_id"] = str(t["_id"])
+        return tokens
+
+    async def count_pending_tokens(self) -> int:
+        return await self.db.tokens_queue.count_documents({"status": "pending"})
+
+    async def update_token_status(self, token_address: str, status: str):
+        await self.db.tokens_queue.update_one(
+            {"address": token_address},
+            {"$set": {"status": status, "updated_at": time.time()}},
+        )
+    async def save_investigation(self, investigation: dict) -> str:
+        doc = {
+            **investigation,
+            "created_at": datetime.now(timezone.utc),
+        }
+        result = await self.db.investigations.insert_one(doc)
+        return str(result.inserted_id)
+
+    async def get_completed_investigations(self, limit: int = 100) -> List[dict]:
+        cursor = (
+            self.db.investigations.find()
+            .sort("timestamp", DESCENDING)
+            .limit(limit)
+        )
+        invs = await cursor.to_list(length=limit)
+        for i in invs:
+            i["_id"] = str(i["_id"])
+        return invs
+
+    async def save_creator_profile(self, profile: dict):
+        address = profile.get("address")
+        if not address:
+            return
+        await self.db.creator_profiles.update_one(
+            {"address": address},
+            {"$set": {**profile, "updated_at": time.time()}},
             upsert=True,
         )
 
-    # ── STATS ──
-    async def get_stats(self) -> dict:
+    async def get_creator_profile(self, address: str) -> Optional[dict]:
+        return await self.db.creator_profiles.find_one({"address": address})
+    async def save_event(self, event_type: str, payload: dict) -> str:
+        """Write an event to the events stream for the server to poll."""
+        doc = {
+            "event_type": event_type,
+            "payload": payload,
+            "timestamp": time.time(),
+            "created_at": datetime.now(timezone.utc),
+        }
+        result = await self.db.events.insert_one(doc)
+        return str(result.inserted_id)
+
+    async def get_recent_events(self, since: float = 0, limit: int = 500) -> List[dict]:
+        """Fetch events newer than `since` timestamp (ascending order)."""
+        cursor = (
+            self.db.events.find({"timestamp": {"$gt": since}})
+            .sort("timestamp", ASCENDING)
+            .limit(limit)
+        )
+        events = await cursor.to_list(length=limit)
+        for e in events:
+            e["_id"] = str(e["_id"])
+        return events
+
+    async def save_market_data(self, data: dict):
+        """Upsert the latest market snapshot (single doc, always overwritten)."""
+        doc = {
+            **data,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        await self.db.market_data.update_one(
+            {"_id": "latest"},
+            {"$set": doc},
+            upsert=True,
+        )
+
+    async def get_market_data(self) -> dict:
+        """Retrieve the latest market snapshot."""
+        doc = await self.db.market_data.find_one({"_id": "latest"})
+        if doc:
+            doc.pop("_id", None)
+            return doc
         return {
-            "total_tokens": await self.db.tokens.estimated_document_count(),
-            "total_investigations": await self.db.investigations.estimated_document_count(),
-            "total_creators": await self.db.creators.estimated_document_count(),
-            "total_messages": await self.db.agent_messages.estimated_document_count(),
-            "safe_count": await self.db.investigations.count_documents(
-                {"verdict": "SAFE"}
-            ),
-            "warning_count": await self.db.investigations.count_documents(
-                {"verdict": "WARNING"}
-            ),
-            "high_risk_count": await self.db.investigations.count_documents(
-                {"verdict": "HIGH_RISK"}
-            ),
-            "pending_count": await self.db.tokens.count_documents(
-                {"status": "pending"}
-            ),
-            "investigating_count": await self.db.tokens.count_documents(
-                {"status": "investigating"}
-            ),
+            "trending": [],
+            "gainers": [],
+            "losers": [],
+            "ai_verified": [],
+            "timestamp": 0,
+        }
+    async def save_signal(self, signal: dict):
+        await self.db.signals.insert_one({
+            **signal,
+            "created_at": datetime.now(timezone.utc),
+        })
+
+    async def get_signals(self, limit: int = 50) -> List[dict]:
+        cursor = (
+            self.db.signals.find()
+            .sort("timestamp", DESCENDING)
+            .limit(limit)
+        )
+        sigs = await cursor.to_list(length=limit)
+        for s in sigs:
+            s["_id"] = str(s["_id"])
+        return sigs
+    async def search_tokens(self, query: str, limit: int = 50) -> List[dict]:
+        """Search discovered_tokens by symbol, name, or address (case-insensitive)."""
+        regex = {"$regex": query, "$options": "i"}
+        filter_doc = {
+            "$or": [
+                {"symbol": regex},
+                {"name": regex},
+                {"address": regex},
+                {"token_address": regex},
+            ]
+        }
+        cursor = (
+            self.db.discovered_tokens.find(filter_doc)
+            .sort("discovered_at", DESCENDING)
+            .limit(limit)
+        )
+        results = await cursor.to_list(length=limit)
+        for r in results:
+            r["_id"] = str(r["_id"])
+        return results
+
+    async def get_stats(self) -> dict:
+        total_tokens = await self.db.discovered_tokens.estimated_document_count()
+        total_investigations = await self.db.investigations.estimated_document_count()
+        total_creators = await self.db.creator_profiles.estimated_document_count()
+        total_messages = await self.db.chat_messages.estimated_document_count()
+
+        safe_count = await self.db.investigations.count_documents({"verdict": "SAFE"})
+        warning_count = await self.db.investigations.count_documents({"verdict": "WARNING"})
+        high_risk_count = await self.db.investigations.count_documents({"verdict": "HIGH_RISK"})
+
+        return {
+            "total_tokens": total_tokens,
+            "total_investigations": total_investigations,
+            "total_creators": total_creators,
+            "total_messages": total_messages,
+            "safe_count": safe_count,
+            "warning_count": warning_count,
+            "high_risk_count": high_risk_count,
         }
 
     async def close(self):
         if self.client:
-            await self.client.close()
+            self.client.close()
             print("[db] ✅ Connection closed")
-
-
-# Global instance
 db = Database()
 
 
 async def init_database():
-    """Initialize database connection. Call once at startup."""
     await db.init()

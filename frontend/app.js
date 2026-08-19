@@ -1,10 +1,3 @@
-/**
- * 🧠 frontend/app.js
- * ClawIntel — Detectives Room Frontend Brain
- * WebSocket-connected live chat with agent swarm conversation
- * World-class features: particles, sound FX, command palette, typing indicators
- */
-
 const CONFIG = {
   WS_URL: `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`,
   RECONNECT_INTERVAL: 3000,

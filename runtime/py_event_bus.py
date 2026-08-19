@@ -1,17 +1,5 @@
-#!/usr/bin/env python3
-"""
-runtime/py_event_bus.py
-Local in-memory pub/sub for intra-agent internal events ONLY.
-
-v4.0 CHANGE: No longer used for agent-to-agent pipeline communication.
-That now flows through MongoDB (DB-driven architecture).
-Agents may still use this to coordinate internal tasks (e.g., Nova's
-internal task coordination). Most agents will not need it.
-"""
-
 from typing import Any, Callable, Dict, List
 from collections import defaultdict
-
 
 class PyEventBus:
     """Thread-safe sync event bus for intra-agent internal coordination."""

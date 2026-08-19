@@ -138,9 +138,10 @@ class WatcherAgent:
     JUPITER_QUOTE = "https://quote-api.jup.ag/v6"
     WSOL = "So11111111111111111111111111111111111111112"
 
-    def __init__(self, db, server):
+    def __init__(self, db, server, publisher=None):
         self.db = db
         self.server = server
+        self.publisher = publisher
         self.name = "Nova"
 
         self.web3_instances: dict[str, Web3] = {}
@@ -347,7 +348,6 @@ class WatcherAgent:
             print(f"⚠️ {self.name}: Quality check error for {token_event.token_symbol} ({token_event.chain}): {e}")
             return False
 
-    # ── DISCOVERY FLOW (DB-driven) ──
 
     async def _handle_discovery(self, token_event: TokenEvent):
         """
@@ -405,40 +405,46 @@ class WatcherAgent:
                 return
 
             try:
-                await self.db.save_chat_message("Nova", nova_msg, "discovery")
+                if self.server and hasattr(self.server, 'agent_message'):
+                  await self.server.agent_message(self.name, nova_msg, "discovery")
+                else:
+                # Legacy mode: manual DB save + broadcast
+                 await self.db.save_chat_message("Nova", nova_msg, "discovery")
+                if self.server:
+                    await self.server.broadcast("AGENT_MESSAGE", {
+                        "agent": self.name,
+                        "message": nova_msg,
+                        "type": "discovery",
+                        "channel": "main",
+                        "timestamp": time.time()
+                    })
             except Exception as e:
-                print(f"⚠️ {self.name}: Failed to save chat message: {e}")
+             print(f"⚠️ {self.name}: Message publish failed: {e}")
 
-            try:
-                await self.server.broadcast("AGENT_MESSAGE", {
-                    "agent": self.name,
-                    "message": nova_msg,
-                    "type": "discovery",
-                    "channel": "main",
-                    "timestamp": time.time()
-                })
-            except Exception as e:
-                print(f"⚠️ {self.name}: Broadcast failed: {e}")
 
             print(f"🎯 {self.name}: {token_event.token_symbol} on {token_event.chain} saved (attention: {token_event.attention_score:.1f})")
 
         except Exception as e:
             print(f"❌ {self.name}: Discovery handling error: {e}")
 
-    # ── MESSAGING ──
-
     async def _speak(self, message: str, msg_type: str = "discovery"):
-        """Publish chat message to the frontend via server broadcast."""
+        """Publish chat message via publisher (DB+events) or legacy server broadcast."""
         try:
-            await self.server.broadcast("AGENT_MESSAGE", {
-                "agent": self.name,
-                "message": message,
-                "type": msg_type,
-                "channel": "main",
-                "timestamp": time.time()
-            })
+            if self.server and hasattr(self.server, 'agent_message'):
+                # Publisher mode: DB save + events + optional live broadcast
+                await self.server.agent_message(self.name, message, msg_type)
+            elif self.server:
+                # Legacy mode: broadcast only
+                await self.server.broadcast("AGENT_MESSAGE", {
+                    "agent": self.name,
+                    "message": message,
+                    "type": msg_type,
+                    "channel": "main",
+                    "timestamp": time.time()
+                })
         except Exception as e:
             print(f"⚠️ {self.name}: Broadcast failed: {e}")
+
 
     async def _generate_nova_message(self, event: TokenEvent) -> str:
         if not client:

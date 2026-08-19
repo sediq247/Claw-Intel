@@ -1,224 +1,391 @@
-/**
- * 📜 frontend/history.js
- * ClawIntel v4.0 — Investigation History Browser
- * Fetches from DB via REST API. No localStorage.
- */
-
-const CONFIG = {
-  API_BASE: '',
-  REFRESH_INTERVAL: 30000,
-};
+const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
 
 class HistoryApp {
   constructor() {
-    this.investigations = [];
-    this.chatHistory = [];
-    this.filtered = [];
-    this.stats = { total: 0, safe: 0, warning: 0, high_risk: 0 };
+    this.ws = null;
+    this.reconnectTimer = null;
+    this.reconnectDelay = 1000;
+    this.maxReconnectDelay = 30000;
 
-    this.listEl = document.getElementById('investigation-list');
-    this.chatSection = document.getElementById('chat-log-section');
-    this.chatListEl = document.getElementById('chat-history-list');
-    this.statsEls = {
-      total: document.getElementById('stat-total'),
-      safe: document.getElementById('stat-safe'),
-      warning: document.getElementById('stat-warning'),
-      risk: document.getElementById('stat-risk'),
-    };
-    this.filterVerdict = document.getElementById('filter-verdict');
-    this.filterChain = document.getElementById('filter-chain');
-    this.searchInput = document.getElementById('search-token');
+    this.allTokens = [];
+    this.allInvestigations = [];
+    this.combined = [];
+    this.searchQuery = '';
 
     this.init();
   }
 
   init() {
-    this.fetchData();
-    this.setupFilters();
-    setInterval(() => this.fetchData(), CONFIG.REFRESH_INTERVAL);
+    this.cacheElements();
+    this.bindEvents();
+    this.loadData();
+    this.connectWebSocket();
+
+    // Auto-refresh every 30s as fallback / sync
+    setInterval(() => this.loadData(), 30000);
   }
 
-  setupFilters() {
-    this.filterVerdict?.addEventListener('change', () => this.applyFilters());
-    this.filterChain?.addEventListener('change', () => this.applyFilters());
-    this.searchInput?.addEventListener('input', () => this.applyFilters());
+  cacheElements() {
+    this.els = {
+      grid: document.getElementById('history-grid'),
+      searchInput: document.getElementById('search-input'),
+      searchBtn: document.getElementById('search-btn'),
+      total: document.getElementById('stat-total'),
+      safe: document.getElementById('stat-safe'),
+      warning: document.getElementById('stat-warning'),
+      risk: document.getElementById('stat-risk'),
+      loading: document.getElementById('history-loading'),
+      empty: document.getElementById('history-empty'),
+    };
   }
 
-  async fetchData() {
-    try {
-      const [invRes, chatRes] = await Promise.all([
-        fetch('/api/investigations?limit=100'),
-        fetch('/api/chat/history?limit=50').catch(() => null)
-      ]);
-
-      if (!invRes.ok) throw new Error(`Investigations API error: ${invRes.status}`);
-      const invData = await invRes.json();
-      this.investigations = invData.investigations || [];
-
-      if (chatRes?.ok) {
-        const chatData = await chatRes.json();
-        this.chatHistory = chatData.messages || [];
-        this.renderChatHistory();
-      }
-
-      this.calculateStats();
-      this.applyFilters();
-    } catch (e) {
-      console.error('[History] Fetch failed:', e);
-      this.listEl.innerHTML = '<div class="empty-state">Failed to load history from server. Is the backend running?</div>';
+  bindEvents() {
+    if (this.els.searchBtn) {
+      this.els.searchBtn.addEventListener('click', () => this.handleSearch());
+    }
+    if (this.els.searchInput) {
+      this.els.searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') this.handleSearch();
+      });
+      // Live search as user types (debounced)
+      let timer;
+      this.els.searchInput.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => this.handleSearch(), 300);
+      });
     }
   }
 
-  calculateStats() {
-    this.stats = {
-      total: this.investigations.length,
-      safe: this.investigations.filter(i => i.verdict === 'SAFE').length,
-      warning: this.investigations.filter(i => i.verdict === 'WARNING').length,
-      high_risk: this.investigations.filter(i => i.verdict === 'HIGH_RISK').length,
-    };
-    this.updateStatsUI();
-  }
+  // ─────────────────────────────────────────────────────────────
+  // WebSocket — Live Streaming
+  // ─────────────────────────────────────────────────────────────
 
-  updateStatsUI() {
-    if (this.statsEls.total) this.statsEls.total.textContent = this.stats.total;
-    if (this.statsEls.safe) this.statsEls.safe.textContent = this.stats.safe;
-    if (this.statsEls.warning) this.statsEls.warning.textContent = this.stats.warning;
-    if (this.statsEls.risk) this.statsEls.risk.textContent = this.stats.high_risk;
-  }
-
-  applyFilters() {
-    const verdict = this.filterVerdict?.value || 'all';
-    const chain = this.filterChain?.value || 'all';
-    const query = (this.searchInput?.value || '').toLowerCase().trim();
-
-    this.filtered = this.investigations.filter(inv => {
-      if (verdict !== 'all' && inv.verdict !== verdict) return false;
-      if (chain !== 'all' && inv.chain !== chain) return false;
-      if (query) {
-        const symbol = (inv.symbol || '').toLowerCase();
-        const address = (inv.token_address || '').toLowerCase();
-        const name = (inv.name || '').toLowerCase();
-        const creator = (inv.creator || '').toLowerCase();
-        if (!symbol.includes(query) && !address.includes(query) && !name.includes(query) && !creator.includes(query)) {
-          return false;
-        }
-      }
-      return true;
-    });
-
-    this.renderList();
-  }
-
-  renderList() {
-    if (!this.filtered.length) {
-      this.listEl.innerHTML = '<div class="empty-state">No investigations match your filters</div>';
+  connectWebSocket() {
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return;
     }
-    this.listEl.innerHTML = this.filtered.map(inv => this.renderInvestigationCard(inv)).join('');
+
+    try {
+      this.ws = new WebSocket(WS_URL);
+
+      this.ws.onopen = () => {
+        console.log('[History] WS connected');
+        this.reconnectDelay = 1000;
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
+      };
+
+      this.ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          this.handleLiveEvent(data);
+        } catch (e) {
+          console.error('[History] WS parse error:', e);
+        }
+      };
+
+      this.ws.onclose = (event) => {
+        console.log(`[History] WS disconnected (code: ${event.code}), reconnecting in ${this.reconnectDelay}ms...`);
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
+          this.connectWebSocket();
+        }, this.reconnectDelay);
+      };
+
+      this.ws.onerror = (err) => {
+        console.error('[History] WS error:', err);
+      };
+    } catch (e) {
+      console.error('[History] WS connection failed:', e);
+      this.reconnectTimer = setTimeout(() => this.connectWebSocket(), this.reconnectDelay);
+    }
   }
 
-  renderInvestigationCard(inv) {
-    const verdictColors = {
-      SAFE: 'var(--safe)',
-      WARNING: 'var(--warning)',
-      HIGH_RISK: 'var(--danger)',
-    };
-    const color = verdictColors[inv.verdict] || 'var(--text-secondary)';
-    const time = inv.timestamp ? new Date(inv.timestamp * 1000).toLocaleString() : 'Unknown';
-    const chain = (inv.chain || 'unknown').toUpperCase();
-    const symbol = inv.symbol || '???';
-    const address = inv.token_address || '';
-    const addressShort = address ? `${address.slice(0, 8)}...${address.slice(-4)}` : 'N/A';
-    const confidence = (inv.confidence !== undefined) ? `${(inv.confidence * 100).toFixed(0)}%` : 'N/A';
-    const attention = (inv.attention_score !== undefined) ? inv.attention_score.toFixed(1) : null;
+  /**
+   * Handle live WebSocket events.
+   * NEW_TOKEN: Nova discovered a token — prepend to tokens list.
+   * INVESTIGATION_COMPLETE: Orion finished — prepend to investigations list.
+   * SIGNAL: Verdict rendered — update stats, may trigger re-filter.
+   */
+  handleLiveEvent(data) {
+    const { type, payload } = data;
+
+    if (type === 'NEW_TOKEN') {
+      console.log('[History] Live NEW_TOKEN:', payload.symbol);
+      // Build a minimal token record from the lightweight NEW_TOKEN payload
+      const token = {
+        address: payload.token,
+        token_address: payload.token,
+        chain: payload.chain,
+        symbol: payload.symbol,
+        name: payload.symbol || 'Unknown',
+        status: 'pending',
+        origin_source: 'live_ws',
+        timestamp: payload.timestamp || Date.now() / 1000,
+        discovered_at: payload.timestamp || Date.now() / 1000,
+      };
+      this.allTokens.unshift(token);
+      this.updateStats();
+      this.applyFilter();
+    }
+    else if (type === 'INVESTIGATION_COMPLETE') {
+      console.log('[History] Live INVESTIGATION_COMPLETE:', payload.symbol);
+      this.allInvestigations.unshift(payload);
+      this.updateStats();
+      this.applyFilter();
+    }
+    else if (type === 'SIGNAL') {
+      console.log('[History] Live SIGNAL:', payload.verdict);
+      // A signal may correspond to a token that was just investigated.
+      // Full sync happens on next REST poll; for now just update stats.
+      this.updateStats();
+    }
+    else if (type === 'SYSTEM') {
+      console.log('[History] System:', payload?.message);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Data Loading (REST fallback)
+  // ─────────────────────────────────────────────────────────────
+
+  async loadData() {
+    this.showLoading(true);
+    try {
+      const [tokensRes, invRes] = await Promise.all([
+        fetch('/api/tokens?limit=200').catch(() => null),
+        fetch('/api/investigations?limit=100').catch(() => null),
+      ]);
+
+      let tokensChanged = false;
+      let invChanged = false;
+
+      if (tokensRes && tokensRes.ok) {
+        const tData = await tokensRes.json();
+        const newTokens = tData.tokens || [];
+        // Only replace if count changed (avoid flicker on live updates)
+        if (newTokens.length !== this.allTokens.length) {
+          this.allTokens = newTokens;
+          tokensChanged = true;
+        }
+      }
+
+      if (invRes && invRes.ok) {
+        const iData = await invRes.json();
+        const newInv = iData.investigations || [];
+        if (newInv.length !== this.allInvestigations.length) {
+          this.allInvestigations = newInv;
+          invChanged = true;
+        }
+      }
+
+      if (tokensChanged || invChanged) {
+        this.updateStats();
+        this.applyFilter();
+      }
+    } catch (e) {
+      console.error('[History] Load failed:', e);
+      if (this.els.grid) {
+        this.els.grid.innerHTML = `
+          <div class="error-state">
+            <p>Failed to load records.</p>
+            <p class="error-detail">${this.escapeHtml(String(e))}</p>
+          </div>`;
+      }
+    } finally {
+      this.showLoading(false);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Search / Filter
+  // ─────────────────────────────────────────────────────────────
+
+  handleSearch() {
+    this.searchQuery = (this.els.searchInput?.value || '').trim().toLowerCase();
+    this.applyFilter();
+  }
+
+  applyFilter() {
+    const q = this.searchQuery;
+
+    const filteredTokens = q
+      ? this.allTokens.filter(t =>
+          (t.symbol || '').toLowerCase().includes(q) ||
+          (t.name || '').toLowerCase().includes(q) ||
+          (t.address || '').toLowerCase().includes(q) ||
+          (t.token_address || '').toLowerCase().includes(q)
+        )
+      : [...this.allTokens];
+
+    const filteredInv = q
+      ? this.allInvestigations.filter(i =>
+          (i.token_symbol || '').toLowerCase().includes(q) ||
+          (i.token_address || '').toLowerCase().includes(q) ||
+          (i.name || '').toLowerCase().includes(q)
+        )
+      : [...this.allInvestigations];
+
+    // Combine and sort by timestamp (newest first)
+    this.combined = [
+      ...filteredTokens.map(t => ({ ...t, _type: 'token', _ts: t.timestamp || t.discovered_at || 0 })),
+      ...filteredInv.map(i => ({ ...i, _type: 'investigation', _ts: i.timestamp || 0 })),
+    ].sort((a, b) => b._ts - a._ts);
+
+    this.render();
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Stats
+  // ─────────────────────────────────────────────────────────────
+
+  updateStats() {
+    const safe = this.allInvestigations.filter(i => i.verdict === 'SAFE').length;
+    const warning = this.allInvestigations.filter(i => i.verdict === 'WARNING').length;
+    const risk = this.allInvestigations.filter(i => i.verdict === 'HIGH_RISK').length;
+    const total = this.allTokens.length;
+
+    if (this.els.total) this.els.total.textContent = total.toLocaleString();
+    if (this.els.safe) this.els.safe.textContent = safe.toLocaleString();
+    if (this.els.warning) this.els.warning.textContent = warning.toLocaleString();
+    if (this.els.risk) this.els.risk.textContent = risk.toLocaleString();
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Rendering
+  // ─────────────────────────────────────────────────────────────
+
+  render() {
+    if (!this.els.grid) return;
+
+    if (this.combined.length === 0) {
+      this.els.grid.innerHTML = '';
+      if (this.els.empty) this.els.empty.style.display = 'block';
+      return;
+    }
+
+    if (this.els.empty) this.els.empty.style.display = 'none';
+    this.els.grid.innerHTML = this.combined.map(item => {
+      if (item._type === 'token') return this.renderTokenCard(item);
+      return this.renderInvestigationCard(item);
+    }).join('');
+  }
+
+  renderTokenCard(token) {
+    const symbol = token.symbol || '???';
+    const name = token.name || 'Unknown';
+    const addr = token.address || token.token_address || 'unknown';
+    const shortAddr = addr.length > 12 ? `${addr.slice(0, 8)}...${addr.slice(-4)}` : addr;
+    const chain = (token.chain || '?').toUpperCase();
+    const status = token.status || 'pending';
+    const statusClass = status === 'completed' ? 'safe' : status === 'rejected' ? 'risk' : 'warning';
+    const time = this.timeAgo(token.timestamp || token.discovered_at);
+    const liq = this.formatCurrency(token.liquidity);
+    const vol = this.formatCurrency(token.volume_24h);
+    const price = this.formatPrice(token.price);
 
     return `
-      <div class="investigation-card" data-verdict="${inv.verdict}" data-chain="${inv.chain}">
-        <div class="card-header">
-          <div class="token-info">
-            <span class="token-symbol" style="color: ${color}">${this.escapeHtml(symbol)}</span>
-            <span class="token-chain">${chain}</span>
-          </div>
-          <div class="verdict-badge" style="background: ${color}20; color: ${color}; border: 1px solid ${color}40;">
-            ${inv.verdict || 'UNKNOWN'}
-          </div>
+      <div class="record-card ${statusClass}">
+        <div class="record-header">
+          <span class="record-symbol">${this.escapeHtml(symbol)}</span>
+          <span class="record-chain">${this.escapeHtml(chain)}</span>
+          <span class="record-status ${statusClass}">${status.toUpperCase()}</span>
         </div>
-        <div class="card-body">
-          <div class="detail-row">
-            <span class="detail-label">Contract</span>
-            <span class="detail-value mono">${addressShort}</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Confidence</span>
-            <span class="detail-value">${confidence}</span>
-          </div>
-          ${attention !== null ? `
-          <div class="detail-row">
-            <span class="detail-label">Attention</span>
-            <span class="detail-value">${attention}/100</span>
-          </div>
-          ` : ''}
-          <div class="detail-row">
-            <span class="detail-label">Time</span>
-            <span class="detail-value">${time}</span>
-          </div>
-          ${inv.action ? `
-          <div class="detail-row">
-            <span class="detail-label">Action</span>
-            <span class="detail-value" style="text-transform: uppercase; font-weight: 600; color: ${color};">${inv.action}</span>
-          </div>
-          ` : ''}
-          ${inv.creator && inv.creator !== 'unknown' ? `
-          <div class="detail-row">
-            <span class="detail-label">Creator</span>
-            <span class="detail-value mono">${inv.creator.slice(0, 10)}...${inv.creator.slice(-4)}</span>
-          </div>
-          ` : ''}
+        <div class="record-name">${this.escapeHtml(name)}</div>
+        <div class="record-address" title="${this.escapeHtml(addr)}">Contract: ${this.escapeHtml(shortAddr)}</div>
+        <div class="record-meta">
+          <span>💧 Liq: ${liq}</span>
+          <span>📊 Vol: ${vol}</span>
+          <span>💰 Price: ${price}</span>
         </div>
-        ${inv.reasoning ? `
-        <div class="card-reasoning">
-          <p>${this.escapeHtml(inv.reasoning)}</p>
-        </div>
-        ` : ''}
-        ${inv.nova_message ? `
-        <div class="card-reasoning">
-          <p style="color: var(--nova);"><strong>Nova:</strong> ${this.escapeHtml(inv.nova_message)}</p>
-        </div>
-        ` : ''}
+        <div class="record-time">${time}</div>
+        ${token.origin_source ? `<div class="record-source">Source: ${this.escapeHtml(token.origin_source)}</div>` : ''}
       </div>
     `;
   }
 
-  renderChatHistory() {
-    if (!this.chatHistory.length) {
-      if (this.chatSection) this.chatSection.style.display = 'none';
-      return;
-    }
-    if (this.chatSection) this.chatSection.style.display = 'block';
-    if (!this.chatListEl) return;
+  renderInvestigationCard(inv) {
+    const symbol = inv.token_symbol || '???';
+    const name = inv.name || symbol;
+    const addr = inv.token_address || 'unknown';
+    const shortAddr = addr.length > 12 ? `${addr.slice(0, 8)}...${addr.slice(-4)}` : addr;
+    const chain = (inv.chain || '?').toUpperCase();
+    const verdict = inv.verdict || 'UNKNOWN';
+    const vClass = verdict === 'SAFE' ? 'safe' : verdict === 'HIGH_RISK' ? 'risk' : 'warning';
+    const confidence = inv.confidence !== undefined ? `${(inv.confidence * 100).toFixed(0)}%` : 'N/A';
+    const score = inv.risk_score !== undefined ? `${inv.risk_score}/100` : 'N/A';
+    const time = this.timeAgo(inv.timestamp);
+    const action = inv.action || '';
 
-    this.chatListEl.innerHTML = this.chatHistory.map(msg => {
-      const agent = msg.agent || 'system';
-      const time = msg.timestamp ? new Date(msg.timestamp * 1000).toLocaleTimeString() : '';
-      const text = msg.message || '';
-      return `
-        <div class="chat-message agent-${agent}">
-          <span class="chat-agent" style="color: var(--${agent.toLowerCase()}, var(--text-secondary));">${agent}</span>
-          <span class="chat-text">${this.escapeHtml(text)}</span>
-          <span class="chat-time">${time}</span>
+    return `
+      <div class="record-card ${vClass}">
+        <div class="record-header">
+          <span class="record-symbol">${this.escapeHtml(symbol)}</span>
+          <span class="record-chain">${this.escapeHtml(chain)}</span>
+          <span class="record-status ${vClass}">${verdict}</span>
         </div>
-      `;
-    }).join('');
+        <div class="record-name">${this.escapeHtml(name)}</div>
+        <div class="record-address" title="${this.escapeHtml(addr)}">Contract: ${this.escapeHtml(shortAddr)}</div>
+        <div class="record-meta">
+          <span>🎯 Score: ${score}</span>
+          <span>🎲 Conf: ${confidence}</span>
+          ${action ? `<span>⚡ Action: ${this.escapeHtml(action)}</span>` : ''}
+        </div>
+        ${inv.reasoning ? `<div class="record-reasoning">${this.escapeHtml(inv.reasoning)}</div>` : ''}
+        ${inv.nova_message ? `<div class="record-nova">🤖 <strong>Nova:</strong> ${this.escapeHtml(inv.nova_message)}</div>` : ''}
+        <div class="record-time">${time}</div>
+      </div>
+    `;
   }
+
+  // ─────────────────────────────────────────────────────────────
+  // Helpers
+  // ─────────────────────────────────────────────────────────────
 
   escapeHtml(str) {
     if (!str) return '';
-    return str
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  timeAgo(ts) {
+    if (!ts) return 'Unknown';
+    const diff = (Date.now() / 1000) - ts;
+    if (diff < 60) return 'Just now';
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return `${Math.floor(diff / 86400)}d ago`;
+  }
+
+  formatCurrency(val) {
+    if (val === undefined || val === null) return '$0';
+    const n = Number(val);
+    if (isNaN(n)) return '$0';
+    if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
+    if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
+    if (n >= 1_000) return `$${(n / 1_000).toFixed(2)}K`;
+    return `$${n.toLocaleString(undefined, {maximumFractionDigits: 2})}`;
+  }
+
+  formatPrice(val) {
+    if (val === undefined || val === null) return '$0';
+    const n = Number(val);
+    if (isNaN(n)) return '$0';
+    if (n >= 1) return `$${n.toLocaleString(undefined, {maximumFractionDigits: 4})}`;
+    return `$${n.toFixed(8)}`;
+  }
+
+  showLoading(show) {
+    if (this.els.loading) this.els.loading.style.display = show ? 'block' : 'none';
   }
 }
 
-const app = new HistoryApp();
+// Start when DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => new HistoryApp());
+} else {
+  new HistoryApp();
+}

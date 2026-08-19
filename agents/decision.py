@@ -31,10 +31,6 @@ except ImportError:
 
 load_dotenv()
 
-# ─────────────────────────────────────────────────────────────
-# Gemini Configuration
-# ─────────────────────────────────────────────────────────────
-
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
@@ -86,7 +82,6 @@ class DecisionAgent:
     v4.0: Orchestrator-driven. Receives data directly, returns structured verdict + message.
     """
 
-    # TAG CONSTANTS — must match MemoryAgent tags
     RUGGER_TAG = "repeat_rugger"
     HONEYPOT_TAG = "honeypot_dev"
     SCAMMER_TAG = "known_scammer"
@@ -94,7 +89,6 @@ class DecisionAgent:
     RAPID_TAG = "rapid_launcher"
     NEWBIE_TAG = "new_wallet"
 
-    # v4.0: 180s timeout (reduced from old 300s)
     PENDING_DECISION_TIMEOUT = 180
 
     def __init__(self, server: Optional[Any] = None):
@@ -105,7 +99,6 @@ class DecisionAgent:
         self.SAFE_THRESHOLD = 30
         self.WARNING_THRESHOLD = 60
 
-        # v4.0: Removed unused "market" weight (0.10) to avoid confusion
         self.weights = {
             "simulation": 0.30,
             "analysis": 0.35,
@@ -394,8 +387,6 @@ Requirements:
             if is_scammer:
                 memory_score += 30
 
-            # ── Weighted final score ──
-            # v4.0: market weight removed (was 0.10, unused)
             final_score = (
                 sim_score * self.weights["simulation"] +
                 analysis_risk * self.weights["analysis"] +
@@ -478,21 +469,29 @@ Requirements:
             # v4.0: Return structured result + message for Orchestrator
             result_dict = {**result.__dict__, "message": report}
 
-            # v4.0: Backward-compat broadcast (not used by Orchestrator)
-            if self.server:
-                await self.server.broadcast("DECISION_COMPLETE", result_dict)
-                await self.server.broadcast("SIGNAL", {
+            if self.server and not hasattr(self.server, 'agent_message'):
+            # Legacy: real ClawIntelServer is attached
+             await self.server.broadcast("DECISION_COMPLETE", result_dict)
+             await self.server.broadcast("SIGNAL", {
+                "token": token, "chain": chain, "symbol": symbol,
+                "signal": action, "verdict": verdict.value,
+                "score": final_score, "confidence": confidence,
+                "timestamp": time.time()
+            })
+            if verdict == Verdict.SAFE:
+                await self.server.broadcast("AI_VERDICT", {
                     "token": token, "chain": chain, "symbol": symbol,
-                    "signal": action, "verdict": verdict.value,
-                    "score": final_score, "confidence": confidence,
+                    "verdict": verdict.value, "confidence": confidence,
                     "timestamp": time.time()
                 })
-                if verdict == Verdict.SAFE:
-                    await self.server.broadcast("AI_VERDICT", {
-                        "token": token, "chain": chain, "symbol": symbol,
-                        "verdict": verdict.value, "confidence": confidence,
-                        "timestamp": time.time()
-                    })
+            elif self.server and hasattr(self.server, 'agent_message'):
+            # Decoupled: only AI_VERDICT is not handled by Orchestrator
+             if verdict == Verdict.SAFE:
+                await self.server.broadcast("AI_VERDICT", {
+                    "token": token, "chain": chain, "symbol": symbol,
+                    "verdict": verdict.value, "confidence": confidence,
+                    "timestamp": time.time()
+                })
 
             # Clean up pending decision (backward-compat)
             self.pending_decisions.pop(token, None)
