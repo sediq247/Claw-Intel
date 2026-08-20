@@ -6,13 +6,17 @@ class EventPublisher:
     """
     Centralized publisher that writes every event to MongoDB
     before (or instead of) pushing it over WebSocket.
+
+    In split-deployment mode (web server vs agents as separate services),
+    the web server polls the MongoDB `events` collection and broadcasts
+    to WebSocket clients. The agents service writes here; the web service
+    reads here. No direct coupling between the two.
     """
 
     def __init__(self, db: Any, server: Optional[Any] = None):
         self.db = db
         self.server = server
 
-   
     async def broadcast(self, event_type: str, payload: dict) -> None:
         """
         Generic broadcast entry-point. Routes to the correct persist
@@ -29,7 +33,6 @@ class EventPublisher:
             return
 
         if et == "NEW_TOKEN":
-           
             token_data = {
                 "address": payload.get("token"),
                 "chain": payload.get("chain"),
@@ -67,7 +70,7 @@ class EventPublisher:
             )
             return
 
-        
+        # Fallback for any unhandled event types
         if self.db is not None and hasattr(self.db, "save_event"):
             try:
                 await self.db.save_event(event_type, payload)
@@ -80,7 +83,8 @@ class EventPublisher:
             except Exception as e:
                 print(f"[publisher] Live broadcast failed: {e}")
 
-    
+    # ── AGENT MESSAGE ──
+
     async def agent_message(
         self,
         agent: str,
@@ -122,6 +126,7 @@ class EventPublisher:
         """Persist a system-level message as the 'system' agent."""
         await self.agent_message("system", message, "system")
 
+    # ── NEW TOKEN ──
 
     async def new_token(self, token_data: dict) -> None:
         """
@@ -139,9 +144,9 @@ class EventPublisher:
             try:
                 discovered_doc = {
                     "token_address": token_data.get("address")
-                        or token_data.get("token_address"),
+                    or token_data.get("token_address"),
                     "address": token_data.get("address")
-                        or token_data.get("token_address"),
+                    or token_data.get("token_address"),
                     "chain": token_data.get("chain", "unknown"),
                     "symbol": token_data.get("symbol", "???"),
                     "name": token_data.get("name", "Unknown"),
@@ -153,11 +158,11 @@ class EventPublisher:
                     "status": token_data.get("status", "pending"),
                     "origin_source": token_data.get("source", "auto"),
                     "discovered_at": token_data.get("timestamp")
-                        or token_data.get("discovered_at")
-                        or time.time(),
+                    or token_data.get("discovered_at")
+                    or time.time(),
                     "timestamp": token_data.get("timestamp")
-                        or token_data.get("discovered_at")
-                        or time.time(),
+                    or token_data.get("discovered_at")
+                    or time.time(),
                 }
                 await self.db.save_discovered_token(discovered_doc)
             except Exception as e:
@@ -167,7 +172,7 @@ class EventPublisher:
             try:
                 await self.server.broadcast("NEW_TOKEN", {
                     "token": token_data.get("address")
-                        or token_data.get("token_address"),
+                    or token_data.get("token_address"),
                     "chain": token_data.get("chain"),
                     "symbol": token_data.get("symbol"),
                     "timestamp": time.time(),
@@ -175,6 +180,7 @@ class EventPublisher:
             except Exception as e:
                 print(f"[publisher] NEW_TOKEN broadcast failed: {e}")
 
+    # ── MARKET UPDATE ──
 
     async def market_update(self, data: dict) -> None:
         """
@@ -192,6 +198,7 @@ class EventPublisher:
             except Exception as e:
                 print(f"[publisher] MARKET_UPDATE broadcast failed: {e}")
 
+    # ── INVESTIGATION COMPLETE ──
 
     async def investigation_complete(self, investigation: dict) -> None:
         """
@@ -209,7 +216,8 @@ class EventPublisher:
             except Exception as e:
                 print(f"[publisher] INVESTIGATION_COMPLETE broadcast failed: {e}")
 
-   
+    # ── SIGNAL ──
+
     async def signal(
         self,
         token: str,
@@ -244,6 +252,8 @@ class EventPublisher:
             except Exception as e:
                 print(f"[publisher] SIGNAL broadcast failed: {e}")
 
+    # ── AGENT WORKING (SPINNER) ──
+
     async def agent_working(
         self,
         agent: str,
@@ -251,14 +261,28 @@ class EventPublisher:
         action: str = "working...",
         chain: str = "",
     ) -> None:
+        """
+        Persist an AGENT_WORKING spinner event to MongoDB so the web-server
+        service can poll it, then optionally live-broadcast if co-located.
+        """
+        payload = {
+            "agent": agent,
+            "token": token,
+            "action": action,
+            "chain": chain,
+            "timestamp": time.time(),
+        }
+
+        # CRITICAL FIX: Persist to DB so split web-server can poll it
+        if self.db is not None and hasattr(self.db, "save_event"):
+            try:
+                await self.db.save_event("AGENT_WORKING", payload)
+            except Exception as e:
+                print(f"[publisher] DB save_event failed for AGENT_WORKING: {e}")
+
+        # Live broadcast only if server is co-located (monolith mode)
         if self.server is not None and hasattr(self.server, "broadcast"):
             try:
-                await self.server.broadcast("AGENT_WORKING", {
-                    "agent": agent,
-                    "token": token,
-                    "action": action,
-                    "chain": chain,
-                    "timestamp": time.time(),
-                })
+                await self.server.broadcast("AGENT_WORKING", payload)
             except Exception as e:
                 print(f"[publisher] AGENT_WORKING broadcast failed: {e}")

@@ -41,8 +41,12 @@ class Database:
         await self.db.discovered_tokens.create_index([("symbol", ASCENDING)])
         await self.db.discovered_tokens.create_index([("name", ASCENDING)])
         await self.db.discovered_tokens.create_index([("address", ASCENDING)])
+        # NEW: cursor persistence index for Nova watcher
+        await self.db.cursors.create_index([("chain", ASCENDING)], unique=True)
 
         print("[db] ✅ Indexes created")
+
+    # ── CHAT ──
 
     async def save_chat_message(
         self,
@@ -73,6 +77,8 @@ class Database:
             m["_id"] = str(m["_id"])
         return msgs
 
+    # ── DISCOVERED TOKENS ──
+
     async def save_discovered_token(self, token: dict) -> str:
         doc = {
             **token,
@@ -91,6 +97,8 @@ class Database:
         for t in tokens:
             t["_id"] = str(t["_id"])
         return tokens
+
+    # ── TOKEN QUEUE ──
 
     async def add_token_to_queue(self, token: dict) -> str:
         doc = {
@@ -121,6 +129,59 @@ class Database:
             {"address": token_address},
             {"$set": {"status": status, "updated_at": time.time()}},
         )
+
+    # NEW: get highest-attention pending token for the orchestrator
+    async def get_next_pending_token(self) -> Optional[dict]:
+        """Fetch the highest-attention pending token from the queue."""
+        cursor = (
+            self.db.tokens_queue.find({"status": "pending"})
+            .sort("attention_score", DESCENDING)
+            .limit(1)
+        )
+        docs = await cursor.to_list(length=1)
+        if docs:
+            docs[0]["_id"] = str(docs[0]["_id"])
+            return docs[0]
+        return None
+
+    # NEW: mark a token as completed with its verdict
+    async def mark_token_completed(self, token_address: str, chain: str, verdict: str):
+        """Mark a queued token as completed and record the verdict."""
+        await self.db.tokens_queue.update_one(
+            {"token_address": token_address, "chain": chain},
+            {"$set": {"status": "completed", "verdict": verdict, "updated_at": time.time()}},
+        )
+        # Also update discovered_tokens so it shows as investigated
+        await self.db.discovered_tokens.update_one(
+            {"token_address": token_address, "chain": chain},
+            {"$set": {"status": "completed", "verdict": verdict, "updated_at": time.time()}},
+        )
+
+    # NEW: get lowest attention score in queue for eviction logic
+    async def get_lowest_attention_in_queue(self) -> Optional[float]:
+        """Return the lowest attention_score among pending tokens."""
+        cursor = (
+            self.db.tokens_queue.find({"status": "pending"})
+            .sort("attention_score", ASCENDING)
+            .limit(1)
+        )
+        docs = await cursor.to_list(length=1)
+        if docs:
+            return docs[0].get("attention_score", 0.0)
+        return None
+
+    # NEW: fetch a specific token by address + chain
+    async def get_token(self, address: str, chain: str) -> Optional[dict]:
+        """Fetch a token by address + chain from the discovered_tokens collection."""
+        doc = await self.db.discovered_tokens.find_one(
+            {"token_address": address, "chain": chain}
+        )
+        if doc:
+            doc["_id"] = str(doc["_id"])
+        return doc
+
+    # ── INVESTIGATIONS ──
+
     async def save_investigation(self, investigation: dict) -> str:
         doc = {
             **investigation,
@@ -140,6 +201,8 @@ class Database:
             i["_id"] = str(i["_id"])
         return invs
 
+    # ── CREATOR PROFILES ──
+
     async def save_creator_profile(self, profile: dict):
         address = profile.get("address")
         if not address:
@@ -152,6 +215,9 @@ class Database:
 
     async def get_creator_profile(self, address: str) -> Optional[dict]:
         return await self.db.creator_profiles.find_one({"address": address})
+
+    # ── EVENTS ──
+
     async def save_event(self, event_type: str, payload: dict) -> str:
         """Write an event to the events stream for the server to poll."""
         doc = {
@@ -174,6 +240,8 @@ class Database:
         for e in events:
             e["_id"] = str(e["_id"])
         return events
+
+    # ── MARKET DATA ──
 
     async def save_market_data(self, data: dict):
         """Upsert the latest market snapshot (single doc, always overwritten)."""
@@ -200,6 +268,9 @@ class Database:
             "ai_verified": [],
             "timestamp": 0,
         }
+
+    # ── SIGNALS ──
+
     async def save_signal(self, signal: dict):
         await self.db.signals.insert_one({
             **signal,
@@ -216,6 +287,9 @@ class Database:
         for s in sigs:
             s["_id"] = str(s["_id"])
         return sigs
+
+    # ── SEARCH & STATS ──
+
     async def search_tokens(self, query: str, limit: int = 50) -> List[dict]:
         """Search discovered_tokens by symbol, name, or address (case-insensitive)."""
         regex = {"$regex": query, "$options": "i"}
@@ -257,10 +331,31 @@ class Database:
             "high_risk_count": high_risk_count,
         }
 
+    # ── CURSOR PERSISTENCE (for Nova watcher resume) ──
+
+    async def save_cursor(self, chain: str, block_number: int):
+        """Save the last scanned block for a chain."""
+        await self.db.cursors.update_one(
+            {"chain": chain},
+            {"$set": {"block_number": block_number, "updated_at": time.time()}},
+            upsert=True,
+        )
+
+    async def get_cursor(self, chain: str) -> Optional[int]:
+        """Load the last scanned block for a chain."""
+        doc = await self.db.cursors.find_one({"chain": chain})
+        if doc:
+            return doc.get("block_number")
+        return None
+
+    # ── LIFECYCLE ──
+
     async def close(self):
         if self.client:
             self.client.close()
             print("[db] ✅ Connection closed")
+
+
 db = Database()
 
 

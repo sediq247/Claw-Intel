@@ -11,8 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libffi-dev 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py .
-COPY engine_main.py .
+COPY server_main.py .
+COPY agents_main.py .
 COPY index.html .
 COPY runtime/ ./runtime/
 COPY agents/ ./agents/
