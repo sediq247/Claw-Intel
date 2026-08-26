@@ -230,9 +230,6 @@ class ToastSystem {
   }
 }
 
-// ═══════════════════════════════════════════════════
-// COMMAND PALETTE
-// ═══════════════════════════════════════════════════
 
 class CommandPalette {
   constructor() {
@@ -317,9 +314,7 @@ class CommandPalette {
   }
 }
 
-// ═══════════════════════════════════════════════════
-// MAIN APP
-// ═══════════════════════════════════════════════════
+
 
 class ClawIntelApp {
   constructor() {
@@ -366,29 +361,14 @@ class ClawIntelApp {
   }
 
   init() {
-    // Boot sequence
     this.runBootSequence();
-
-    // Start particle background
-    this.particles.start();
-
-    // Setup WebSocket
+    this.particles.start();   
     this.connectWebSocket();
-
-    // Setup event listeners
     this.setupEventListeners();
-
-    // Setup scroll tracking
     this.chatContainer.addEventListener('scroll', () => this.onScroll());
-
-    // Update sound UI
     this.updateSoundUI();
-
-    // Fetch chat history
     this.fetchHistory();
   }
-
-  // ── Boot Sequence ──
   runBootSequence() {
     const bootScreen = document.getElementById('boot-screen');
     const app = document.getElementById('app');
@@ -401,7 +381,6 @@ class ClawIntelApp {
     }, 2500);
   }
 
-  // ── WebSocket ──
   connectWebSocket() {
     this.setConnectionStatus('connecting');
 
@@ -477,11 +456,6 @@ class ClawIntelApp {
         break;
       case 'SYSTEM':
         this.renderSystemMessage(payload.message);
-        break;
-      case 'NEW_TOKEN':
-        this.stats.tokens++;
-        this.stats.scanned++;
-        this.updateStats();
         break;
       case 'SIGNAL':
         this.handleSignal(payload);

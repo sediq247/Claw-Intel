@@ -204,8 +204,6 @@ class WatcherAgent:
                 print(f"⚠️ {self.name}: Solana endpoint {host} failed: {e}")
         print(f"❌ {self.name}: All Solana RPC endpoints failed")
 
-    # ── RPC HEALTH & ROTATION ──
-
     async def _rpc_health_check(self):
         """Every 60s, ping each active RPC. Rotate on stale (>30s) or error."""
         while self.running:
@@ -250,8 +248,6 @@ class WatcherAgent:
                 continue
         print(f"❌ {self.name}: All RPC endpoints failed for {chain}")
 
-    # ── ATTENTION SCORING ──
-
     def _calculate_attention(self, event: TokenEvent) -> float:
         """Deterministic attention score based on market metrics and age."""
         liq = event.liquidity_usd or 0
@@ -268,8 +264,6 @@ class WatcherAgent:
         if age_hours < 2:
             score += 5
         return min(score, 100)
-
-    # ── QUALITY GATES ──
 
     def _check_rate_limit(self, chain: str) -> bool:
         now = time.time()
@@ -400,6 +394,22 @@ class WatcherAgent:
 
             try:
                 await self.db.save_discovered_token(doc)
+                queue_doc = {
+                  "token_address": token_event.token_address,
+                  "chain": token_event.chain,
+                  "symbol": token_event.token_symbol,
+                  "name": token_event.token_name,
+                  "creator": token_event.creator,
+                  "liquidity_usd": token_event.liquidity_usd,
+                  "market_cap": token_event.market_cap,
+                  "volume_24h": token_event.volume_24h,
+                  "attention_score": token_event.attention_score,
+                  "status": "pending",
+                  "nova_message": nova_msg,
+                  "origin_source": token_event.origin_source,
+                  "timestamp": time.time(),
+               }
+
             except Exception as e:
                 print(f"⚠️ {self.name}: Failed to save discovered token: {e}")
                 return
@@ -506,8 +516,6 @@ Requirements:
         ]
         import random
         return random.choice(fallbacks)
-
-    # ── SUPERVISION & LIFECYCLE ──
 
     async def _supervise(self, coro_fn, name: str):
         """Restart-loop wrapper. coro_fn is a functools.partial() with all args bound."""

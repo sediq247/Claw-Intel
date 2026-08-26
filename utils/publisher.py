@@ -3,16 +3,6 @@ from typing import Optional, Any
 
 
 class EventPublisher:
-    """
-    Centralized publisher that writes every event to MongoDB
-    before (or instead of) pushing it over WebSocket.
-
-    In split-deployment mode (web server vs agents as separate services),
-    the web server polls the MongoDB `events` collection and broadcasts
-    to WebSocket clients. The agents service writes here; the web service
-    reads here. No direct coupling between the two.
-    """
-
     def __init__(self, db: Any, server: Optional[Any] = None):
         self.db = db
         self.server = server
@@ -70,7 +60,6 @@ class EventPublisher:
             )
             return
 
-        # Fallback for any unhandled event types
         if self.db is not None and hasattr(self.db, "save_event"):
             try:
                 await self.db.save_event(event_type, payload)
@@ -82,8 +71,6 @@ class EventPublisher:
                 await self.server.broadcast(event_type, payload)
             except Exception as e:
                 print(f"[publisher] Live broadcast failed: {e}")
-
-    # ── AGENT MESSAGE ──
 
     async def agent_message(
         self,
@@ -180,7 +167,7 @@ class EventPublisher:
             except Exception as e:
                 print(f"[publisher] NEW_TOKEN broadcast failed: {e}")
 
-    # ── MARKET UPDATE ──
+    
 
     async def market_update(self, data: dict) -> None:
         """
@@ -198,8 +185,6 @@ class EventPublisher:
             except Exception as e:
                 print(f"[publisher] MARKET_UPDATE broadcast failed: {e}")
 
-    # ── INVESTIGATION COMPLETE ──
-
     async def investigation_complete(self, investigation: dict) -> None:
         """
         Persist a completed investigation and broadcast it.
@@ -216,7 +201,6 @@ class EventPublisher:
             except Exception as e:
                 print(f"[publisher] INVESTIGATION_COMPLETE broadcast failed: {e}")
 
-    # ── SIGNAL ──
 
     async def signal(
         self,
@@ -273,14 +257,12 @@ class EventPublisher:
             "timestamp": time.time(),
         }
 
-        # CRITICAL FIX: Persist to DB so split web-server can poll it
         if self.db is not None and hasattr(self.db, "save_event"):
             try:
                 await self.db.save_event("AGENT_WORKING", payload)
             except Exception as e:
                 print(f"[publisher] DB save_event failed for AGENT_WORKING: {e}")
 
-        # Live broadcast only if server is co-located (monolith mode)
         if self.server is not None and hasattr(self.server, "broadcast"):
             try:
                 await self.server.broadcast("AGENT_WORKING", payload)

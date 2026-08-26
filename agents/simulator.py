@@ -1,16 +1,7 @@
-#!/usr/bin/env python3
+
 """
-🧪 SIMULATOR AGENT — Atlas v4.0
 "The Tester" — Runs fake trades, checks if you can actually buy and sell.
 Called directly by the Orchestrator. Returns structured results + spoken message.
-
-v4.0 CHANGES:
-- Single shared aiohttp.ClientSession (created in __init__, closed in stop)
-- FUNDED_WALLETS uses zero address (eth_call needs any valid from address)
-- Solana: respects jupiter_failed flag, skips Jupiter sim if set
-- Returns dict with all simulation fields + 'message'
-- Supports 4 chains only: ethereum, bsc, base, solana
-- Gemini model defaults to gemini-1.5-flash
 """
 
 import asyncio
@@ -175,18 +166,24 @@ ROUTER_ADDRESSES = {
     "ethereum": {
         "uniswap_v2": "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",
         "uniswap_v3": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+    },
+    "base": {
+        "uniswap_v2": "0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24",  # BaseSwap / Uniswap V2 on Base
+        "uniswap_v3": "0x2626664c2603336E57B271c5C0b26F421741e481",
     }
 }
 
 WETH_ADDRESSES = {
     "bsc": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
     "ethereum": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+    "base": "0x4200000000000000000000000000000000000006",
 }
 
-# v4.0: Zero address is valid for eth_call (no gas spent, any from address works)
+# v4.1: Use addresses with known balance history to avoid anti-bot zero-addr checks
 FUNDED_WALLETS = {
-    "bsc": "0x0000000000000000000000000000000000000000",
-    "ethereum": "0x0000000000000000000000000000000000000000",
+    "bsc": "0x8894E0a0c962CB723c1976a4421c95949bE2D4E3",
+    "ethereum": "0x0716a17FBAeE714f1E6aB0f9d59edbC5f09815C0",
+    "base": "0x0B0A588666437549CeC3519249DD7D8663dC12B4",
 }
 
 ERC20_ABI = [
@@ -282,7 +279,6 @@ def validate_token_address(address: str, chain: Optional[str] = None) -> str:
 def validate_chain(chain: str) -> str:
     """Validate chain identifier."""
     chain = chain.lower().strip()
-    # v4.0: 4 chains only
     supported = {"bsc", "ethereum", "base", "solana"}
     if chain not in supported:
         raise ValueError(f"Unsupported chain: {chain}. Supported: {supported}")
@@ -296,7 +292,6 @@ class SolanaSimulator:
     """
     Solana swap simulation using Jupiter Quote API + RPC simulateTransaction.
     No capital required. No gas spent. No on-chain execution.
-    v4.0: Can reuse an external aiohttp.ClientSession.
     """
 
     JUPITER_QUOTE = "https://quote-api.jup.ag/v6"
@@ -528,7 +523,7 @@ class SimulatorAgent:
     """
     Atlas — The Tester
     Runs fake trades, checks if you can actually buy and sell.
-    v4.0: Orchestrator-driven, returns structured results + spoken message.
+    v4.1: Orchestrator-driven, returns structured results + spoken message.
     """
 
     def __init__(self, server: Optional[Any] = None):
@@ -539,8 +534,8 @@ class SimulatorAgent:
         self.honeypot_apis = {
             "bsc": "https://api.honeypot.is/v2/IsHoneypot",
             "ethereum": "https://api.honeypot.is/v2/IsHoneypot",
+            "base": "https://api.honeypot.is/v2/IsHoneypot",
         }
-        # v4.0: Single shared session
         self._session = aiohttp.ClientSession(
             connector=aiohttp.TCPConnector(limit=10, limit_per_host=5, ttl_dns_cache=300, use_dns_cache=True),
             timeout=aiohttp.ClientTimeout(total=30)
@@ -548,7 +543,11 @@ class SimulatorAgent:
         self._init_web3()
 
     def _init_web3(self):
-        chains = {"bsc": os.getenv("BSC_RPC_URL"), "ethereum": os.getenv("ETH_RPC_URL")}
+        chains = {
+            "bsc": os.getenv("BSC_RPC_URL"),
+            "ethereum": os.getenv("ETH_RPC_URL"),
+            "base": os.getenv("BASE_RPC_URL"),
+        }
         for chain, rpc in chains.items():
             if not rpc:
                 print(f"⚠️ {self.name}: No RPC for {chain} -- eth_call disabled")
@@ -563,12 +562,12 @@ class SimulatorAgent:
             except Exception as e:
                 print(f"❌ {self.name}: Web3 error for {chain}: {e}")
 
-    # v4.0: Public entry point for the Orchestrator
+    # v4.1: Public entry point for the Orchestrator
     async def simulate(self, event_data: dict) -> dict:
         """Run full simulation and return structured result + spoken message."""
         return await self._simulate_token(event_data)
 
-    # v4.0: Backward-compatible fire-and-forget wrapper (not used by Orchestrator)
+    # v4.1: Backward-compatible fire-and-forget wrapper (not used by Orchestrator)
     def on_new_token(self, event_data: dict):
         """Schedule a simulation. Catches crashes so they never kill the event loop."""
         try:
@@ -755,9 +754,11 @@ Requirements:
     # ═══════════════════════════════════════════════════════════
 
     async def _simulate_token(self, event_data: dict) -> dict:
+        # v4.1 FIX: support both "symbol" (from queue) and "token_symbol" (legacy)
         token_address = event_data.get("token_address")
         chain = event_data.get("chain", "unknown")
-        symbol = event_data.get("token_symbol", "???")
+        symbol = event_data.get("token_symbol", event_data.get("symbol", "???"))
+        name = event_data.get("token_name", event_data.get("name", "Unknown"))
 
         try:
             cached = await self.results_cache.get(token_address)
@@ -765,7 +766,7 @@ Requirements:
                 print(f"📦 {self.name}: Cache hit for {symbol}")
                 await self._speak(f"Already simulated {symbol} -- pulling from cache.", "cache_hit")
                 report = await self._generate_atlas_message(cached, symbol, "Cache hit — returning previous simulation.")
-                return {**cached.__dict__, "message": report, "token_symbol": symbol, "token_address": token_address, "chain": chain}
+                return {**cached.__dict__, "message": report, "token_symbol": symbol, "token_name": name, "token_address": token_address, "chain": chain}
 
             ack = f"Copy that, Nova. Running simulation on {symbol} now..."
             await self._speak(ack, "response")
@@ -795,7 +796,6 @@ Requirements:
                 if sol_rpc:
                     sol_sim = SolanaSimulator(sol_rpc, session=self._session)
                     try:
-                        # v4.0: Skip Jupiter if jupiter_failed flag is set
                         if not event_data.get("jupiter_failed"):
                             solana_result = await asyncio.wait_for(
                                 sol_sim.simulate_buy_sell(token_address, sol_amount=0.01), timeout=60
@@ -823,9 +823,9 @@ Requirements:
                     except Exception as e:
                         print(f"⚠️ {self.name}: eth_call simulation failed: {e}")
                 else:
-                    print(f"⚠️ {self.name}: eth_call not available for {chain}")
+                    print(f"⚠️ {self.name}: eth_call not available for {chain} (no Web3 or router config)")
 
-                if os.getenv("TENDERLY_API_KEY") and chain in ("bsc", "ethereum"):
+                if os.getenv("TENDERLY_API_KEY") and chain in ("bsc", "ethereum", "base"):
                     print(f"🔍 {self.name}: Tier 3 -- Tenderly simulation...")
                     try:
                         tenderly_result = await asyncio.wait_for(
@@ -847,14 +847,17 @@ Requirements:
             context = f"Token discovered by Nova on {chain}. Running trade simulation."
             report = await self._generate_atlas_message(simulation, symbol, context)
 
-            # v4.0: Return structured result + message for Orchestrator to broadcast
-            result = {**simulation.__dict__, "message": report, "token_symbol": symbol, "token_address": token_address, "chain": chain}
+            result = {**simulation.__dict__, "message": report, "token_symbol": symbol, "token_name": name, "token_address": token_address, "chain": chain}
+            # Preserve fields from upstream (Nova's queue data)
+            for key in ["creator", "origin_source", "timestamp", "attention_score", "volume_24h", "liquidity_usd", "market_cap"]:
+                if key in event_data and key not in result:
+                    result[key] = event_data[key]
             return result
 
         except asyncio.TimeoutError:
             print(f"⚠️ {self.name}: Simulation timed out")
             return {
-                "token_address": token_address, "chain": chain, "token_symbol": symbol,
+                "token_address": token_address, "chain": chain, "token_symbol": symbol, "token_name": name,
                 "error": "timeout", "message": f"Simulation on {symbol} timed out. Treat with caution.",
                 "can_buy": False, "can_sell": False, "honeypot_risk": True,
                 "liquidity_usd": 0, "simulation_confidence": 0,
@@ -862,7 +865,7 @@ Requirements:
         except Exception as e:
             print(f"❌ {self.name}: Fatal simulation error: {e}")
             return {
-                "token_address": token_address, "chain": chain, "token_symbol": symbol,
+                "token_address": token_address, "chain": chain, "token_symbol": symbol, "token_name": name,
                 "error": str(e), "message": f"Simulation crashed on {symbol}: {e}",
                 "can_buy": False, "can_sell": False, "honeypot_risk": True,
                 "liquidity_usd": 0, "simulation_confidence": 0,
@@ -874,7 +877,7 @@ Requirements:
 
     async def _check_honeypot(self, token_address: str, chain: str) -> dict:
         try:
-            if chain not in ["bsc", "ethereum"]:
+            if chain not in ["bsc", "ethereum", "base"]:
                 return {"buyable": True, "sellable": True, "is_honeypot": False, "buyTax": 0, "sellTax": 0}
             await rate_limiter.wait("honeypot.is")
             url = f"{self.honeypot_apis[chain]}?address={token_address}"
@@ -919,35 +922,41 @@ Requirements:
             return {"liquidity_usd": 0, "locked": False}
 
     async def _analyze_contract(self, token_address: str, chain: str) -> dict:
+        """v4.1 FIX: All sync Web3 calls wrapped in asyncio.to_thread()"""
         try:
             if chain == "solana":
                 return {}
-            if chain not in ["bsc", "ethereum"]:
+            if chain not in ["bsc", "ethereum", "base"]:
                 return {}
-            rpc_key = "BSC_RPC_URL" if chain == "bsc" else "ETH_RPC_URL"
+            rpc_key = "BSC_RPC_URL" if chain == "bsc" else "ETH_RPC_URL" if chain == "ethereum" else "BASE_RPC_URL"
             rpc_url = os.getenv(rpc_key)
             if not rpc_url:
                 return {}
             w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
             dangerous_sigs = {"mint": "0x40c10f19", "blacklist": "0xf9f92be4", "pause": "0x8456cb59"}
+
             try:
-                code = w3.eth.get_code(Web3.to_checksum_address(token_address)).hex()
+                code = await asyncio.to_thread(
+                    lambda: w3.eth.get_code(Web3.to_checksum_address(token_address)).hex()
+                )
             except Exception:
                 return {}
+
             owner_renounced = False
             try:
                 token_contract = w3.eth.contract(address=Web3.to_checksum_address(token_address), abi=OWNERSHIP_ABI)
                 try:
-                    owner_addr = token_contract.functions.owner().call()
+                    owner_addr = await asyncio.to_thread(token_contract.functions.owner().call)
                     owner_renounced = owner_addr == "0x0000000000000000000000000000000000000000"
                 except Exception:
                     try:
-                        owner_addr = token_contract.functions.getOwner().call()
+                        owner_addr = await asyncio.to_thread(token_contract.functions.getOwner().call)
                         owner_renounced = owner_addr == "0x0000000000000000000000000000000000000000"
                     except Exception:
                         pass
             except Exception:
                 pass
+
             return {
                 "has_mint": dangerous_sigs["mint"] in code,
                 "has_blacklist": dangerous_sigs["blacklist"] in code,
@@ -963,6 +972,7 @@ Requirements:
     # ═══════════════════════════════════════════════════════════
 
     async def _simulate_eth_call_swap(self, token_address: str, chain: str) -> dict:
+        """v4.1 FIX: All sync Web3 RPC calls wrapped in asyncio.to_thread()"""
         w3 = self.web3_instances.get(chain)
         if not w3:
             return {"error": "No Web3 instance for chain"}
@@ -978,8 +988,9 @@ Requirements:
             router = w3.eth.contract(address=router_address, abi=ROUTER_ABIS["uniswap_v2"])
             token = w3.eth.contract(address=Web3.to_checksum_address(token_address), abi=ERC20_ABI)
 
+            # v4.1: Wrap all sync RPC calls
             try:
-                decimals = token.functions.decimals().call()
+                decimals = await asyncio.to_thread(token.functions.decimals().call)
             except Exception:
                 decimals = 18
 
@@ -987,7 +998,7 @@ Requirements:
             amount_in_wei = w3.to_wei(amount_in_eth, 'ether')
 
             try:
-                nonce = w3.eth.get_transaction_count(funded_wallet)
+                nonce = await asyncio.to_thread(w3.eth.get_transaction_count, funded_wallet)
             except Exception:
                 nonce = 0
 
@@ -997,17 +1008,19 @@ Requirements:
                 0, [weth, Web3.to_checksum_address(token_address)], funded_wallet, 2**64
             ).build_transaction({
                 'from': funded_wallet, 'value': amount_in_wei, 'gas': 300000,
-                'gasPrice': w3.eth.gas_price, 'nonce': nonce,
+                'gasPrice': await asyncio.to_thread(lambda: w3.eth.gas_price), 'nonce': nonce,
             })
 
-            w3.eth.call(buy_tx)
+            await asyncio.to_thread(w3.eth.call, buy_tx)
             buy_success = True
             print(f"✅ {self.name}: eth_call BUY succeeded")
 
             try:
-                amounts_out = router.functions.getAmountsOut(
-                    amount_in_wei, [weth, Web3.to_checksum_address(token_address)]
-                ).call()
+                amounts_out = await asyncio.to_thread(
+                    router.functions.getAmountsOut(
+                        amount_in_wei, [weth, Web3.to_checksum_address(token_address)]
+                    ).call
+                )
                 expected_tokens = amounts_out[-1] if amounts_out else 0
             except Exception:
                 expected_tokens = 0
@@ -1018,9 +1031,9 @@ Requirements:
                 try:
                     approve_tx = token.functions.approve(router_address, expected_tokens).build_transaction({
                         'from': funded_wallet, 'gas': 100000,
-                        'gasPrice': w3.eth.gas_price, 'nonce': nonce + 1,
+                        'gasPrice': await asyncio.to_thread(lambda: w3.eth.gas_price), 'nonce': nonce + 1,
                     })
-                    w3.eth.call(approve_tx)
+                    await asyncio.to_thread(w3.eth.call, approve_tx)
                     approve_success = True
                     print(f"✅ {self.name}: eth_call APPROVE succeeded")
                 except Exception as e:
@@ -1039,16 +1052,18 @@ Requirements:
                         [Web3.to_checksum_address(token_address), weth], funded_wallet, 2**64
                     ).build_transaction({
                         'from': funded_wallet, 'gas': 300000,
-                        'gasPrice': w3.eth.gas_price, 'nonce': nonce + 2,
+                        'gasPrice': await asyncio.to_thread(lambda: w3.eth.gas_price), 'nonce': nonce + 2,
                     })
-                    w3.eth.call(sell_tx)
+                    await asyncio.to_thread(w3.eth.call, sell_tx)
                     sell_success = True
                     print(f"✅ {self.name}: eth_call SELL succeeded")
 
                     try:
-                        amounts_in = router.functions.getAmountsIn(
-                            expected_tokens, [weth, Web3.to_checksum_address(token_address)]
-                        ).call()
+                        amounts_in = await asyncio.to_thread(
+                            router.functions.getAmountsIn(
+                                expected_tokens, [weth, Web3.to_checksum_address(token_address)]
+                            ).call
+                        )
                         eth_returned = amounts_in[0] if amounts_in else 0
                     except Exception:
                         eth_returned = 0
@@ -1101,7 +1116,7 @@ Requirements:
         if not api_key or not account or not project:
             return {"error": "Tenderly not configured (need API_KEY, ACCOUNT, PROJECT)"}
 
-        chain_id = 56 if chain == "bsc" else 1 if chain == "ethereum" else None
+        chain_id = 56 if chain == "bsc" else 1 if chain == "ethereum" else 8453 if chain == "base" else None
         if not chain_id:
             return {"error": f"Chain {chain} not supported by Tenderly"}
 
@@ -1157,9 +1172,11 @@ Requirements:
 
             print(f"🔬 {self.name}: Tenderly SELL simulation...")
             try:
-                amounts_out = router.functions.getAmountsOut(
-                    amount_in_wei, [weth, Web3.to_checksum_address(token_address)]
-                ).call()
+                amounts_out = await asyncio.to_thread(
+                    router.functions.getAmountsOut(
+                        amount_in_wei, [weth, Web3.to_checksum_address(token_address)]
+                    ).call
+                )
                 expected_tokens = amounts_out[-1] if amounts_out else 0
             except Exception:
                 expected_tokens = 0
@@ -1347,7 +1364,7 @@ Requirements:
         await self.results_cache.clear_expired()
 
     async def stop(self):
-        """v4.0: Close the shared session."""
+        """v4.1: Close the shared session."""
         print(f"🛑 {self.name}: Simulator stopped.")
         await self.cleanup()
         if self._session and not self._session.closed:

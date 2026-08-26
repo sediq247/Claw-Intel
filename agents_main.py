@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-"""🤖 agents_main.py — ClawIntel Agent Swarm Service (Railway)"""
 
 import asyncio
 import signal
@@ -12,8 +10,6 @@ from agents.orchestrator import AgentOrchestrator
 async def main():
     await init_database()
 
-    # server=None → EventPublisher writes ONLY to MongoDB.
-    # The web-server service polls the same DB and broadcasts to clients.
     orchestrator = AgentOrchestrator(server=None, db=db)
     orch_task = asyncio.create_task(orchestrator.start())
 
