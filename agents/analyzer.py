@@ -1,5 +1,5 @@
 """
- ANALYZER AGENT — Vega
+ANALYZER AGENT — Vega
 "The Skeptic" — Deep contract risk analysis. Independent from Atlas.
 Calls contracts directly, fetches source code, detects proxies, tracks LP ownership.
 """
@@ -241,28 +241,16 @@ class AnalyzerAgent:
             except Exception as e:
                 print(f"❌ {self.name}: Web3 error for {chain}: {e}")
 
+    # v4.1: Public entry point for the Orchestrator
     async def analyze(self, sim_data: dict) -> dict:
+        """Run full contract risk analysis and return structured result + spoken message."""
         return await self._deep_analysis(sim_data)
 
-    def on_simulation_complete(self, sim_data: dict):
-        try:
-            task = asyncio.create_task(self._deep_analysis(sim_data))
-            task.add_done_callback(self._on_task_done)
-            self._tasks.append(task)
-        except Exception as e:
-            print(f"⚠️ {self.name}: Failed scheduling analysis: {e}")
-
-    def _on_task_done(self, task: asyncio.Task):
-        try:
-            task.result()
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            print(f"⚠️ {self.name}: Analysis task failed: {e}")
-
     async def _speak(self, message: str, msg_type: str = "response"):
+        """Broadcast a spoken message. Used for standalone/testing only.
+        During orchestrated analysis, the Orchestrator handles all messaging."""
         try:
-            if self.server:
+            if self.server and hasattr(self.server, 'broadcast'):
                 await self.server.broadcast("AGENT_MESSAGE", {
                     "agent": self.name, "message": message, "type": msg_type,
                     "channel": "main", "timestamp": time.time()
@@ -749,8 +737,10 @@ Requirements:
             chain = sim_data.get("chain", "unknown")
             symbol = sim_data.get("token_symbol", sim_data.get("symbol", "???"))
 
-            ack = "Got your report, Atlas. Now let me tear this thing apart — independently."
-            await self._speak(ack, "response")
+            # FIX #2: Removed the early direct broadcast. Vega works silently during her stage.
+            # The Orchestrator broadcasts AGENT_WORKING before this method starts and
+            # AGENT_MESSAGE after it returns. This preserves theatrical pacing.
+            print(f"🔍 {self.name}: Starting deep analysis on {symbol} ({chain})...")
 
             red_flags, yellow_flags, green_flags = [], [], []
             score = 0

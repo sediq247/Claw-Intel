@@ -1,10 +1,15 @@
-
 """
- ORCHESTRATOR — Conductor v4.1
+ORCHESTRATOR — Conductor v4.1 (PATCHED)
 Theatrical multi-agent investigation conductor.
 Polls MongoDB for pending tokens, runs 5-stage theatrical pipeline,
 broadcasts AGENT_WORKING spinners, enforces minimum stage duration.
 
+FIXES APPLIED:
+1. STAGE_MIN_SECONDS reduced from 15 to 10 seconds per agent stage.
+2. Investigation object now includes nova_message and risk_score at top level
+   so history.js can display them correctly.
+3. Rest period is strictly enforced — no token fetch happens until rest completes.
+4. Nova's discovery message is broadcast WITHOUT re-saving to DB (Nova already saved it).
 """
 
 import asyncio
@@ -17,6 +22,7 @@ from agents.simulator import SimulatorAgent
 from agents.analyzer import AnalyzerAgent
 from agents.memory import MemoryAgent
 from agents.decision import DecisionAgent
+from utils.marketEngine import MarketEngine
 
 
 class AgentOrchestrator:
@@ -24,27 +30,28 @@ class AgentOrchestrator:
     The Conductor.
     Reads pending tokens from DB, runs theatrical 5-stage investigations,
     broadcasts progress to frontend via EventPublisher, saves results to DB.
+
+    FLOW:
+    1. IDLE → poll DB for next pending token
+    2. INVESTIGATING → run 5 stages (Nova broadcast → Atlas → Vega → Echo → Orion)
+    3. RESTING → wait REST_SECONDS before returning to IDLE
     """
 
-    STAGE_MIN_SECONDS = 15
+    STAGE_MIN_SECONDS = 10  
     REST_SECONDS = 45
     MAX_QUEUE_SIZE = 100
 
     def __init__(self, server: Any, db: Any):
-        """
-        server: ClawIntelServer instance (monolithic) or None (decoupled).
-                In decoupled mode, the publisher handles all persistence.
-        db:     Database instance for reading/writing token queues, investigations.
-        """
         self.server = server
         self.db = db
         self.name = "Orchestrator"
         self.running = False
-        self.state = "IDLE"          
+        self.state = "IDLE"         
         self.rest_until = 0.0
         self._tasks: list[asyncio.Task] = []
         self.agents: Dict[str, Any] = {}
         self.nova: Optional[WatcherAgent] = None
+        self.market_engine: Optional[MarketEngine] = None
 
         self.publisher = EventPublisher(db=db, server=server)
 
@@ -65,16 +72,18 @@ class AgentOrchestrator:
         self._tasks.append(asyncio.create_task(self.nova.start()))
         print(f"✅ {self.name}: Nova (Watcher) started as background task")
 
+        self.market_engine = MarketEngine(publisher=self.publisher, db=self.db)
+        self._tasks.append(asyncio.create_task(self.market_engine.start()))
+        print(f"✅ {self.name}: Market engine started")
+
         self._tasks.append(asyncio.create_task(self._main_loop()))
         print(f"✅ {self.name}: Main loop started")
 
-       
         await self.publisher.system_message(
-            f"ClawIntel v4.1 online. Investigation cycle: ~2-3min per token, "
+            f"ClawIntel v4.1 online. Investigation cycle: ~90s per token, "
             f"{self.REST_SECONDS}s rest between cases. Nova scanning 4 chains..."
         )
 
-        
         while self.running:
             await asyncio.sleep(1)
 
@@ -82,7 +91,6 @@ class AgentOrchestrator:
         """Graceful shutdown."""
         print(f"🎭 {self.name}: Stopping conductor...")
         self.running = False
-
 
         if self.nova and hasattr(self.nova, "stop"):
             try:
@@ -93,7 +101,6 @@ class AgentOrchestrator:
             except Exception as e:
                 print(f"⚠️ {self.name}: Error stopping Nova: {e}")
 
-    
         for name, agent in self.agents.items():
             if hasattr(agent, "stop"):
                 try:
@@ -104,7 +111,6 @@ class AgentOrchestrator:
                 except Exception as e:
                     print(f"⚠️ {self.name}: Error stopping {name}: {e}")
 
-        
         for task in self._tasks:
             if not task.done():
                 task.cancel()
@@ -113,20 +119,41 @@ class AgentOrchestrator:
                 except asyncio.CancelledError:
                     pass
 
+        if self.market_engine and hasattr(self.market_engine, "stop"):
+            try:
+                stop_result = self.market_engine.stop()
+                if asyncio.iscoroutine(stop_result):
+                    await stop_result
+                print(f"🛑 {self.name}: Market engine stopped")
+            except Exception as e:
+                print(f"⚠️ {self.name}: Error stopping market engine: {e}")
+
         print(f"✅ {self.name}: Conductor stopped")
 
-    
-
     async def _main_loop(self):
-        """Poll DB for pending tokens and run investigations."""
+        """
+        Main orchestration loop.
+
+        STATE MACHINE:
+        - RESTING: Wait until rest_until timestamp passes, then transition to IDLE
+        - IDLE: Poll DB for next pending token. If found, transition to INVESTIGATING
+        - INVESTIGATING: Run _run_investigation(), then transition to RESTING
+
+        NO token is fetched during RESTING or INVESTIGATING states.
+        """
         while self.running:
             try:
                 if self.state == "RESTING":
-                    if time.time() < self.rest_until:
+                    now = time.time()
+                    if now < self.rest_until:
+                        remaining = int(self.rest_until - now)
+                        if remaining % 10 == 0: 
+                            print(f"😴 {self.name}: Resting... {remaining}s remaining")
                         await asyncio.sleep(1)
                         continue
                     self.state = "IDLE"
                     print(f"🎭 {self.name}: Rest period over. Resuming surveillance.")
+                    await self.publisher.system_message("Agents rested. Resuming token surveillance.")
 
                 if self.state == "IDLE":
                     token = await self._get_next_token()
@@ -152,7 +179,19 @@ class AgentOrchestrator:
             return None
 
     async def _run_investigation(self, token: dict):
-        """Run the full 5-stage investigation with theatrical pacing."""
+        """
+        Run the full 5-stage investigation with theatrical pacing.
+
+        STAGES:
+        1. Nova broadcast (discovery message from queue)
+        2. Atlas (Simulation) — trade path analysis
+        3. Vega (Analysis) — contract risk analysis
+        4. Echo (Memory) — creator history & prediction
+        5. Orion (Decision) — final verdict
+
+        After all stages: save investigation, broadcast verdict, mark token complete,
+        then enter RESTING state for REST_SECONDS.
+        """
         token_address = token.get("token_address", "unknown")
         chain = token.get("chain", "unknown")
         symbol = token.get("symbol", "???")
@@ -163,11 +202,15 @@ class AgentOrchestrator:
         print(f"🎭 {self.name}: Starting investigation on {symbol} ({chain})")
         self.state = "INVESTIGATING"
 
-        await self.publisher.agent_message(
-            "Nova", nova_message, "discovery"
-        )
 
-        # ── Stage 1: Atlas (Simulation) ──
+        await self.publisher.broadcast("AGENT_MESSAGE", {
+            "agent": "Nova",
+            "message": nova_message,
+            "type": "discovery",
+            "channel": "main",
+            "timestamp": time.time()
+        })
+
         sim_data = await self._run_stage(
             agent_name="Atlas",
             token=token,
@@ -185,6 +228,7 @@ class AgentOrchestrator:
             work_fn=self.agents["vega"].analyze,
             work_args=(sim_data,)
         )
+
         memory_data = await self._run_stage(
             agent_name="Echo",
             token=token,
@@ -202,12 +246,16 @@ class AgentOrchestrator:
             work_fn=self.agents["orion"].decide,
             work_args=(sim_data, analysis_data, memory_data)
         )
+
         investigation = {
             "token_address": token_address,
             "chain": chain,
             "symbol": symbol,
+            "token_symbol": symbol,
             "name": name,
             "creator": creator,
+            "nova_message": nova_message,                          
+            "risk_score": analysis_data.get("risk_score", 0),  
             "verdict": decision_data.get("verdict", "UNKNOWN"),
             "confidence": decision_data.get("confidence", 0),
             "reasoning": decision_data.get("reasoning", ""),
@@ -262,14 +310,7 @@ class AgentOrchestrator:
         work_fn,
         work_args: tuple
     ) -> dict:
-        """
-        Run a single investigation stage with theatrical timing.
-        1. Broadcast AGENT_WORKING spinner
-        2. Run the agent's actual work
-        3. Wait until work is done AND at least STAGE_MIN_SECONDS have passed
-        4. Broadcast completion event
-        5. Broadcast AGENT_MESSAGE if agent returned a message
-        """
+        
         symbol = token.get("symbol", "???")
         chain = token.get("chain", "unknown")
         stage_start = time.time()

@@ -1,8 +1,6 @@
-#!/usr/bin/env python3
 """
-WATCHER AGENT — Nova v4.0
+WATCHER AGENT 
 "The Scout" — Multi-chain token detection engine.
-
 """
 
 import asyncio
@@ -70,7 +68,8 @@ class WatcherAgent:
     """
     Nova — The Scout
     RPC-based surveillance across 4 chains (ETH, BSC, Base, Solana).
-    Discovers tokens, scores them, and saves to DB. Never triggers investigations.
+    Discovers tokens, scores them, saves to DB and queue. NEVER triggers
+    investigations and NEVER broadcasts to the frontend directly.
     """
 
     RPC_POOLS = {
@@ -128,7 +127,7 @@ class WatcherAgent:
         "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9"
     )
 
-    # v4.0 quality gates
+    # v4.1 quality gates
     MIN_LIQUIDITY_USD = 5000
     MIN_MARKET_CAP_USD = 10000
     MIN_VOLUME_24H_USD = 2000
@@ -342,11 +341,10 @@ class WatcherAgent:
             print(f"⚠️ {self.name}: Quality check error for {token_event.token_symbol} ({token_event.chain}): {e}")
             return False
 
-
     async def _handle_discovery(self, token_event: TokenEvent):
         """
         Discovery pipeline: calculate attention, check queue cap, save to DB,
-        save chat message, broadcast to frontend.
+        add to processing queue, save chat history. NO frontend broadcast.
         """
         try:
             token_event.attention_score = self._calculate_attention(token_event)
@@ -362,10 +360,9 @@ class WatcherAgent:
             except Exception as e:
                 print(f"⚠️ {self.name}: Queue cap check failed: {e}")
 
-            # Check if token already exists in non-pending status
             try:
                 existing = await self.db.get_token(token_event.token_address, token_event.chain)
-                if existing and existing.get("status") in ("investigating", "completed"):
+                if existing and existing.get("status") in ("pending", "investigating", "completed"):
                     print(f"⏭️ {self.name}: {token_event.token_symbol} already {existing['status']}, skipping")
                     return
             except Exception:
@@ -392,45 +389,41 @@ class WatcherAgent:
                 "jupiter_failed": token_event.jupiter_failed,
             }
 
+            # Save to discovered_tokens collection
             try:
                 await self.db.save_discovered_token(doc)
-                queue_doc = {
-                  "token_address": token_event.token_address,
-                  "chain": token_event.chain,
-                  "symbol": token_event.token_symbol,
-                  "name": token_event.token_name,
-                  "creator": token_event.creator,
-                  "liquidity_usd": token_event.liquidity_usd,
-                  "market_cap": token_event.market_cap,
-                  "volume_24h": token_event.volume_24h,
-                  "attention_score": token_event.attention_score,
-                  "status": "pending",
-                  "nova_message": nova_msg,
-                  "origin_source": token_event.origin_source,
-                  "timestamp": time.time(),
-               }
-
             except Exception as e:
                 print(f"⚠️ {self.name}: Failed to save discovered token: {e}")
                 return
 
+            # FIX #1: Add token to the processing queue so the Orchestrator can pick it up
+            queue_doc = {
+                "token_address": token_event.token_address,
+                "chain": token_event.chain,
+                "symbol": token_event.token_symbol,
+                "name": token_event.token_name,
+                "creator": token_event.creator,
+                "liquidity_usd": token_event.liquidity_usd,
+                "market_cap": token_event.market_cap,
+                "volume_24h": token_event.volume_24h,
+                "attention_score": token_event.attention_score,
+                "status": "pending",
+                "nova_message": nova_msg,
+                "origin_source": token_event.origin_source,
+                "timestamp": time.time(),
+            }
             try:
-                if self.server and hasattr(self.server, 'agent_message'):
-                  await self.server.agent_message(self.name, nova_msg, "discovery")
-                else:
-                # Legacy mode: manual DB save + broadcast
-                 await self.db.save_chat_message("Nova", nova_msg, "discovery")
-                if self.server:
-                    await self.server.broadcast("AGENT_MESSAGE", {
-                        "agent": self.name,
-                        "message": nova_msg,
-                        "type": "discovery",
-                        "channel": "main",
-                        "timestamp": time.time()
-                    })
+                await self.db.add_token_to_queue(queue_doc)
             except Exception as e:
-             print(f"⚠️ {self.name}: Message publish failed: {e}")
+                print(f"⚠️ {self.name}: Failed to add token to queue: {e}")
+                return
 
+            # FIX #2: Save chat message to DB for history, but DO NOT broadcast to frontend.
+            # The Orchestrator will broadcast AGENT_MESSAGE when it starts the investigation.
+            try:
+                await self.db.save_chat_message("Nova", nova_msg, "discovery")
+            except Exception as e:
+                print(f"⚠️ {self.name}: Chat save failed: {e}")
 
             print(f"🎯 {self.name}: {token_event.token_symbol} on {token_event.chain} saved (attention: {token_event.attention_score:.1f})")
 
@@ -438,13 +431,15 @@ class WatcherAgent:
             print(f"❌ {self.name}: Discovery handling error: {e}")
 
     async def _speak(self, message: str, msg_type: str = "discovery"):
-        """Publish chat message via publisher (DB+events) or legacy server broadcast."""
+        """
+        Publish chat message via publisher (DB+events) or legacy server broadcast.
+        NOTE: Only used for system messages and error responses. Discovery messages
+        must NOT be broadcast from here — the Orchestrator handles that.
+        """
         try:
             if self.server and hasattr(self.server, 'agent_message'):
-                # Publisher mode: DB save + events + optional live broadcast
                 await self.server.agent_message(self.name, message, msg_type)
             elif self.server:
-                # Legacy mode: broadcast only
                 await self.server.broadcast("AGENT_MESSAGE", {
                     "agent": self.name,
                     "message": message,
@@ -454,7 +449,6 @@ class WatcherAgent:
                 })
         except Exception as e:
             print(f"⚠️ {self.name}: Broadcast failed: {e}")
-
 
     async def _generate_nova_message(self, event: TokenEvent) -> str:
         if not client:
@@ -946,8 +940,7 @@ Requirements:
         )
 
         token_event.attention_score = 100
-        nova_msg = await self._generate_nova_message(token_event)
-        await self._speak(nova_msg, "discovery")
+
         await self._handle_discovery(token_event)
 
         print(f"🔍 {self.name}: Investigated {token_event.token_symbol} on {chain}")

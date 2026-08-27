@@ -4,17 +4,9 @@ let reconnectTimer = null;
 let reconnectDelay = 1000;
 const MAX_RECONNECT_DELAY = 30000;
 
-// DOM element references
-const els = {
-  trending: document.getElementById('trending-grid'),
-  gainers: document.getElementById('gainers-grid'),
-  losers: document.getElementById('losers-grid'),
-  aiVerified: document.getElementById('ai-verified-grid'),
-  lastUpdated: document.getElementById('last-updated'),
-  loading: document.getElementById('market-loading'),
-};
+let currentView = 'card';
+let currentTab = 'trending';
 
-// In-memory cache of current market data for SIGNAL patch-updates
 let currentMarketData = {
   trending: [],
   gainers: [],
@@ -23,9 +15,6 @@ let currentMarketData = {
   timestamp: 0,
 };
 
-// ─────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────
 
 function escapeHtml(str) {
   if (!str) return '';
@@ -46,6 +35,17 @@ function getChangeSign(changeStr) {
   if (isNaN(val) || val >= 0) return '+';
   return '';
 }
+
+function formatNumber(num) {
+  if (!num) return '$0';
+  const n = parseFloat(String(num).replace(/[$,]/g, ''));
+  if (isNaN(n)) return num;
+  if (n >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
+  if (n >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
+  if (n >= 1e3) return `$${(n / 1e3).toFixed(2)}K`;
+  return `$${n.toFixed(2)}`;
+}
+
 
 function createTokenCard(token) {
   const changeClass = getChangeClass(token.price_change_24h);
@@ -83,7 +83,51 @@ function createTokenCard(token) {
   `;
 }
 
-function renderSection(container, tokens, emptyMessage = 'No data available') {
+// ─────────────────────────────────────────────────────────────
+// Table View
+// ─────────────────────────────────────────────────────────────
+
+function createTableRow(token, index) {
+  const changeClass = getChangeClass(token.price_change_24h);
+  const changeSign = getChangeSign(token.price_change_24h);
+  const aiBadge = token.ai_verified
+    ? `<span class="ai-badge-sm">✓ AI</span>`
+    : '';
+  const image = token.image
+    ? escapeHtml(token.image)
+    : `https://api.dicebear.com/7.x/identicon/svg?seed=${escapeHtml(token.symbol || '???')}`;
+  const chainDisplay = token.chain ? escapeHtml(token.chain.toUpperCase()) : '?';
+  const statusClass = token.ai_verified ? 'status-safe' : 'status-unknown';
+  const statusText = token.ai_verified ? 'AI Verified' : 'Unverified';
+
+  return `
+    <tr>
+      <td class="col-rank">${index + 1}</td>
+      <td>
+        <div class="token-cell">
+          <img src="${image}" alt="${escapeHtml(token.symbol || '')}" class="token-icon-sm"
+               onerror="this.src='https://api.dicebear.com/7.x/identicon/svg?seed=fallback'">
+          <div>
+            <div class="token-symbol-td">${escapeHtml(token.symbol || '???')} <span class="chain-tag-sm">${chainDisplay}</span> ${aiBadge}</div>
+            <div class="token-name-td">${escapeHtml(token.name || 'Unknown')}</div>
+          </div>
+        </div>
+      </td>
+      <td>${escapeHtml(token.price || '$0.00')}</td>
+      <td class="${changeClass}">${changeSign}${escapeHtml(token.price_change_24h || '0.00%')}</td>
+      <td>${escapeHtml(token.market_cap || '$0')}</td>
+      <td class="col-volume">${escapeHtml(token.volume_24h || '$0')}</td>
+      <td class="col-liquidity">${escapeHtml(token.liquidity || '$0')}</td>
+      <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+    </tr>
+  `;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Rendering
+// ─────────────────────────────────────────────────────────────
+
+function renderCards(container, tokens, emptyMessage) {
   if (!container) return;
   if (!tokens || tokens.length === 0) {
     container.innerHTML = `<div class="empty-state">${escapeHtml(emptyMessage)}</div>`;
@@ -92,8 +136,89 @@ function renderSection(container, tokens, emptyMessage = 'No data available') {
   container.innerHTML = tokens.map(createTokenCard).join('');
 }
 
+function renderTable(tbody, tokens, emptyMessage) {
+  if (!tbody) return;
+  if (!tokens || tokens.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="8" class="empty-state-td">${escapeHtml(emptyMessage)}</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = tokens.map((t, i) => createTableRow(t, i)).join('');
+}
+
+function updateBadges() {
+  const badgeTrending = document.getElementById('badge-trending');
+  const badgeGainers = document.getElementById('badge-gainers');
+  const badgeLosers = document.getElementById('badge-losers');
+  const badgeAi = document.getElementById('badge-ai');
+
+  if (badgeTrending) badgeTrending.textContent = currentMarketData.trending.length || '—';
+  if (badgeGainers) badgeGainers.textContent = currentMarketData.gainers.length || '—';
+  if (badgeLosers) badgeLosers.textContent = currentMarketData.losers.length || '—';
+  if (badgeAi) badgeAi.textContent = currentMarketData.ai_verified.length || '—';
+}
+
+function renderCurrentTab() {
+  const loadingState = document.getElementById('loading-state');
+  const emptyState = document.getElementById('empty-state');
+  const tableView = document.getElementById('table-view');
+  const cardView = document.getElementById('card-view');
+  const marketTableBody = document.getElementById('market-table-body');
+  const lastUpdated = document.getElementById('last-updated');
+
+  if (loadingState) loadingState.style.display = 'none';
+
+  let tokens = [];
+  let emptyMsg = 'No data available';
+
+  switch (currentTab) {
+    case 'trending':
+      tokens = currentMarketData.trending || [];
+      emptyMsg = 'No trending tokens found';
+      break;
+    case 'gainers':
+      tokens = currentMarketData.gainers || [];
+      emptyMsg = 'No gainers found';
+      break;
+    case 'losers':
+      tokens = currentMarketData.losers || [];
+      emptyMsg = 'No losers found';
+      break;
+    case 'ai-verified':
+      tokens = currentMarketData.ai_verified || [];
+      emptyMsg = 'No AI-verified tokens yet';
+      break;
+    default:
+      tokens = currentMarketData.trending || [];
+  }
+
+  if (!tokens || tokens.length === 0) {
+    if (emptyState) emptyState.style.display = 'block';
+    if (tableView) tableView.style.display = 'none';
+    if (cardView) cardView.style.display = 'none';
+    return;
+  }
+
+  if (emptyState) emptyState.style.display = 'none';
+
+  if (currentView === 'table') {
+    if (tableView) tableView.style.display = 'block';
+    if (cardView) cardView.style.display = 'none';
+    renderTable(marketTableBody, tokens, emptyMsg);
+  } else {
+    if (tableView) tableView.style.display = 'none';
+    if (cardView) cardView.style.display = 'grid';
+    renderCards(cardView, tokens, emptyMsg);
+  }
+
+  updateBadges();
+
+  const ts = currentMarketData.timestamp
+    ? new Date(currentMarketData.timestamp * 1000).toLocaleTimeString()
+    : 'Just now';
+  if (lastUpdated) lastUpdated.textContent = `Last updated: ${ts}`;
+}
+
 function renderAll(data) {
-  // Cache current data for SIGNAL patch-updates
   currentMarketData = {
     trending: data.trending || [],
     gainers: data.gainers || [],
@@ -101,22 +226,27 @@ function renderAll(data) {
     ai_verified: data.ai_verified || [],
     timestamp: data.timestamp || Date.now() / 1000,
   };
-
-  renderSection(els.trending, currentMarketData.trending, 'No trending tokens found');
-  renderSection(els.gainers, currentMarketData.gainers, 'No gainers found');
-  renderSection(els.losers, currentMarketData.losers, 'No losers found');
-  renderSection(els.aiVerified, currentMarketData.ai_verified, 'No AI-verified tokens yet');
-
-  const ts = currentMarketData.timestamp
-    ? new Date(currentMarketData.timestamp * 1000).toLocaleTimeString()
-    : 'Just now';
-  if (els.lastUpdated) els.lastUpdated.textContent = `Last updated: ${ts}`;
-  if (els.loading) els.loading.style.display = 'none';
+  renderCurrentTab();
 }
 
-// ─────────────────────────────────────────────────────────────
-// REST API
-// ─────────────────────────────────────────────────────────────
+function initTabs() {
+  const tabContainer = document.getElementById('market-tabs');
+  if (!tabContainer) return;
+
+  tabContainer.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tab-btn');
+    if (!btn) return;
+
+    // Update active state
+    tabContainer.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+
+    // Update current tab
+    currentTab = btn.dataset.tab;
+    renderCurrentTab();
+  });
+}
+
 
 async function fetchMarkets() {
   try {
@@ -128,15 +258,17 @@ async function fetchMarkets() {
 
     if (data.error) {
       console.error('[Markets] API error:', data.error);
-      if (els.loading) els.loading.innerHTML = `Error: ${escapeHtml(data.error)}`;
+      const loadingState = document.getElementById('loading-state');
+      if (loadingState) loadingState.innerHTML = `<div class="empty-state">Error: ${escapeHtml(data.error)}</div>`;
       return;
     }
 
     renderAll(data);
   } catch (e) {
     console.error('[Markets] REST fetch failed:', e);
-    if (els.loading) {
-      els.loading.innerHTML = 'Failed to load markets. Retrying...';
+    const loadingState = document.getElementById('loading-state');
+    if (loadingState) {
+      loadingState.innerHTML = '<div class="empty-state">Failed to load markets. Retrying...</div>';
     }
   }
 }
@@ -171,8 +303,6 @@ function connectWebSocket() {
           renderAll(data.payload);
         }
         else if (data.type === 'SIGNAL') {
-          // Live SIGNAL: Orion rendered a verdict. If SAFE, inject into
-          // AI-verified section immediately without waiting for next MARKET_UPDATE.
           console.log('[Markets] Live SIGNAL received:', data.payload.verdict);
           handleLiveSignal(data.payload);
         }
@@ -200,17 +330,16 @@ function connectWebSocket() {
     reconnectTimer = setTimeout(connectWebSocket, reconnectDelay);
   }
 }
-e
+
 function handleLiveSignal(payload) {
   if (payload.verdict !== 'SAFE') return;
 
   const tokenId = `${payload.chain}:${payload.token}`;
 
-  // Check if already in ai_verified
   const exists = currentMarketData.ai_verified.some(t => t.id === tokenId);
   if (exists) return;
 
-  // Build a minimal token card for the AI-verified section
+
   const newToken = {
     id: tokenId,
     symbol: payload.symbol || '???',
@@ -232,13 +361,15 @@ function handleLiveSignal(payload) {
     timestamp: payload.timestamp || Date.now() / 1000,
   };
 
-  // Prepend to ai_verified and re-render
   currentMarketData.ai_verified.unshift(newToken);
   if (currentMarketData.ai_verified.length > 20) {
     currentMarketData.ai_verified.pop();
   }
 
-  renderSection(els.aiVerified, currentMarketData.ai_verified, 'No AI-verified tokens yet');
+  if (currentTab === 'ai-verified') {
+    renderCurrentTab();
+  }
+  updateBadges();
   console.log('[Markets] Injected live AI-verified token:', payload.symbol);
 }
 
@@ -249,18 +380,16 @@ function handleLiveSignal(payload) {
 function init() {
   console.log('[Markets] Initializing market dashboard...');
 
-  if (els.loading) els.loading.style.display = 'block';
+  initTabs();
 
-  // Fetch initial data immediately
   fetchMarkets();
 
-  // Connect WebSocket for live updates
+  
   connectWebSocket();
 
   setInterval(fetchMarkets, 30000);
 }
 
-// Start when DOM is ready
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', init);
 } else {

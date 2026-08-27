@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
 """
-DECISION AGENT — Orion v4.1
+⚖️ DECISION AGENT — Orion v4.1 (PATCHED)
 "The Judge" — Makes the final call. Weighs all evidence, delivers the verdict.
+
+FIXES APPLIED:
+1. Removed direct AI_VERDICT broadcast from _make_decision. The Orchestrator handles
+   all frontend messaging. Orion now returns his result silently and lets the Conductor
+   broadcast the verdict via signal() and investigation_complete().
+2. Removed dead event-driven code (on_simulation_complete, on_analysis_complete,
+   on_memory_intelligence, _try_decide, etc.) that could cause double-invocation or
+   confusion in the orchestrator-driven model.
+3. _make_decision now returns a clean dict with message included. No side effects.
 """
 
 import json
@@ -74,84 +83,17 @@ class DecisionAgent:
     RAPID_TAG = "rapid_launcher"
     NEWBIE_TAG = "new_wallet"
 
-    PENDING_DECISION_TIMEOUT = 180
-
     def __init__(self, server: Optional[Any] = None):
         self.server = server
         self.name = "Orion"
-        self._tasks: List[asyncio.Task] = []
         self.SAFE_THRESHOLD = 30
         self.WARNING_THRESHOLD = 60
         self.weights = {"simulation": 0.30, "analysis": 0.40, "memory": 0.30}
-        self.pending_decisions: Dict[str, dict] = {}
-        self._pending_timestamps: Dict[str, float] = {}
 
+    # v4.1: Public entry point for the Orchestrator
     async def decide(self, sim_data: dict, analysis_data: dict, memory_data: Optional[dict] = None) -> dict:
+        """Make final decision based on all evidence. Returns structured result + spoken message."""
         return await self._make_decision(sim_data, analysis_data, memory_data)
-
-    def on_simulation_complete(self, sim_data: dict):
-        try:
-            token = sim_data.get("token_address")
-            if not token:
-                return
-            self._cleanup_expired_pending()
-            self.pending_decisions.setdefault(token, {})["simulation"] = sim_data
-            self._pending_timestamps[token] = time.time()
-            self._try_decide(token)
-        except Exception as e:
-            print(f"⚠️ {self.name}: Error handling simulation: {e}")
-
-    def on_analysis_complete(self, analysis_data: dict):
-        try:
-            token = analysis_data.get("token_address")
-            if not token:
-                return
-            self._cleanup_expired_pending()
-            self.pending_decisions.setdefault(token, {})["analysis"] = analysis_data
-            self._pending_timestamps[token] = time.time()
-            self._try_decide(token)
-        except Exception as e:
-            print(f"⚠️ {self.name}: Error handling analysis: {e}")
-
-    def on_memory_intelligence(self, memory_data: dict):
-        try:
-            token = memory_data.get("token_address") or memory_data.get("token")
-            if not token:
-                return
-            self._cleanup_expired_pending()
-            self.pending_decisions.setdefault(token, {})["memory"] = memory_data
-            self._pending_timestamps[token] = time.time()
-            self._try_decide(token)
-        except Exception as e:
-            print(f"⚠️ {self.name}: Error handling memory: {e}")
-
-    def _cleanup_expired_pending(self):
-        now = time.time()
-        expired = [t for t, ts in self._pending_timestamps.items() if now - ts > self.PENDING_DECISION_TIMEOUT]
-        for t in expired:
-            self.pending_decisions.pop(t, None)
-            self._pending_timestamps.pop(t, None)
-
-    def _try_decide(self, token: str):
-        data = self.pending_decisions.get(token)
-        if not data or "simulation" not in data or "analysis" not in data:
-            return
-        try:
-            task = asyncio.create_task(
-                self._make_decision(data.get("simulation", {}), data.get("analysis", {}), data.get("memory"))
-            )
-            task.add_done_callback(self._on_task_done)
-            self._tasks.append(task)
-        except Exception as e:
-            print(f"⚠️ {self.name}: Failed scheduling decision: {e}")
-
-    def _on_task_done(self, task: asyncio.Task):
-        try:
-            task.result()
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            print(f"⚠️ {self.name}: Decision task failed: {e}")
 
     async def _generate_orion_message(self, result: DecisionResult, sim: dict, analysis: dict, memory: Optional[dict]) -> str:
         if not client:
@@ -340,18 +282,9 @@ class DecisionAgent:
 
             report = await self._generate_orion_message(result, sim, analysis, memory)
 
-            if self.server and verdict == Verdict.SAFE:
-                try:
-                    await self.server.broadcast("AI_VERDICT", {
-                        "token": token, "chain": chain, "symbol": symbol,
-                        "verdict": verdict.value, "confidence": confidence,
-                        "timestamp": time.time()
-                    })
-                except Exception as e:
-                    print(f"⚠️ {self.name}: AI_VERDICT broadcast failed: {e}")
-
-            self.pending_decisions.pop(token, None)
-            self._pending_timestamps.pop(token, None)
+            # FIX #1: Removed direct AI_VERDICT broadcast. The Orchestrator handles all messaging.
+            # The Orchestrator's _run_investigation calls signal() and investigation_complete()
+            # after Orion's stage, which broadcasts the verdict to the frontend properly.
 
             result_dict = {**result.__dict__, "message": report}
             for key in ["creator", "origin_source", "timestamp", "attention_score", "volume_24h", "market_cap"]:
@@ -374,10 +307,7 @@ class DecisionAgent:
             }
 
     def stop(self):
-        print(f"🛑 {self.name}: Cancelling pending tasks...")
-        for t in self._tasks:
-            t.cancel()
-        print(f"✅ {self.name}: Stopped.")
+        print(f"🛑 {self.name}: Stopped.")
 
 
 if __name__ == "__main__":

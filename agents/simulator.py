@@ -1,4 +1,3 @@
-
 """
 "The Tester" — Runs fake trades, checks if you can actually buy and sell.
 Called directly by the Orchestrator. Returns structured results + spoken message.
@@ -591,9 +590,10 @@ class SimulatorAgent:
             print(f"⚠️ {self.name}: Simulation task failed: {e}")
 
     async def _speak(self, message: str, msg_type: str = "response"):
-        """Broadcast a spoken message to the room via the WebSocket server."""
+        """Broadcast a spoken message. Used for standalone/testing only.
+        During orchestrated analysis, the Orchestrator handles all messaging."""
         try:
-            if self.server:
+            if self.server and hasattr(self.server, 'broadcast'):
                 await self.server.broadcast("AGENT_MESSAGE", {
                     "agent": self.name, "message": message, "type": msg_type,
                     "channel": "main", "timestamp": time.time()
@@ -764,12 +764,13 @@ Requirements:
             cached = await self.results_cache.get(token_address)
             if cached:
                 print(f"📦 {self.name}: Cache hit for {symbol}")
-                await self._speak(f"Already simulated {symbol} -- pulling from cache.", "cache_hit")
+                # FIX: Removed direct broadcast. Just log and return.
                 report = await self._generate_atlas_message(cached, symbol, "Cache hit — returning previous simulation.")
                 return {**cached.__dict__, "message": report, "token_symbol": symbol, "token_name": name, "token_address": token_address, "chain": chain}
 
-            ack = f"Copy that, Nova. Running simulation on {symbol} now..."
-            await self._speak(ack, "response")
+            # FIX: Removed the early ack broadcast. Atlas works silently.
+            # The Orchestrator broadcasts AGENT_WORKING before this method starts
+            # and AGENT_MESSAGE after it returns.
             print(f"🧪 {self.name}: Simulating {symbol} ({chain})...")
 
             # Tier 1: Static Analysis

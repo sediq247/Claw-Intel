@@ -41,7 +41,7 @@ class Database:
         await self.db.discovered_tokens.create_index([("symbol", ASCENDING)])
         await self.db.discovered_tokens.create_index([("name", ASCENDING)])
         await self.db.discovered_tokens.create_index([("address", ASCENDING)])
-        # NEW: cursor persistence index for Nova watcher
+        # cursor persistence index for Nova watcher
         await self.db.cursors.create_index([("chain", ASCENDING)], unique=True)
 
         print("[db] ✅ Indexes created")
@@ -124,15 +124,15 @@ class Database:
     async def count_pending_tokens(self) -> int:
         return await self.db.tokens_queue.count_documents({"status": "pending"})
 
+    # FIX: Query by token_address (not address) to match queue schema
     async def update_token_status(self, token_address: str, status: str):
         await self.db.tokens_queue.update_one(
-            {"address": token_address},
+            {"token_address": token_address},
             {"$set": {"status": status, "updated_at": time.time()}},
         )
 
-    # NEW: get highest-attention pending token for the orchestrator
+    # Fetch highest-attention pending token
     async def get_next_pending_token(self) -> Optional[dict]:
-        """Fetch the highest-attention pending token from the queue."""
         cursor = (
             self.db.tokens_queue.find({"status": "pending"})
             .sort("attention_score", DESCENDING)
@@ -144,22 +144,19 @@ class Database:
             return docs[0]
         return None
 
-    # NEW: mark a token as completed with its verdict
+    # Mark token completed with verdict
     async def mark_token_completed(self, token_address: str, chain: str, verdict: str):
-        """Mark a queued token as completed and record the verdict."""
         await self.db.tokens_queue.update_one(
             {"token_address": token_address, "chain": chain},
             {"$set": {"status": "completed", "verdict": verdict, "updated_at": time.time()}},
         )
-        # Also update discovered_tokens so it shows as investigated
         await self.db.discovered_tokens.update_one(
             {"token_address": token_address, "chain": chain},
             {"$set": {"status": "completed", "verdict": verdict, "updated_at": time.time()}},
         )
 
-    # NEW: get lowest attention score in queue for eviction logic
+    # Lowest attention score for queue eviction
     async def get_lowest_attention_in_queue(self) -> Optional[float]:
-        """Return the lowest attention_score among pending tokens."""
         cursor = (
             self.db.tokens_queue.find({"status": "pending"})
             .sort("attention_score", ASCENDING)
@@ -170,9 +167,8 @@ class Database:
             return docs[0].get("attention_score", 0.0)
         return None
 
-    # NEW: fetch a specific token by address + chain
+    # Fetch token by address + chain
     async def get_token(self, address: str, chain: str) -> Optional[dict]:
-        """Fetch a token by address + chain from the discovered_tokens collection."""
         doc = await self.db.discovered_tokens.find_one(
             {"token_address": address, "chain": chain}
         )
@@ -219,7 +215,6 @@ class Database:
     # ── EVENTS ──
 
     async def save_event(self, event_type: str, payload: dict) -> str:
-        """Write an event to the events stream for the server to poll."""
         doc = {
             "event_type": event_type,
             "payload": payload,
@@ -230,7 +225,6 @@ class Database:
         return str(result.inserted_id)
 
     async def get_recent_events(self, since: float = 0, limit: int = 500) -> List[dict]:
-        """Fetch events newer than `since` timestamp (ascending order)."""
         cursor = (
             self.db.events.find({"timestamp": {"$gt": since}})
             .sort("timestamp", ASCENDING)
@@ -244,7 +238,6 @@ class Database:
     # ── MARKET DATA ──
 
     async def save_market_data(self, data: dict):
-        """Upsert the latest market snapshot (single doc, always overwritten)."""
         doc = {
             **data,
             "updated_at": datetime.now(timezone.utc),
@@ -256,7 +249,6 @@ class Database:
         )
 
     async def get_market_data(self) -> dict:
-        """Retrieve the latest market snapshot."""
         doc = await self.db.market_data.find_one({"_id": "latest"})
         if doc:
             doc.pop("_id", None)
@@ -291,7 +283,6 @@ class Database:
     # ── SEARCH & STATS ──
 
     async def search_tokens(self, query: str, limit: int = 50) -> List[dict]:
-        """Search discovered_tokens by symbol, name, or address (case-insensitive)."""
         regex = {"$regex": query, "$options": "i"}
         filter_doc = {
             "$or": [
@@ -334,7 +325,6 @@ class Database:
     # ── CURSOR PERSISTENCE (for Nova watcher resume) ──
 
     async def save_cursor(self, chain: str, block_number: int):
-        """Save the last scanned block for a chain."""
         await self.db.cursors.update_one(
             {"chain": chain},
             {"$set": {"block_number": block_number, "updated_at": time.time()}},
@@ -342,7 +332,6 @@ class Database:
         )
 
     async def get_cursor(self, chain: str) -> Optional[int]:
-        """Load the last scanned block for a chain."""
         doc = await self.db.cursors.find_one({"chain": chain})
         if doc:
             return doc.get("block_number")

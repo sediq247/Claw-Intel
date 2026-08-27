@@ -691,8 +691,7 @@ class MemoryAgent:
             print(f"🔮 {self.name}: Prediction for {symbol}: {predicted_outcome} (confidence: {confidence:.0%})")
 
             msg = await self._generate_echo_message(profile, creator, symbol, name, is_new, predicted_outcome, confidence, reasoning, solana_data)
-            # v4.1 FIX: Removed double broadcast — orchestrator handles it
-            # await self._speak(msg, "memory_report")
+            
 
             if self.db:
                 await self.db.save_creator_profile(profile.__dict__)

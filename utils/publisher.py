@@ -1,220 +1,102 @@
+"""
+EVENT PUBLISHER — v4.1
+Decoupled broadcast + persistence layer.
+Saves all events to MongoDB, optionally broadcasts via WebSocket.
+Used by both agents and server event-polling loop.
+"""
+
 import time
 from typing import Optional, Any
 
 
 class EventPublisher:
-    def __init__(self, db: Any, server: Optional[Any] = None):
+    """
+    v4.1: Decoupled publisher.
+    - All events persisted to MongoDB via db.save_event()
+    - Optional live broadcast via server.broadcast()
+    - server can be None (agents_main.py runs without WS server)
+    """
+
+    def __init__(self, db: Optional[Any] = None, server: Optional[Any] = None):
         self.db = db
         self.server = server
 
-    async def broadcast(self, event_type: str, payload: dict) -> None:
-        """
-        Generic broadcast entry-point. Routes to the correct persist
-        method based on event_type, then optionally pushes to WS.
-        """
-        et = event_type.upper()
-
-        if et == "AGENT_MESSAGE":
-            agent = payload.get("agent", "system")
-            msg = payload.get("message", "")
-            msg_type = payload.get("type", "chat")
-            channel = payload.get("channel", "main")
-            await self.agent_message(agent, msg, msg_type, channel)
-            return
-
-        if et == "NEW_TOKEN":
-            token_data = {
-                "address": payload.get("token"),
-                "chain": payload.get("chain"),
-                "symbol": payload.get("symbol"),
-                "timestamp": payload.get("timestamp", time.time()),
-            }
-            await self.new_token(token_data)
-            return
-
-        if et == "MARKET_UPDATE":
-            await self.market_update(payload)
-            return
-
-        if et == "INVESTIGATION_COMPLETE":
-            await self.investigation_complete(payload)
-            return
-
-        if et == "SIGNAL":
-            await self.signal(
-                token=payload.get("token", ""),
-                chain=payload.get("chain", ""),
-                symbol=payload.get("symbol", ""),
-                verdict=payload.get("verdict", "UNKNOWN"),
-                score=payload.get("score", 0.0),
-                confidence=payload.get("confidence", 0.0),
-            )
-            return
-
-        if et == "AGENT_WORKING":
-            await self.agent_working(
-                agent=payload.get("agent", ""),
-                token=payload.get("token", ""),
-                action=payload.get("action", "working..."),
-                chain=payload.get("chain", ""),
-            )
-            return
-
-        if self.db is not None and hasattr(self.db, "save_event"):
-            try:
+    async def broadcast(self, event_type: str, payload: dict):
+        """Persist to DB + optional live WS broadcast."""
+        try:
+            if self.db and hasattr(self.db, "save_event"):
                 await self.db.save_event(event_type, payload)
-            except Exception as e:
-                print(f"[publisher] DB save_event failed: {e}")
+        except Exception as e:
+            print(f"⚠️ Publisher: DB save failed: {e}")
 
-        if self.server is not None and hasattr(self.server, "broadcast"):
+        if self.server and hasattr(self.server, "broadcast"):
             try:
                 await self.server.broadcast(event_type, payload)
             except Exception as e:
-                print(f"[publisher] Live broadcast failed: {e}")
+                print(f"⚠️ Publisher: WS broadcast failed: {e}")
 
-    async def agent_message(
-        self,
-        agent: str,
-        message: str,
-        msg_type: str = "chat",
-        channel: str = "main",
-    ) -> None:
-        """
-        Persist an agent chat message to MongoDB, then broadcast
-        it to all currently-connected WebSocket clients.
-        """
+    async def agent_message(self, agent: str, message: str, msg_type: str = "response"):
+        """Save chat message to DB + broadcast AGENT_MESSAGE."""
         payload = {
             "agent": agent,
             "message": message,
             "type": msg_type,
-            "channel": channel,
+            "channel": "main",
             "timestamp": time.time(),
         }
+        try:
+            if self.db and hasattr(self.db, "save_chat_message"):
+                await self.db.save_chat_message(agent, message, msg_type)
+        except Exception as e:
+            print(f"⚠️ Publisher: Chat save failed: {e}")
+        await self.broadcast("AGENT_MESSAGE", payload)
 
-        if self.db is not None and hasattr(self.db, "save_chat_message"):
-            try:
-                await self.db.save_chat_message(agent, message, msg_type, channel)
-            except Exception as e:
-                print(f"[publisher] DB save_chat_message failed: {e}")
+    async def agent_working(self, agent: str, token: str, action: str, chain: str = ""):
+        """Broadcast AGENT_WORKING spinner. Not persisted to chat history."""
+        payload = {
+            "agent": agent,
+            "token": token,
+            "action": action,
+            "chain": chain,
+            "timestamp": time.time(),
+        }
+        await self.broadcast("AGENT_WORKING", payload)
 
-        if self.db is not None and hasattr(self.db, "save_event"):
-            try:
-                await self.db.save_event("AGENT_MESSAGE", payload)
-            except Exception as e:
-                print(f"[publisher] DB save_event failed: {e}")
+    async def system_message(self, message: str):
+        """Broadcast a system message."""
+        payload = {
+            "message": message,
+            "timestamp": time.time(),
+        }
+        await self.broadcast("SYSTEM", payload)
 
-        if self.server is not None and hasattr(self.server, "broadcast"):
-            try:
-                await self.server.broadcast("AGENT_MESSAGE", payload)
-            except Exception as e:
-                print(f"[publisher] Live broadcast failed: {e}")
-
-    async def system_message(self, message: str) -> None:
-        """Persist a system-level message as the 'system' agent."""
-        await self.agent_message("system", message, "system")
-
-    # ── NEW TOKEN ──
-
-    async def new_token(self, token_data: dict) -> None:
-        """
-        Persist a newly-discovered token to the processing queue,
-        also mirror it to discovered_tokens for the REST API / history page,
-        then broadcast a lightweight NEW_TOKEN event.
-        """
-        if self.db is not None and hasattr(self.db, "add_token_to_queue"):
-            try:
-                await self.db.add_token_to_queue(token_data)
-            except Exception as e:
-                print(f"[publisher] DB add_token_to_queue failed: {e}")
-
-        if self.db is not None and hasattr(self.db, "save_discovered_token"):
-            try:
+    async def new_token(self, token_data: dict):
+        """Save discovered token to DB."""
+        try:
+            if self.db and hasattr(self.db, "save_discovered_token"):
                 discovered_doc = {
-                    "token_address": token_data.get("address")
-                    or token_data.get("token_address"),
-                    "address": token_data.get("address")
-                    or token_data.get("token_address"),
+                    "token_address": token_data.get("address") or token_data.get("token_address"),
+                    "address": token_data.get("address") or token_data.get("token_address"),
                     "chain": token_data.get("chain", "unknown"),
                     "symbol": token_data.get("symbol", "???"),
                     "name": token_data.get("name", "Unknown"),
                     "creator": token_data.get("creator", "unknown"),
-                    "liquidity": token_data.get("liquidity", 0),
-                    "volume_24h": token_data.get("volume_24h", 0),
-                    "price": token_data.get("price", 0),
-                    "attention_score": token_data.get("attention_score", 50),
-                    "status": token_data.get("status", "pending"),
-                    "origin_source": token_data.get("source", "auto"),
-                    "discovered_at": token_data.get("timestamp")
-                    or token_data.get("discovered_at")
-                    or time.time(),
-                    "timestamp": token_data.get("timestamp")
-                    or token_data.get("discovered_at")
-                    or time.time(),
+                    "liquidity_usd": token_data.get("liquidity_usd"),
+                    "market_cap": token_data.get("market_cap"),
+                    "volume_24h": token_data.get("volume_24h"),
+                    "attention_score": token_data.get("attention_score", 0),
+                    "status": "pending",
+                    "discovered_at": time.time(),
+                    "origin_source": token_data.get("origin_source", "unknown"),
+                    "raw_data": token_data.get("raw_data"),
                 }
                 await self.db.save_discovered_token(discovered_doc)
-            except Exception as e:
-                print(f"[publisher] DB save_discovered_token failed: {e}")
+        except Exception as e:
+            print(f"⚠️ Publisher: Token save failed: {e}")
 
-        if self.server is not None and hasattr(self.server, "broadcast"):
-            try:
-                await self.server.broadcast("NEW_TOKEN", {
-                    "token": token_data.get("address")
-                    or token_data.get("token_address"),
-                    "chain": token_data.get("chain"),
-                    "symbol": token_data.get("symbol"),
-                    "timestamp": time.time(),
-                })
-            except Exception as e:
-                print(f"[publisher] NEW_TOKEN broadcast failed: {e}")
-
-    
-
-    async def market_update(self, data: dict) -> None:
-        """
-        Persist a full market snapshot and broadcast it live.
-        """
-        if self.db is not None and hasattr(self.db, "save_market_data"):
-            try:
-                await self.db.save_market_data(data)
-            except Exception as e:
-                print(f"[publisher] DB save_market_data failed: {e}")
-
-        if self.server is not None and hasattr(self.server, "broadcast"):
-            try:
-                await self.server.broadcast("MARKET_UPDATE", data)
-            except Exception as e:
-                print(f"[publisher] MARKET_UPDATE broadcast failed: {e}")
-
-    async def investigation_complete(self, investigation: dict) -> None:
-        """
-        Persist a completed investigation and broadcast it.
-        """
-        if self.db is not None and hasattr(self.db, "save_investigation"):
-            try:
-                await self.db.save_investigation(investigation)
-            except Exception as e:
-                print(f"[publisher] DB save_investigation failed: {e}")
-
-        if self.server is not None and hasattr(self.server, "broadcast"):
-            try:
-                await self.server.broadcast("INVESTIGATION_COMPLETE", investigation)
-            except Exception as e:
-                print(f"[publisher] INVESTIGATION_COMPLETE broadcast failed: {e}")
-
-
-    async def signal(
-        self,
-        token: str,
-        chain: str,
-        symbol: str,
-        verdict: str,
-        score: float,
-        confidence: float,
-    ) -> None:
-        """
-        Persist and broadcast a trading signal / verdict.
-        """
-        payload = {
+    async def signal(self, token: str, chain: str, symbol: str, verdict: str, score: float, confidence: float):
+        """Save AI signal to DB + broadcast + save as event for market engine polling."""
+        signal_doc = {
             "token": token,
             "chain": chain,
             "symbol": symbol,
@@ -223,48 +105,30 @@ class EventPublisher:
             "confidence": confidence,
             "timestamp": time.time(),
         }
+        try:
+            if self.db and hasattr(self.db, "save_signal"):
+                await self.db.save_signal(signal_doc)
+        except Exception as e:
+            print(f"⚠️ Publisher: Signal save failed: {e}")
 
-        if self.db is not None and hasattr(self.db, "save_signal"):
-            try:
-                await self.db.save_signal(payload)
-            except Exception as e:
-                print(f"[publisher] DB save_signal failed: {e}")
+        # FIX: Also save to events collection so market engine can poll it
+        try:
+            if self.db and hasattr(self.db, "save_event"):
+                await self.db.save_event("SIGNAL", signal_doc)
+        except Exception as e:
+            print(f"⚠️ Publisher: Signal event save failed: {e}")
 
-        if self.server is not None and hasattr(self.server, "broadcast"):
-            try:
-                await self.server.broadcast("SIGNAL", payload)
-            except Exception as e:
-                print(f"[publisher] SIGNAL broadcast failed: {e}")
+        await self.broadcast("SIGNAL", signal_doc)
 
-    # ── AGENT WORKING (SPINNER) ──
+    async def investigation_complete(self, investigation: dict):
+        """Broadcast investigation completion."""
+        await self.broadcast("INVESTIGATION_COMPLETE", investigation)
 
-    async def agent_working(
-        self,
-        agent: str,
-        token: str,
-        action: str = "working...",
-        chain: str = "",
-    ) -> None:
-        """
-        Persist an AGENT_WORKING spinner event to MongoDB so the web-server
-        service can poll it, then optionally live-broadcast if co-located.
-        """
-        payload = {
-            "agent": agent,
-            "token": token,
-            "action": action,
-            "chain": chain,
-            "timestamp": time.time(),
-        }
-
-        if self.db is not None and hasattr(self.db, "save_event"):
-            try:
-                await self.db.save_event("AGENT_WORKING", payload)
-            except Exception as e:
-                print(f"[publisher] DB save_event failed for AGENT_WORKING: {e}")
-
-        if self.server is not None and hasattr(self.server, "broadcast"):
-            try:
-                await self.server.broadcast("AGENT_WORKING", payload)
-            except Exception as e:
-                print(f"[publisher] AGENT_WORKING broadcast failed: {e}")
+    async def market_update(self, market_data: dict):
+        """Save market snapshot to DB + broadcast MARKET_UPDATE."""
+        try:
+            if self.db and hasattr(self.db, "save_market_data"):
+                await self.db.save_market_data(market_data)
+        except Exception as e:
+            print(f"⚠️ Publisher: Market data save failed: {e}")
+        await self.broadcast("MARKET_UPDATE", market_data)

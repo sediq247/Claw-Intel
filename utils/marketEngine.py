@@ -1,16 +1,3 @@
-#!/usr/bin/env python3
-"""
-💰 MARKET ENGINE — v4.1
-The Data Aggregator. Fetches from DexScreener API, calculates metrics,
-normalizes multi-chain data, pushes live updates via EventPublisher.
-
-v4.1 CHANGES (decoupled architecture):
-  - Constructor accepts `publisher` (EventPublisher) for DB persistence + WS broadcast
-  - Falls back to `server` for backward compatibility during migration
-  - Uses publisher.market_update() to persist snapshots to MongoDB
-  - All original DexScreener logic preserved
-"""
-
 import asyncio
 import json
 import os
@@ -95,7 +82,6 @@ except ImportError:
         def __init__(self, default_ttl: int = 60):
             self._data: Dict[str, tuple] = {}
             self.default_ttl = default_ttl
-
         def get(self, key: str):
             if key not in self._data:
                 return None
@@ -104,15 +90,12 @@ except ImportError:
                 del self._data[key]
                 return None
             return value
-
         def set(self, key: str, value, ttl: Optional[int] = None):
             self._data[key] = (value, time.time() + (ttl or self.default_ttl))
-
         def clear(self):
             self._data.clear()
 
 DEXSCREENER_BASE = "https://api.dexscreener.com"
-
 DEXSCREENER_RATE_LIMIT = 300
 DEXSCREENER_SLOW_LIMIT = 60
 
@@ -176,22 +159,23 @@ class MarketEngine:
     Fetches, normalizes, and caches market data from DexScreener API.
     Pushes live updates via EventPublisher (DB persistence + optional WS broadcast).
 
-    v4.1: Uses publisher.market_update() for decoupled architecture.
+    v4.1: Polls DB events for SIGNALs to build AI-verified list.
     """
 
     def __init__(
         self,
         publisher: Optional[Any] = None,
         server: Optional[Any] = None,
+        db: Optional[Any] = None,
     ):
         """
         publisher: EventPublisher instance (v4.1 decoupled mode).
-                   Writes market snapshots to MongoDB + optional live broadcast.
-        server:    Legacy ClawIntelServer instance (backward compat during migration).
-                   If publisher is None, falls back to server.broadcast().
+        server:    Legacy ClawIntelServer instance (backward compat).
+        db:        Database instance for polling SIGNAL events.
         """
         self.publisher = publisher
         self.server = server
+        self.db = db
         self.name = "MarketEngine"
         self.cache = SimpleCache(default_ttl=60)
         self.ai_verified_tokens: Dict[str, MarketToken] = {}
@@ -203,21 +187,10 @@ class MarketEngine:
         self.dexscreener_calls = []
         self._session: Optional[aiohttp.ClientSession] = None
         self._semaphore = asyncio.Semaphore(20)
+        self._last_signal_ts = 0.0
 
     def on_ai_verdict(self, data: dict):
-        """Handle AI verdict events from the Decision agent (Orion).
-        Called directly by orchestrator — no event bus needed.
-
-        Expected data format:
-        {
-            "token": "solana:So11111111111111111111111111111111111111112",
-            "symbol": "SOL",
-            "chain": "solana",
-            "verdict": "SAFE",
-            "confidence": 0.94,
-            "timestamp": 1234567890
-        }
-        """
+        """Handle AI verdict events from the Decision agent (Orion)."""
         try:
             verdict = data.get("verdict", "").upper()
             if verdict == "SAFE":
@@ -233,9 +206,29 @@ class MarketEngine:
         except Exception as e:
             print(f"⚠️ {self.name}: Error handling AI verdict: {e}")
 
+    async def _poll_signals(self):
+        """Poll DB events for SIGNAL events to capture AI verdicts."""
+        if not self.db or not hasattr(self.db, "get_recent_events"):
+            return
+        try:
+            events = await self.db.get_recent_events(
+                since=self._last_signal_ts, limit=50
+            )
+            for event in events:
+                if event.get("event_type") == "SIGNAL":
+                    payload = event.get("payload", {})
+                    if payload.get("verdict", "").upper() == "SAFE":
+                        self.on_ai_verdict(payload)
+                ts = event.get("timestamp", 0)
+                if ts > self._last_signal_ts:
+                    self._last_signal_ts = ts
+        except Exception as e:
+            print(f"⚠️ {self.name}: Signal poll error: {e}")
+
     async def start(self):
         """Start the market engine background loop."""
         self.running = True
+        self._last_signal_ts = time.time() - 300  # Look back 5 minutes on start
 
         connector = aiohttp.TCPConnector(limit=50, limit_per_host=30)
         self._session = aiohttp.ClientSession(
@@ -247,6 +240,9 @@ class MarketEngine:
 
         while self.running:
             try:
+                # Poll for AI verdicts from DB (decoupled architecture)
+                await self._poll_signals()
+
                 await self._update_all_markets()
                 await asyncio.sleep(self.update_interval)
             except Exception as e:

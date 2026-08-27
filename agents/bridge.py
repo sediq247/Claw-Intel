@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-🌉 agents/bridge.py
+ agents/bridge.py
 Python ↔ Node EventBus Bridge.
 
 BIDIRECTIONAL:
