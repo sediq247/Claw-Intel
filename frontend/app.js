@@ -451,41 +451,16 @@ class ClawIntelApp {
         this.renderAgentMessage(payload);
         this.audio.play('message');
         break;
-      case 'CHAT_HISTORY':
-        this.renderHistory(payload);
-        break;
-      case 'SYSTEM':
-        this.renderSystemMessage(payload.message);
         break;
       case 'SIGNAL':
         this.handleSignal(payload);
         break;
-      case 'TOKEN_VERIFIED':
-        this.stats.safe++;
-        this.updateStats();
-        this.audio.play('verdict');
-        break;
-      case 'MARKET_UPDATE':
-        // Handled by markets.html
         break;
       case 'PONG':
         // Heartbeat response
         break;
       // v4.0: Agent working spinners
       case 'AGENT_WORKING':
-        this.renderAgentWorking(payload);
-        break;
-      case 'SIMULATION_COMPLETE':
-        this.hideAgentWorking('Atlas');
-        break;
-      case 'ANALYSIS_COMPLETE':
-        this.hideAgentWorking('Vega');
-        break;
-      case 'MEMORY_INTELLIGENCE':
-        this.hideAgentWorking('Echo');
-        break;
-      case 'DECISION_COMPLETE':
-        this.hideAgentWorking('Orion');
         break;
       default:
         console.log('[WS] Unknown type:', type);

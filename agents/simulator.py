@@ -1,6 +1,6 @@
 """
-"The Tester" — Runs fake trades, checks if you can actually buy and sell.
-Called directly by the Orchestrator. Returns structured results + spoken message.
+"The Trader" — Tests trade paths, measures slippage and taxes, 
+reports what the chain actually allows. Speaks in observations, not verdicts.
 """
 
 import asyncio
@@ -12,7 +12,6 @@ import base64
 import struct
 from dataclasses import dataclass, asdict
 from typing import Dict, Optional, Any
-from datetime import datetime
 
 import aiohttp
 from web3 import Web3
@@ -20,38 +19,57 @@ from dotenv import load_dotenv
 
 try:
     from google import genai
+    from google.genai import types as genai_types
     HAS_GENAI = True
 except ImportError:
     genai = None
-    HAS_GENAI = False
-    print("⚠️ Atlas: google-genai package not found. Gemini disabled.")
-
-try:
-    from google.genai import types as genai_types
-except ImportError:
     genai_types = None
-    print("⚠️ Atlas: google.genai.types not available. Config disabled.")
+    HAS_GENAI = False
 
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
-client = None
-if GEMINI_API_KEY and HAS_GENAI:
-    try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        print("✅ Atlas: Gemini initialized")
-    except Exception as e:
-        print(f"⚠️ Atlas: Gemini init failed: {e}")
-        client = None
-else:
-    reason = "GEMINI_API_KEY missing" if not GEMINI_API_KEY else "google-genai unavailable"
-    print(f"⚠️ Atlas: {reason}. Using fallback mode.")
+FALLBACK_MODELS = [
+    GEMINI_MODEL,
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-8b",
+    "gemini-1.5-flash-latest",
+    "gemini-2.0-flash-lite",
+    "gemini-2.0-flash",
+]
 
-# ═══════════════════════════════════════════════════════════
-# DATA MODELS
-# ═══════════════════════════════════════════════════════════
+
+class GeminiWrapper:
+    def __init__(self, api_key: str):
+        self._client = genai.Client(api_key=api_key)
+        self._models = [m for m in FALLBACK_MODELS if m]
+
+    async def generate(self, contents: str, config=None):
+        last_err = None
+        for model in self._models:
+            try:
+                def _call():
+                    kwargs = {"model": model, "contents": contents}
+                    if config and genai_types:
+                        kwargs["config"] = config
+                    return self._client.models.generate_content(**kwargs)
+                return await asyncio.wait_for(asyncio.to_thread(_call), timeout=15)
+            except Exception as e:
+                err_str = str(e)
+                if "404" in err_str or "NOT_FOUND" in err_str:
+                    print(f"⚠️ Atlas: Model {model} unavailable, trying fallback...")
+                    last_err = e
+                    continue
+                raise
+        raise last_err or Exception("All Gemini models exhausted")
+
+
+gemini = GeminiWrapper(GEMINI_API_KEY) if GEMINI_API_KEY and HAS_GENAI else None
+if not gemini:
+    print("⚠️ Atlas: Gemini unavailable. Running fallback mode.")
+
 
 @dataclass
 class SimulationResult:
@@ -72,17 +90,14 @@ class SimulationResult:
     simulation_confidence: float
     details: str
     timestamp: float
-    # EVM simulation fields
     eth_call_buy_simulated: bool = False
     eth_call_sell_simulated: bool = False
     eth_call_revert_reason: Optional[str] = None
     eth_call_effective_tax_percent: float = 0.0
-    # Tenderly fields
     tenderly_buy_simulated: bool = False
     tenderly_sell_simulated: bool = False
     tenderly_gas_used: Optional[int] = None
     tenderly_revert_reason: Optional[str] = None
-    # Solana fields
     solana_buy_simulated: bool = False
     solana_sell_simulated: bool = False
     solana_revert_reason: Optional[str] = None
@@ -94,9 +109,6 @@ class SimulationResult:
     def to_json(self) -> str:
         return json.dumps(asdict(self), default=str)
 
-# ═══════════════════════════════════════════════════════════
-# EVM DEX CONFIGURATION
-# ═══════════════════════════════════════════════════════════
 
 ROUTER_ABIS = {
     "uniswap_v2": [
@@ -139,16 +151,20 @@ ROUTER_ABIS = {
             "type": "function"
         },
         {
-            "inputs": [{"internalType": "uint256", "name": "amountOut", "type": "uint256"},
-                       {"internalType": "address[]", "name": "path", "type": "address[]"}],
+            "inputs": [
+                {"internalType": "uint256", "name": "amountOut", "type": "uint256"},
+                {"internalType": "address[]", "name": "path", "type": "address[]"}
+            ],
             "name": "getAmountsIn",
             "outputs": [{"internalType": "uint256[]", "name": "amounts", "type": "uint256[]"}],
             "stateMutability": "view",
             "type": "function"
         },
         {
-            "inputs": [{"internalType": "uint256", "name": "amountIn", "type": "uint256"},
-                       {"internalType": "address[]", "name": "path", "type": "address[]"}],
+            "inputs": [
+                {"internalType": "uint256", "name": "amountIn", "type": "uint256"},
+                {"internalType": "address[]", "name": "path", "type": "address[]"}
+            ],
             "name": "getAmountsOut",
             "outputs": [{"internalType": "uint256[]", "name": "amounts", "type": "uint256[]"}],
             "stateMutability": "view",
@@ -167,7 +183,7 @@ ROUTER_ADDRESSES = {
         "uniswap_v3": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
     },
     "base": {
-        "uniswap_v2": "0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24",  # BaseSwap / Uniswap V2 on Base
+        "uniswap_v2": "0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24",
         "uniswap_v3": "0x2626664c2603336E57B271c5C0b26F421741e481",
     }
 }
@@ -178,7 +194,6 @@ WETH_ADDRESSES = {
     "base": "0x4200000000000000000000000000000000000006",
 }
 
-# v4.1: Use addresses with known balance history to avoid anti-bot zero-addr checks
 FUNDED_WALLETS = {
     "bsc": "0x8894E0a0c962CB723c1976a4421c95949bE2D4E3",
     "ethereum": "0x0716a17FBAeE714f1E6aB0f9d59edbC5f09815C0",
@@ -197,12 +212,8 @@ OWNERSHIP_ABI = [
     {"constant": True, "inputs": [], "name": "getOwner", "outputs": [{"name": "", "type": "address"}], "type": "function"},
 ]
 
-# ═══════════════════════════════════════════════════════════
-# UTILITIES
-# ═══════════════════════════════════════════════════════════
 
 class RateLimiter:
-    """Simple per-domain rate limiter."""
     def __init__(self):
         self._last_call: Dict[str, float] = {}
         self._min_interval = 1.5
@@ -217,11 +228,12 @@ class RateLimiter:
                 await asyncio.sleep(self._min_interval - elapsed)
             self._last_call[domain] = time.time()
 
+
 rate_limiter = RateLimiter()
 
+
 class TTLCache:
-    """Simple TTL cache with max size."""
-    def __init__(self, maxsize: int = 1000, ttl_seconds: int = 3600):
+    def __init__(self, maxsize: int = 500, ttl_seconds: int = 1800):
         self.maxsize = maxsize
         self.ttl = ttl_seconds
         self._data: Dict[str, tuple] = {}
@@ -251,48 +263,36 @@ class TTLCache:
             for k in expired:
                 del self._data[k]
 
+
 def validate_token_address(address: str, chain: Optional[str] = None) -> str:
-    """Validate and checksum/normalize a token address. Raises ValueError if invalid."""
     if not address:
         raise ValueError("Token address is empty")
-
     address = address.strip()
     is_solana_chain = chain == "solana" if chain else False
     looks_like_solana = not address.startswith("0x") and 32 <= len(address) <= 44
-
     if is_solana_chain or looks_like_solana:
         base58_chars = set("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
         if all(c in base58_chars for c in address):
             return address
         if is_solana_chain:
             raise ValueError(f"Invalid Solana address format: {address}")
-
     if not re.match(r'^0x[a-fA-F0-9]{40}$', address):
         raise ValueError(f"Invalid token address format: {address}")
-
     try:
         return Web3.to_checksum_address(address)
     except Exception as e:
         raise ValueError(f"Invalid checksum for address {address}: {e}")
 
+
 def validate_chain(chain: str) -> str:
-    """Validate chain identifier."""
     chain = chain.lower().strip()
     supported = {"bsc", "ethereum", "base", "solana"}
     if chain not in supported:
         raise ValueError(f"Unsupported chain: {chain}. Supported: {supported}")
     return chain
 
-# ═══════════════════════════════════════════════════════════
-# SOLANA SIMULATION ENGINE
-# ═══════════════════════════════════════════════════════════
 
 class SolanaSimulator:
-    """
-    Solana swap simulation using Jupiter Quote API + RPC simulateTransaction.
-    No capital required. No gas spent. No on-chain execution.
-    """
-
     JUPITER_QUOTE = "https://quote-api.jup.ag/v6"
     JUPITER_SWAP = "https://quote-api.jup.ag/v6/swap"
     WSOL = "So11111111111111111111111111111111111111112"
@@ -312,11 +312,8 @@ class SolanaSimulator:
         return self._session
 
     async def simulate_buy_sell(self, token_mint: str, sol_amount: float = 0.01) -> dict:
-        """Simulate buy (SOL->Token) and sell (Token->SOL) via Jupiter + RPC."""
         try:
             session = await self._get_session()
-
-            # BUY quote
             buy_quote = await self._get_jupiter_quote(
                 session, self.WSOL, token_mint, int(sol_amount * 1e9), slippage_bps=500
             )
@@ -326,7 +323,6 @@ class SolanaSimulator:
                     "revert_reason": "Jupiter: No route found for buy",
                     "simulation_method": "jupiter_rpc"
                 }
-
             buy_sim = await self._simulate_jupiter_swap(session, buy_quote)
             if not buy_sim.get("success"):
                 return {
@@ -335,7 +331,6 @@ class SolanaSimulator:
                     "simulation_method": "jupiter_rpc",
                     "logs": buy_sim.get("logs", [])
                 }
-
             expected_tokens = int(buy_quote.get("outAmount", 0))
             if expected_tokens <= 0:
                 return {
@@ -343,8 +338,6 @@ class SolanaSimulator:
                     "revert_reason": "Zero token output from buy -- likely no liquidity or extreme tax",
                     "simulation_method": "jupiter_rpc"
                 }
-
-            # SELL quote
             sell_quote = await self._get_jupiter_quote(
                 session, token_mint, self.WSOL, expected_tokens, slippage_bps=500
             )
@@ -352,41 +345,25 @@ class SolanaSimulator:
                 return {
                     "buy_success": True, "sell_success": False,
                     "expected_tokens": expected_tokens,
-                    "revert_reason": "Jupiter: No route found for sell -- possible honeypot",
+                    "revert_reason": "Jupiter: No route found for sell",
                     "simulation_method": "jupiter_rpc"
                 }
-
             sell_sim = await self._simulate_jupiter_swap(session, sell_quote)
-
             sol_returned = int(sell_quote.get("outAmount", 0))
             effective_tax = 0.0
             if sol_returned > 0 and sol_amount > 0:
                 effective_tax = max(0, (1 - (sol_returned / (sol_amount * 1e9))) * 100)
-
-            is_honeypot = False
-            if not sell_sim.get("success"):
-                error_lower = str(sell_sim.get("error", "")).lower()
-                honeypot_indicators = [
-                    "transfer failed", "insufficient funds", "account frozen",
-                    "invalid account data", "program error", "custom program error",
-                    "slippage tolerance exceeded", "0x11", "0x12", "account not found",
-                    "missing associated token account", "insufficient lamports"
-                ]
-                is_honeypot = any(kw in error_lower for kw in honeypot_indicators)
-
             return {
                 "buy_success": True,
                 "sell_success": sell_sim.get("success", False),
                 "expected_tokens": expected_tokens,
                 "sol_returned_lamports": sol_returned,
                 "effective_tax_percent": round(effective_tax, 2),
-                "is_honeypot": is_honeypot,
                 "revert_reason": sell_sim.get("error"),
                 "simulation_method": "jupiter_rpc",
                 "compute_units": sell_sim.get("compute_units") or buy_sim.get("compute_units"),
                 "logs": (sell_sim.get("logs", []) + buy_sim.get("logs", []))[:50]
             }
-
         except Exception as e:
             return {
                 "buy_success": False, "sell_success": False,
@@ -394,15 +371,8 @@ class SolanaSimulator:
                 "simulation_method": "jupiter_rpc"
             }
 
-    async def _get_jupiter_quote(
-        self, session: aiohttp.ClientSession, input_mint: str,
-        output_mint: str, amount: int, slippage_bps: int = 50
-    ) -> Optional[dict]:
-        url = (
-            f"{self.JUPITER_QUOTE}/quote?"
-            f"inputMint={input_mint}&outputMint={output_mint}&amount={amount}"
-            f"&slippageBps={slippage_bps}&onlyDirectRoutes=false"
-        )
+    async def _get_jupiter_quote(self, session, input_mint, output_mint, amount, slippage_bps=50):
+        url = f"{self.JUPITER_QUOTE}/quote?inputMint={input_mint}&outputMint={output_mint}&amount={amount}&slippageBps={slippage_bps}&onlyDirectRoutes=false"
         try:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 if resp.status == 200:
@@ -418,9 +388,7 @@ class SolanaSimulator:
             print(f"⚠️ Jupiter quote request failed: {e}")
             return None
 
-    async def _simulate_jupiter_swap(
-        self, session: aiohttp.ClientSession, quote_data: dict
-    ) -> dict:
+    async def _simulate_jupiter_swap(self, session, quote_data):
         try:
             swap_body = {
                 "quoteResponse": quote_data,
@@ -438,7 +406,6 @@ class SolanaSimulator:
                 swap_tx_b64 = swap_data.get("swapTransaction")
                 if not swap_tx_b64:
                     return {"success": False, "error": "No swapTransaction in Jupiter response"}
-
                 rpc_payload = {
                     "jsonrpc": "2.0", "id": 1,
                     "method": "simulateTransaction",
@@ -470,7 +437,6 @@ class SolanaSimulator:
             return {"success": False, "error": str(e)[:200]}
 
     async def analyze_mint_account(self, token_mint: str) -> dict:
-        """Check SPL token mint authority and freeze authority via RPC."""
         try:
             session = await self._get_session()
             payload = {
@@ -501,40 +467,56 @@ class SolanaSimulator:
                 freeze_authority = None
                 if freeze_auth_option == 1:
                     freeze_authority = base64.b64encode(raw[50:82]).decode()
-                return {
-                    "mint_authority": mint_authority,
-                    "freeze_authority": freeze_authority,
-                }
+                return {"mint_authority": mint_authority, "freeze_authority": freeze_authority}
         except Exception as e:
             print(f"⚠️ Solana mint analysis error: {e}")
             return {}
 
     async def cleanup(self):
-        """Close session only if we own it (i.e., it was not shared from Atlas)."""
         if self._owns_session and self._session and not self._session.closed:
             await self._session.close()
 
-# ═══════════════════════════════════════════════════════════
-# MAIN SIMULATOR AGENT
-# ═══════════════════════════════════════════════════════════
 
 class SimulatorAgent:
-    """
-    Atlas — The Tester
-    Runs fake trades, checks if you can actually buy and sell.
-    v4.1: Orchestrator-driven, returns structured results + spoken message.
-    """
+    RPC_POOLS = {
+        "ethereum": [
+            os.getenv("ETH_RPC_URL", ""),
+            "https://eth.llamarpc.com",
+            "https://rpc.ankr.com/eth",
+            "https://ethereum-rpc.publicnode.com",
+        ],
+        "bsc": [
+            os.getenv("BSC_RPC_URL", ""),
+            "https://bsc-dataseed.binance.org",
+            "https://rpc.ankr.com/bsc",
+            "https://bsc-rpc.publicnode.com",
+        ],
+        "base": [
+            os.getenv("BASE_RPC_URL", ""),
+            "https://mainnet.base.org",
+            "https://rpc.ankr.com/base",
+            "https://base-rpc.publicnode.com",
+        ],
+        "solana": [
+            os.getenv("SOLANA_RPC_URL", ""),
+            "https://api.mainnet-beta.solana.com",
+            "https://rpc.ankr.com/solana",
+            "https://solana-rpc.publicnode.com",
+        ],
+    }
+
+    HONEYPOT_APIS = {
+        "bsc": "https://api.honeypot.is/v2/IsHoneypot",
+        "ethereum": "https://api.honeypot.is/v2/IsHoneypot",
+        "base": "https://api.honeypot.is/v2/IsHoneypot",
+    }
 
     def __init__(self, server: Optional[Any] = None):
         self.server = server
         self.name = "Atlas"
         self.results_cache = TTLCache(maxsize=500, ttl_seconds=1800)
         self.web3_instances: Dict[str, Web3] = {}
-        self.honeypot_apis = {
-            "bsc": "https://api.honeypot.is/v2/IsHoneypot",
-            "ethereum": "https://api.honeypot.is/v2/IsHoneypot",
-            "base": "https://api.honeypot.is/v2/IsHoneypot",
-        }
+        self._active_rpc_urls: Dict[str, str] = {}
         self._session = aiohttp.ClientSession(
             connector=aiohttp.TCPConnector(limit=10, limit_per_host=5, ttl_dns_cache=300, use_dns_cache=True),
             timeout=aiohttp.ClientTimeout(total=30)
@@ -542,33 +524,46 @@ class SimulatorAgent:
         self._init_web3()
 
     def _init_web3(self):
-        chains = {
-            "bsc": os.getenv("BSC_RPC_URL"),
-            "ethereum": os.getenv("ETH_RPC_URL"),
-            "base": os.getenv("BASE_RPC_URL"),
-        }
-        for chain, rpc in chains.items():
-            if not rpc:
-                print(f"⚠️ {self.name}: No RPC for {chain} -- eth_call disabled")
+        for chain, urls in self.RPC_POOLS.items():
+            if chain == "solana":
                 continue
+            urls = [u for u in urls if u]
+            for url in urls:
+                try:
+                    w3 = Web3(Web3.HTTPProvider(url, request_kwargs={"timeout": 20}))
+                    if w3.is_connected():
+                        self.web3_instances[chain] = w3
+                        self._active_rpc_urls[chain] = url
+                        print(f"✅ Atlas: Web3 ready for {chain} via {url.split('/')[2]}")
+                        break
+                except Exception as e:
+                    print(f"⚠️ Atlas: {chain} endpoint {url.split('/')[2]} failed: {e}")
+            if chain not in self.web3_instances:
+                print(f"❌ Atlas: All RPC endpoints failed for {chain}")
+
+    async def _rotate_rpc(self, chain: str):
+        current = self._active_rpc_urls.get(chain)
+        urls = [u for u in self.RPC_POOLS.get(chain, []) if u]
+        if not urls:
+            return
+        start = urls.index(current) + 1 if current in urls else 0
+        for i in range(len(urls)):
+            url = urls[(start + i) % len(urls)]
             try:
-                w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 20}))
+                w3 = Web3(Web3.HTTPProvider(url, request_kwargs={"timeout": 20}))
                 if w3.is_connected():
                     self.web3_instances[chain] = w3
-                    print(f"✅ {self.name}: Web3 ready for {chain}")
-                else:
-                    print(f"❌ {self.name}: Web3 failed for {chain}")
-            except Exception as e:
-                print(f"❌ {self.name}: Web3 error for {chain}: {e}")
+                    self._active_rpc_urls[chain] = url
+                    print(f"✅ Atlas: Rotated {chain} to {url.split('/')[2]}")
+                    return
+            except Exception:
+                continue
+        print(f"❌ Atlas: All RPC endpoints failed for {chain}")
 
-    # v4.1: Public entry point for the Orchestrator
     async def simulate(self, event_data: dict) -> dict:
-        """Run full simulation and return structured result + spoken message."""
         return await self._simulate_token(event_data)
 
-    # v4.1: Backward-compatible fire-and-forget wrapper (not used by Orchestrator)
     def on_new_token(self, event_data: dict):
-        """Schedule a simulation. Catches crashes so they never kill the event loop."""
         try:
             chain = validate_chain(event_data.get("chain", "unknown"))
             token_address = validate_token_address(event_data.get("token_address", ""), chain)
@@ -577,184 +572,147 @@ class SimulatorAgent:
             task = asyncio.create_task(asyncio.wait_for(self._simulate_token(event_data), timeout=120))
             task.add_done_callback(self._on_task_done)
         except ValueError as e:
-            print(f"❌ {self.name}: Invalid input -- {e}")
+            print(f"❌ Atlas: Invalid input -- {e}")
         except Exception as e:
-            print(f"⚠️ {self.name}: Failed scheduling simulation: {e}")
+            print(f"⚠️ Atlas: Failed scheduling simulation: {e}")
 
     def _on_task_done(self, task: asyncio.Task):
         try:
             task.result()
         except asyncio.TimeoutError:
-            print(f"⚠️ {self.name}: Simulation task timed out")
+            print(f"⚠️ Atlas: Simulation task timed out")
         except Exception as e:
-            print(f"⚠️ {self.name}: Simulation task failed: {e}")
-
-    async def _speak(self, message: str, msg_type: str = "response"):
-        """Broadcast a spoken message. Used for standalone/testing only.
-        During orchestrated analysis, the Orchestrator handles all messaging."""
-        try:
-            if self.server and hasattr(self.server, 'broadcast'):
-                await self.server.broadcast("AGENT_MESSAGE", {
-                    "agent": self.name, "message": message, "type": msg_type,
-                    "channel": "main", "timestamp": time.time()
-                })
-        except Exception as e:
-            print(f"⚠️ {self.name}: Broadcast failed: {e}")
+            print(f"⚠️ Atlas: Simulation task failed: {e}")
 
     async def _generate_atlas_message(self, sim: SimulationResult, symbol: str, context: str) -> str:
-        if not client:
+        if not gemini:
             return self._fallback_message(sim, symbol)
 
         system_prompt = (
-            "You are Atlas, a battle-hardened crypto contract auditor in a team chat. "
-            "You have seen hundreds of rugs, honeypots, and exploits. You speak with the "
-            "calm authority of someone who has been burned before. You reference Nova's discovery "
-            "naturally, then walk through your findings methodically. Be technical but accessible. "
-            "Never hype -- your credibility is your currency."
+            "You are Atlas, a disciplined on-chain trader in a team chat. "
+            "You test trade paths, measure slippage, and report what the chain actually does. "
+            "You speak in observations and data, never in accusations. "
+            "You do not call tokens scams or honeypots unless the evidence is overwhelming and specific. "
+            "You respect the team and hand off cleanly."
         )
 
-        sim_details = []
+        observations = []
         if sim.chain == "solana":
             if sim.solana_buy_simulated:
-                sim_details.append("Jupiter BUY simulation: PASSED")
+                observations.append("Jupiter BUY simulation executed successfully.")
             else:
-                sim_details.append("Jupiter BUY simulation: FAILED")
+                observations.append("Jupiter BUY simulation failed — no viable route or swap reverted.")
             if sim.solana_sell_simulated:
-                sim_details.append("Jupiter SELL simulation: PASSED")
+                observations.append("Jupiter SELL simulation executed successfully.")
             else:
-                sim_details.append("Jupiter SELL simulation: FAILED")
+                observations.append("Jupiter SELL simulation failed — possible blocked exit path.")
             if sim.solana_revert_reason:
-                sim_details.append(f"Revert reason: {sim.solana_revert_reason}")
+                observations.append(f"Revert detail: {sim.solana_revert_reason}")
             if sim.solana_effective_tax_percent > 0:
-                sim_details.append(f"Effective tax/slippage: {sim.solana_effective_tax_percent:.2f}%")
-            if sim.solana_compute_units:
-                sim_details.append(f"Compute units: {sim.solana_compute_units}")
+                observations.append(f"Effective tax/slippage: {sim.solana_effective_tax_percent:.2f}%")
             if sim.solana_mint_authority:
-                sim_details.append("Mint authority is ACTIVE -- supply can be inflated")
+                observations.append("Mint authority is active — supply can be inflated.")
             if sim.solana_freeze_authority:
-                sim_details.append("Freeze authority is ACTIVE -- accounts can be frozen")
+                observations.append("Freeze authority is active — accounts can be frozen.")
         else:
             if sim.eth_call_buy_simulated:
-                sim_details.append("eth_call BUY simulation: PASSED")
+                observations.append("eth_call BUY simulation executed successfully.")
             else:
-                sim_details.append("eth_call BUY simulation: FAILED")
+                observations.append("eth_call BUY simulation failed.")
             if sim.eth_call_sell_simulated:
-                sim_details.append("eth_call SELL simulation: PASSED")
+                observations.append("eth_call SELL simulation executed successfully.")
             else:
-                sim_details.append("eth_call SELL simulation: FAILED")
+                observations.append("eth_call SELL simulation failed.")
             if sim.eth_call_revert_reason:
-                sim_details.append(f"Revert reason: {sim.eth_call_revert_reason}")
+                observations.append(f"Revert detail: {sim.eth_call_revert_reason}")
             if sim.eth_call_effective_tax_percent > 0:
-                sim_details.append(f"Effective tax/slippage: {sim.eth_call_effective_tax_percent:.2f}%")
+                observations.append(f"Effective tax/slippage: {sim.eth_call_effective_tax_percent:.2f}%")
             if sim.tenderly_buy_simulated:
-                sim_details.append("Tenderly BUY simulation: PASSED")
+                observations.append("Tenderly BUY simulation executed successfully.")
             if sim.tenderly_sell_simulated:
-                sim_details.append("Tenderly SELL simulation: PASSED")
+                observations.append("Tenderly SELL simulation executed successfully.")
             if sim.tenderly_gas_used:
-                sim_details.append(f"Tenderly gas used: {sim.tenderly_gas_used}")
+                observations.append(f"Tenderly gas used: {sim.tenderly_gas_used}")
             if sim.tenderly_revert_reason:
-                sim_details.append(f"Tenderly revert: {sim.tenderly_revert_reason}")
+                observations.append(f"Tenderly revert detail: {sim.tenderly_revert_reason}")
 
-        sim_detail_text = "\n".join(sim_details) if sim_details else "Static analysis only (no on-chain simulation available)"
+        obs_text = "\n".join(observations) if observations else "No on-chain simulation data available."
 
-        user_prompt = f"""
-Token: {symbol}
+        user_prompt = f"""Token: {symbol}
 Chain: {sim.chain.upper()}
 
-Simulation Results:
-- Can Buy: {"Yes -- path is open" if sim.can_buy else "NO -- buy path is BLOCKED"}
-- Can Sell: {"Yes -- exit is open" if sim.can_sell else "NO -- exit is BLOCKED"}
-- Honeypot Risk: {"YES -- this is a trap" if sim.honeypot_risk else "No honeypot behavior detected"}
+Market Mechanics:
+- Buy path open: {"Yes" if sim.can_buy else "No"}
+- Sell path open: {"Yes" if sim.can_sell else "No"}
 - Liquidity: ${sim.liquidity_usd:,.0f}
-- Liquidity Locked: {"Yes -- funds are secured" if sim.liquidity_locked else "No -- liquidity is unlocked"}
-- Buy Tax: {sim.buy_tax}%
-- Sell Tax: {sim.sell_tax}%
-- Mint Function: {"YES -- owner can print tokens" if sim.mint_function else "No mint function"}
-- Blacklist Function: {"YES -- owner can freeze wallets" if sim.blacklist_function else "No blacklist function"}
-- Ownership Renounced: {"Yes -- contract is immutable" if sim.owner_renounced else "No -- owner still has control"}
+- Liquidity locked: {"Yes" if sim.liquidity_locked else "No"}
+- Buy tax: {sim.buy_tax}%
+- Sell tax: {sim.sell_tax}%
+- Mint function present: {"Yes" if sim.mint_function else "No"}
+- Blacklist function present: {"Yes" if sim.blacklist_function else "No"}
+- Ownership renounced: {"Yes" if sim.owner_renounced else "No"}
 
 On-Chain Simulation:
-{sim_detail_text}
+{obs_text}
 
 Context:
 {context}
 
 Requirements:
-- Acknowledge Nova's find naturally and briefly
-- Walk through the biggest risks first, then positives
-- Mention the sell path explicitly -- that is what kills most people
-- Reference the simulation results if available
-- Hand off to Vega naturally
-- Keep it conversational and under 5 sentences
-- Sound like a technician who respects the chain but trusts no contract
-"""
+1. Acknowledge Nova briefly and naturally
+2. Report buy/sell path results as observations, not verdicts
+3. Note taxes, slippage, and contract features as structural facts
+4. Only use the word "honeypot" if buy works AND sell fails with a specific blocking revert
+5. Hand off to Vega for contract-level analysis
+6. Keep it under 5 sentences, conversational, evidence-first
+7. Sound like a trader who trusts the chain, not the contract"""
 
         try:
-            def _generate():
-                kwargs = {"model": GEMINI_MODEL, "contents": f"{system_prompt}\n\n{user_prompt}"}
-                if genai_types:
-                    kwargs["config"] = genai_types.GenerateContentConfig(temperature=0.85, max_output_tokens=250)
-                response = client.models.generate_content(**kwargs)
-                return response.text if hasattr(response, "text") else str(response)
-
-            response = await asyncio.wait_for(asyncio.to_thread(_generate), timeout=15)
-            if response:
-                return response.strip()
-            return self._fallback_message(sim, symbol)
+            config = None
+            if genai_types:
+                config = genai_types.GenerateContentConfig(temperature=0.85, max_output_tokens=250)
+            response = await gemini.generate(f"{system_prompt}\n\n{user_prompt}", config=config)
+            text = response.text if hasattr(response, "text") else str(response)
+            return text.strip() if text else self._fallback_message(sim, symbol)
         except asyncio.TimeoutError:
-            print(f"⚠️ {self.name}: Gemini call timed out")
+            print("⚠️ Atlas: Gemini timed out")
             return self._fallback_message(sim, symbol)
         except Exception as e:
-            print(f"⚠️ {self.name}: Gemini error: {e}")
+            print(f"⚠️ Atlas: Gemini error: {e}")
             return self._fallback_message(sim, symbol)
 
     def _fallback_message(self, sim: SimulationResult, symbol: str) -> str:
-        parts = []
-        if sim.honeypot_risk or not sim.can_sell:
-            parts.append(f"Nova found it, but I'm calling it -- {symbol} is a honeypot. Sells are dead.")
+        parts = [f"Ran trade simulation on {symbol}. "]
+
+        if sim.can_buy and sim.can_sell:
+            parts.append("Buy and sell paths both executed. ")
+        elif sim.can_buy and not sim.can_sell:
+            parts.append("Buy path is open, but sell path failed. ")
+        elif not sim.can_buy:
+            parts.append("Buy path failed — no viable route. ")
+
+        if sim.eth_call_effective_tax_percent > 0 or sim.solana_effective_tax_percent > 0:
+            tax = sim.eth_call_effective_tax_percent or sim.solana_effective_tax_percent
+            parts.append(f"Effective tax around {tax:.1f}%. ")
+
+        if sim.mint_function:
+            parts.append("Contract has mint capability. ")
+        if sim.blacklist_function:
+            parts.append("Contract has blacklist capability. ")
+        if sim.solana_mint_authority:
+            parts.append("Mint authority is active on Solana. ")
+        if sim.solana_freeze_authority:
+            parts.append("Freeze authority is active on Solana. ")
+
+        if sim.liquidity_usd > 0:
+            parts.append(f"Liquidity sits at ${sim.liquidity_usd:,.0f}. ")
         else:
-            parts.append(f"Buy and sell paths are open on {symbol}. No honeypot behavior detected.")
+            parts.append("Liquidity appears thin. ")
 
-        if sim.chain == "solana":
-            if sim.solana_buy_simulated and sim.solana_sell_simulated:
-                parts.append("I ran Jupiter simulation -- both buy and sell executed successfully on Solana.")
-            elif sim.solana_buy_simulated and not sim.solana_sell_simulated:
-                parts.append("Jupiter buy worked, but sell reverted. Classic honeypot pattern on Solana.")
-            if sim.solana_effective_tax_percent > 10:
-                parts.append(f"High effective tax detected: {sim.solana_effective_tax_percent:.1f}% -- that's a rug in slow motion.")
-            if sim.solana_mint_authority:
-                parts.append("Token has an active MINT authority -- supply can be inflated at any time.")
-            if sim.solana_freeze_authority:
-                parts.append("Freeze authority is active -- your token account could be frozen.")
-        else:
-            if sim.eth_call_buy_simulated and sim.eth_call_sell_simulated:
-                parts.append("I ran eth_call simulation -- both buy and sell executed successfully on-chain.")
-            elif sim.eth_call_buy_simulated and not sim.eth_call_sell_simulated:
-                parts.append("eth_call buy worked, but sell reverted. Classic honeypot pattern.")
-            if sim.eth_call_effective_tax_percent > 10:
-                parts.append(f"High effective tax detected: {sim.eth_call_effective_tax_percent:.1f}% -- that's a rug in slow motion.")
-            if sim.mint_function:
-                parts.append("Contract includes a MINT function -- owner can print infinite supply.")
-            if sim.blacklist_function:
-                parts.append("Blacklist capability detected -- your wallet could be frozen.")
-
-        liq = sim.liquidity_usd
-        if liq == 0:
-            parts.append("Liquidity is basically zero -- you're trading air.")
-        elif liq < 1000:
-            parts.append(f"Low liquidity warning: ${liq:,.0f}. Slippage will eat you alive.")
-        elif liq >= 10000:
-            parts.append(f"Solid liquidity: ${liq:,.0f}. At least you can get in and out.")
-
-        parts.append("Vega, your turn for deeper analysis.")
-        return " ".join(parts)
-
-    # ═══════════════════════════════════════════════════════════
-    # MAIN SIMULATION PIPELINE
-    # ═══════════════════════════════════════════════════════════
+        parts.append("Vega, over to you for the contract read.")
+        return "".join(parts)
 
     async def _simulate_token(self, event_data: dict) -> dict:
-        # v4.1 FIX: support both "symbol" (from queue) and "token_symbol" (legacy)
         token_address = event_data.get("token_address")
         chain = event_data.get("chain", "unknown")
         symbol = event_data.get("token_symbol", event_data.get("symbol", "???"))
@@ -763,18 +721,13 @@ Requirements:
         try:
             cached = await self.results_cache.get(token_address)
             if cached:
-                print(f"📦 {self.name}: Cache hit for {symbol}")
-                # FIX: Removed direct broadcast. Just log and return.
-                report = await self._generate_atlas_message(cached, symbol, "Cache hit — returning previous simulation.")
+                print(f"📦 Atlas: Cache hit for {symbol}")
+                report = await self._generate_atlas_message(cached, symbol, "Returning cached simulation results.")
                 return {**cached.__dict__, "message": report, "token_symbol": symbol, "token_name": name, "token_address": token_address, "chain": chain}
 
-            # FIX: Removed the early ack broadcast. Atlas works silently.
-            # The Orchestrator broadcasts AGENT_WORKING before this method starts
-            # and AGENT_MESSAGE after it returns.
-            print(f"🧪 {self.name}: Simulating {symbol} ({chain})...")
+            print(f"🧪 Atlas: Simulating {symbol} ({chain})...")
 
-            # Tier 1: Static Analysis
-            print(f"🔍 {self.name}: Tier 1 -- Static analysis...")
+            print(f"🔍 Atlas: Tier 1 — Static analysis...")
             static_results = await asyncio.gather(
                 self._check_honeypot(token_address, chain),
                 self._check_liquidity(token_address, chain),
@@ -785,15 +738,14 @@ Requirements:
             liquidity_data = static_results[1] if not isinstance(static_results[1], Exception) else {}
             contract_data = static_results[2] if not isinstance(static_results[2], Exception) else {}
 
-            # Chain-branching simulation
             eth_call_result = None
             tenderly_result = None
             solana_result = None
             solana_contract = {}
 
             if chain == "solana":
-                print(f"🔍 {self.name}: Tier 2 -- Solana Jupiter + RPC simulation...")
-                sol_rpc = os.getenv("SOLANA_RPC_URL")
+                print(f"🔍 Atlas: Tier 2 — Solana Jupiter + RPC simulation...")
+                sol_rpc = self._active_rpc_urls.get("solana") or os.getenv("SOLANA_RPC_URL")
                 if sol_rpc:
                     sol_sim = SolanaSimulator(sol_rpc, session=self._session)
                     try:
@@ -802,40 +754,40 @@ Requirements:
                                 sol_sim.simulate_buy_sell(token_address, sol_amount=0.01), timeout=60
                             )
                         else:
-                            print(f"⚠️ {self.name}: Jupiter failed flag set — skipping Jupiter simulation")
+                            print(f"⚠️ Atlas: Jupiter failed flag set — skipping Jupiter simulation")
                         solana_contract = await asyncio.wait_for(
                             sol_sim.analyze_mint_account(token_address), timeout=15
                         )
                     except asyncio.TimeoutError:
-                        print(f"⚠️ {self.name}: Solana simulation timed out")
+                        print(f"⚠️ Atlas: Solana simulation timed out")
                     finally:
                         await sol_sim.cleanup()
                 else:
-                    print(f"⚠️ {self.name}: No SOLANA_RPC_URL configured")
+                    print(f"⚠️ Atlas: No Solana RPC available")
             else:
                 if chain in self.web3_instances and chain in ROUTER_ADDRESSES:
-                    print(f"🔍 {self.name}: Tier 2 -- eth_call simulation...")
+                    print(f"🔍 Atlas: Tier 2 — eth_call simulation...")
                     try:
                         eth_call_result = await asyncio.wait_for(
                             self._simulate_eth_call_swap(token_address, chain), timeout=45
                         )
                     except asyncio.TimeoutError:
-                        print(f"⚠️ {self.name}: eth_call simulation timed out")
+                        print(f"⚠️ Atlas: eth_call simulation timed out")
                     except Exception as e:
-                        print(f"⚠️ {self.name}: eth_call simulation failed: {e}")
+                        print(f"⚠️ Atlas: eth_call simulation failed: {e}")
                 else:
-                    print(f"⚠️ {self.name}: eth_call not available for {chain} (no Web3 or router config)")
+                    print(f"⚠️ Atlas: eth_call not available for {chain}")
 
                 if os.getenv("TENDERLY_API_KEY") and chain in ("bsc", "ethereum", "base"):
-                    print(f"🔍 {self.name}: Tier 3 -- Tenderly simulation...")
+                    print(f"🔍 Atlas: Tier 3 — Tenderly simulation...")
                     try:
                         tenderly_result = await asyncio.wait_for(
                             self._simulate_tenderly(token_address, chain), timeout=45
                         )
                     except asyncio.TimeoutError:
-                        print(f"⚠️ {self.name}: Tenderly simulation timed out")
+                        print(f"⚠️ Atlas: Tenderly simulation timed out")
                     except Exception as e:
-                        print(f"⚠️ {self.name}: Tenderly simulation failed: {e}")
+                        print(f"⚠️ Atlas: Tenderly simulation failed: {e}")
 
             simulation = self._build_result(
                 token_address, chain, symbol,
@@ -849,39 +801,34 @@ Requirements:
             report = await self._generate_atlas_message(simulation, symbol, context)
 
             result = {**simulation.__dict__, "message": report, "token_symbol": symbol, "token_name": name, "token_address": token_address, "chain": chain}
-            # Preserve fields from upstream (Nova's queue data)
             for key in ["creator", "origin_source", "timestamp", "attention_score", "volume_24h", "liquidity_usd", "market_cap"]:
                 if key in event_data and key not in result:
                     result[key] = event_data[key]
             return result
 
         except asyncio.TimeoutError:
-            print(f"⚠️ {self.name}: Simulation timed out")
+            print(f"⚠️ Atlas: Simulation timed out")
             return {
                 "token_address": token_address, "chain": chain, "token_symbol": symbol, "token_name": name,
-                "error": "timeout", "message": f"Simulation on {symbol} timed out. Treat with caution.",
-                "can_buy": False, "can_sell": False, "honeypot_risk": True,
+                "error": "timeout", "message": f"Simulation on {symbol} timed out. Data is incomplete.",
+                "can_buy": False, "can_sell": False, "honeypot_risk": False,
                 "liquidity_usd": 0, "simulation_confidence": 0,
             }
         except Exception as e:
-            print(f"❌ {self.name}: Fatal simulation error: {e}")
+            print(f"❌ Atlas: Fatal simulation error: {e}")
             return {
                 "token_address": token_address, "chain": chain, "token_symbol": symbol, "token_name": name,
                 "error": str(e), "message": f"Simulation crashed on {symbol}: {e}",
-                "can_buy": False, "can_sell": False, "honeypot_risk": True,
+                "can_buy": False, "can_sell": False, "honeypot_risk": False,
                 "liquidity_usd": 0, "simulation_confidence": 0,
             }
 
-    # ═══════════════════════════════════════════════════════════
-    # TIER 1: STATIC ANALYSIS
-    # ═══════════════════════════════════════════════════════════
-
     async def _check_honeypot(self, token_address: str, chain: str) -> dict:
         try:
-            if chain not in ["bsc", "ethereum", "base"]:
+            if chain not in self.HONEYPOT_APIS:
                 return {"buyable": True, "sellable": True, "is_honeypot": False, "buyTax": 0, "sellTax": 0}
             await rate_limiter.wait("honeypot.is")
-            url = f"{self.honeypot_apis[chain]}?address={token_address}"
+            url = f"{self.HONEYPOT_APIS[chain]}?address={token_address}"
             async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -894,14 +841,14 @@ Requirements:
                         "sellTax": simulation.get("sellTax", 0)
                     }
                 elif resp.status == 429:
-                    print(f"⚠️ {self.name}: Honeypot.is rate limited")
+                    print(f"⚠️ Atlas: Honeypot.is rate limited")
                     return {}
                 else:
                     text = await resp.text()
-                    print(f"⚠️ {self.name}: Honeypot.is HTTP {resp.status}: {text[:100]}")
+                    print(f"⚠️ Atlas: Honeypot.is HTTP {resp.status}: {text[:100]}")
                     return {}
         except Exception as e:
-            print(f"⚠️ {self.name}: Honeypot check failed: {e}")
+            print(f"⚠️ Atlas: Honeypot check failed: {e}")
             return {}
 
     async def _check_liquidity(self, token_address: str, chain: str) -> dict:
@@ -919,30 +866,21 @@ Requirements:
                         return {"liquidity_usd": liquidity_usd, "locked": liquidity_usd > 1000, "dex": top_pair.get("dexId")}
                 return {"liquidity_usd": 0, "locked": False}
         except Exception as e:
-            print(f"⚠️ {self.name}: Liquidity check failed: {e}")
+            print(f"⚠️ Atlas: Liquidity check failed: {e}")
             return {"liquidity_usd": 0, "locked": False}
 
     async def _analyze_contract(self, token_address: str, chain: str) -> dict:
-        """v4.1 FIX: All sync Web3 calls wrapped in asyncio.to_thread()"""
         try:
-            if chain == "solana":
+            if chain == "solana" or chain not in self.web3_instances:
                 return {}
-            if chain not in ["bsc", "ethereum", "base"]:
-                return {}
-            rpc_key = "BSC_RPC_URL" if chain == "bsc" else "ETH_RPC_URL" if chain == "ethereum" else "BASE_RPC_URL"
-            rpc_url = os.getenv(rpc_key)
-            if not rpc_url:
-                return {}
-            w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
+            w3 = self.web3_instances[chain]
             dangerous_sigs = {"mint": "0x40c10f19", "blacklist": "0xf9f92be4", "pause": "0x8456cb59"}
-
             try:
                 code = await asyncio.to_thread(
                     lambda: w3.eth.get_code(Web3.to_checksum_address(token_address)).hex()
                 )
             except Exception:
                 return {}
-
             owner_renounced = False
             try:
                 token_contract = w3.eth.contract(address=Web3.to_checksum_address(token_address), abi=OWNERSHIP_ABI)
@@ -957,7 +895,6 @@ Requirements:
                         pass
             except Exception:
                 pass
-
             return {
                 "has_mint": dangerous_sigs["mint"] in code,
                 "has_blacklist": dangerous_sigs["blacklist"] in code,
@@ -965,15 +902,10 @@ Requirements:
                 "owner_renounced": owner_renounced,
             }
         except Exception as e:
-            print(f"⚠️ {self.name}: Contract analysis failed: {e}")
+            print(f"⚠️ Atlas: Contract analysis failed: {e}")
             return {}
 
-    # ═══════════════════════════════════════════════════════════
-    # TIER 2: eth_call SIMULATION
-    # ═══════════════════════════════════════════════════════════
-
     async def _simulate_eth_call_swap(self, token_address: str, chain: str) -> dict:
-        """v4.1 FIX: All sync Web3 RPC calls wrapped in asyncio.to_thread()"""
         w3 = self.web3_instances.get(chain)
         if not w3:
             return {"error": "No Web3 instance for chain"}
@@ -989,32 +921,31 @@ Requirements:
             router = w3.eth.contract(address=router_address, abi=ROUTER_ABIS["uniswap_v2"])
             token = w3.eth.contract(address=Web3.to_checksum_address(token_address), abi=ERC20_ABI)
 
-            # v4.1: Wrap all sync RPC calls
             try:
                 decimals = await asyncio.to_thread(token.functions.decimals().call)
             except Exception:
                 decimals = 18
 
             amount_in_eth = 0.001
-            amount_in_wei = w3.to_wei(amount_in_eth, 'ether')
+            amount_in_wei = w3.to_wei(amount_in_eth, "ether")
 
             try:
                 nonce = await asyncio.to_thread(w3.eth.get_transaction_count, funded_wallet)
             except Exception:
                 nonce = 0
 
-            print(f"🔬 {self.name}: eth_call BUY {amount_in_eth} ETH -> {token_address[:8]}...")
+            print(f"🔬 Atlas: eth_call BUY {amount_in_eth} ETH -> {token_address[:8]}...")
 
             buy_tx = router.functions.swapExactETHForTokens(
                 0, [weth, Web3.to_checksum_address(token_address)], funded_wallet, 2**64
             ).build_transaction({
-                'from': funded_wallet, 'value': amount_in_wei, 'gas': 300000,
-                'gasPrice': await asyncio.to_thread(lambda: w3.eth.gas_price), 'nonce': nonce,
+                "from": funded_wallet, "value": amount_in_wei, "gas": 300000,
+                "gasPrice": await asyncio.to_thread(lambda: w3.eth.gas_price), "nonce": nonce,
             })
 
             await asyncio.to_thread(w3.eth.call, buy_tx)
             buy_success = True
-            print(f"✅ {self.name}: eth_call BUY succeeded")
+            print(f"✅ Atlas: eth_call BUY succeeded")
 
             try:
                 amounts_out = await asyncio.to_thread(
@@ -1026,21 +957,21 @@ Requirements:
             except Exception:
                 expected_tokens = 0
 
-            print(f"🔬 {self.name}: eth_call APPROVE {expected_tokens} tokens for router...")
+            print(f"🔬 Atlas: eth_call APPROVE {expected_tokens} tokens for router...")
             approve_success = False
             if expected_tokens > 0:
                 try:
                     approve_tx = token.functions.approve(router_address, expected_tokens).build_transaction({
-                        'from': funded_wallet, 'gas': 100000,
-                        'gasPrice': await asyncio.to_thread(lambda: w3.eth.gas_price), 'nonce': nonce + 1,
+                        "from": funded_wallet, "gas": 100000,
+                        "gasPrice": await asyncio.to_thread(lambda: w3.eth.gas_price), "nonce": nonce + 1,
                     })
                     await asyncio.to_thread(w3.eth.call, approve_tx)
                     approve_success = True
-                    print(f"✅ {self.name}: eth_call APPROVE succeeded")
+                    print(f"✅ Atlas: eth_call APPROVE succeeded")
                 except Exception as e:
-                    print(f"⚠️ {self.name}: eth_call APPROVE failed: {e}")
+                    print(f"⚠️ Atlas: eth_call APPROVE failed: {e}")
 
-            print(f"🔬 {self.name}: eth_call SELL {expected_tokens} tokens -> ETH...")
+            print(f"🔬 Atlas: eth_call SELL {expected_tokens} tokens -> ETH...")
             sell_success = False
             eth_returned = 0
             effective_tax = 0.0
@@ -1052,12 +983,12 @@ Requirements:
                         expected_tokens, 0,
                         [Web3.to_checksum_address(token_address), weth], funded_wallet, 2**64
                     ).build_transaction({
-                        'from': funded_wallet, 'gas': 300000,
-                        'gasPrice': await asyncio.to_thread(lambda: w3.eth.gas_price), 'nonce': nonce + 2,
+                        "from": funded_wallet, "gas": 300000,
+                        "gasPrice": await asyncio.to_thread(lambda: w3.eth.gas_price), "nonce": nonce + 2,
                     })
                     await asyncio.to_thread(w3.eth.call, sell_tx)
                     sell_success = True
-                    print(f"✅ {self.name}: eth_call SELL succeeded")
+                    print(f"✅ Atlas: eth_call SELL succeeded")
 
                     try:
                         amounts_in = await asyncio.to_thread(
@@ -1073,41 +1004,27 @@ Requirements:
                         effective_tax = max(0, (1 - (eth_returned / amount_in_wei)) * 100)
                 except Exception as e:
                     sell_revert_reason = str(e)
-                    print(f"🚨 {self.name}: eth_call SELL failed -- {sell_revert_reason[:100]}")
+                    print(f"🚨 Atlas: eth_call SELL failed -- {sell_revert_reason[:100]}")
             else:
                 sell_revert_reason = "Zero token output from buy -- likely no liquidity"
-                print(f"⚠️ {self.name}: {sell_revert_reason}")
-
-            is_honeypot = False
-            if sell_revert_reason:
-                error_lower = sell_revert_reason.lower()
-                honeypot_indicators = [
-                    "transfer failed", "transfer_from_failed", "blacklisted",
-                    "uniswapv2: k", "pancake: k", "ds-math-sub-underflow",
-                    "insufficient liquidity", "safemath: subtraction overflow"
-                ]
-                is_honeypot = any(kw in error_lower for kw in honeypot_indicators)
+                print(f"⚠️ Atlas: {sell_revert_reason}")
 
             return {
                 "buy_success": buy_success, "sell_success": sell_success,
                 "approve_success": approve_success, "expected_tokens": expected_tokens,
                 "eth_returned_wei": eth_returned, "effective_tax_percent": round(effective_tax, 2),
-                "is_honeypot": is_honeypot, "revert_reason": sell_revert_reason,
+                "revert_reason": sell_revert_reason,
                 "simulation_method": "eth_call",
             }
         except Exception as e:
             error_msg = str(e)
-            print(f"⚠️ {self.name}: eth_call simulation error: {error_msg[:100]}")
+            print(f"⚠️ Atlas: eth_call simulation error: {error_msg[:100]}")
             return {
                 "buy_success": False, "sell_success": False,
                 "expected_tokens": 0, "eth_returned_wei": 0,
-                "effective_tax_percent": 0, "is_honeypot": False,
-                "revert_reason": error_msg[:200], "simulation_method": "eth_call",
+                "effective_tax_percent": 0, "revert_reason": error_msg[:200],
+                "simulation_method": "eth_call",
             }
-
-    # ═══════════════════════════════════════════════════════════
-    # TIER 3: TENDERLY SIMULATION
-    # ═══════════════════════════════════════════════════════════
 
     async def _simulate_tenderly(self, token_address: str, chain: str) -> dict:
         api_key = os.getenv("TENDERLY_API_KEY")
@@ -1115,7 +1032,7 @@ Requirements:
         project = os.getenv("TENDERLY_PROJECT")
 
         if not api_key or not account or not project:
-            return {"error": "Tenderly not configured (need API_KEY, ACCOUNT, PROJECT)"}
+            return {"error": "Tenderly not configured"}
 
         chain_id = 56 if chain == "bsc" else 1 if chain == "ethereum" else 8453 if chain == "base" else None
         if not chain_id:
@@ -1134,9 +1051,9 @@ Requirements:
                 return {"error": "No Web3 instance for chain"}
 
             router = w3.eth.contract(address=router_address, abi=ROUTER_ABIS["uniswap_v2"])
-            amount_in_wei = w3.to_wei(0.001, 'ether')
+            amount_in_wei = w3.to_wei(0.001, "ether")
 
-            print(f"🔬 {self.name}: Tenderly BUY simulation...")
+            print(f"🔬 Atlas: Tenderly BUY simulation...")
 
             buy_swap_data = router.encodeABI(
                 fn_name="swapExactETHForTokens",
@@ -1156,7 +1073,7 @@ Requirements:
             ) as resp:
                 if resp.status != 200:
                     text = await resp.text()
-                    print(f"⚠️ {self.name}: Tenderly BUY error {resp.status}: {text[:200]}")
+                    print(f"⚠️ Atlas: Tenderly BUY error {resp.status}: {text[:200]}")
                     return {"error": f"Tenderly BUY API error: {resp.status}"}
                 result = await resp.json()
                 tx = result.get("transaction", {})
@@ -1171,7 +1088,7 @@ Requirements:
                         "simulation_method": "tenderly",
                     }
 
-            print(f"🔬 {self.name}: Tenderly SELL simulation...")
+            print(f"🔬 Atlas: Tenderly SELL simulation...")
             try:
                 amounts_out = await asyncio.to_thread(
                     router.functions.getAmountsOut(
@@ -1206,7 +1123,7 @@ Requirements:
             ) as resp:
                 if resp.status != 200:
                     text = await resp.text()
-                    print(f"⚠️ {self.name}: Tenderly SELL error {resp.status}: {text[:200]}")
+                    print(f"⚠️ Atlas: Tenderly SELL error {resp.status}: {text[:200]}")
                     return {
                         "buy_success": True, "sell_success": False,
                         "gas_used": buy_gas, "revert_reason": f"Tenderly SELL API error: {resp.status}",
@@ -1224,29 +1141,17 @@ Requirements:
                 "simulation_method": "tenderly",
             }
         except Exception as e:
-            print(f"⚠️ {self.name}: Tenderly simulation failed: {e}")
+            print(f"⚠️ Atlas: Tenderly simulation failed: {e}")
             return {"error": str(e)}
 
-    # ═══════════════════════════════════════════════════════════
-    # RESULT BUILDER
-    # ═══════════════════════════════════════════════════════════
-
     def _build_result(
-        self,
-        token_address: str,
-        chain: str,
-        symbol: str,
-        honeypot_data: dict,
-        liquidity_data: dict,
-        contract_data: dict,
-        eth_call_result: Optional[dict],
-        tenderly_result: Optional[dict],
-        solana_result: Optional[dict] = None,
-        solana_contract: Optional[dict] = None
+        self, token_address, chain, symbol,
+        honeypot_data, liquidity_data, contract_data,
+        eth_call_result, tenderly_result, solana_result=None, solana_contract=None
     ) -> SimulationResult:
         can_buy = honeypot_data.get("buyable", True)
         can_sell = honeypot_data.get("sellable", True)
-        is_honeypot = honeypot_data.get("is_honeypot", False)
+        is_honeypot = False
         confidence = self._calculate_confidence(honeypot_data, liquidity_data, contract_data)
 
         eth_call_buy = False
@@ -1259,15 +1164,11 @@ Requirements:
             eth_call_sell = eth_call_result.get("sell_success", False)
             eth_call_reason = eth_call_result.get("revert_reason")
             eth_call_tax = eth_call_result.get("effective_tax_percent", 0.0)
-            if not eth_call_sell:
+            if not eth_call_sell and eth_call_buy:
                 can_sell = False
             if eth_call_result.get("is_honeypot", False):
                 is_honeypot = True
                 confidence = min(confidence + 0.2, 1.0)
-            if eth_call_tax > 50:
-                is_honeypot = True
-                can_sell = False
-                confidence = min(confidence + 0.15, 1.0)
 
         tenderly_buy = False
         tenderly_sell = False
@@ -1279,10 +1180,8 @@ Requirements:
             tenderly_sell = tenderly_result.get("sell_success", False)
             tenderly_gas = tenderly_result.get("gas_used")
             tenderly_reason = tenderly_result.get("revert_reason")
-            if not tenderly_sell:
+            if not tenderly_sell and tenderly_buy:
                 can_sell = False
-                is_honeypot = True
-                confidence = min(confidence + 0.15, 1.0)
 
         solana_buy = False
         solana_sell = False
@@ -1301,10 +1200,6 @@ Requirements:
             if solana_result.get("is_honeypot", False):
                 is_honeypot = True
                 confidence = min(confidence + 0.2, 1.0)
-            if solana_tax > 50:
-                is_honeypot = True
-                can_sell = False
-                confidence = min(confidence + 0.15, 1.0)
 
         if solana_contract:
             solana_mint_auth = solana_contract.get("mint_authority")
@@ -1342,7 +1237,7 @@ Requirements:
             solana_freeze_authority=solana_freeze_auth,
         )
 
-    def _calculate_confidence(self, honeypot_data: dict, liquidity_data: dict, contract_data: dict) -> float:
+    def _calculate_confidence(self, honeypot_data, liquidity_data, contract_data) -> float:
         checks = 0
         passed = 0
         if honeypot_data:
@@ -1365,8 +1260,7 @@ Requirements:
         await self.results_cache.clear_expired()
 
     async def stop(self):
-        """v4.1: Close the shared session."""
-        print(f"🛑 {self.name}: Simulator stopped.")
+        print(f"🛑 Atlas: Simulator stopped.")
         await self.cleanup()
         if self._session and not self._session.closed:
             await self._session.close()

@@ -1,305 +1,292 @@
-# ClawIntel
+# ClawIntel v5.0
 
-**Autonomous Multi-Agent Intelligence for Real-Time Token Surveillance & Risk Assessment**
+**Autonomous Multi-Agent Intelligence for Real-Time Token Market Analysis**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://python.org/)
-[![MongoDB](https://img.shields.io/badge/MongoDB-Atlas-green.svg)](https://mongodb.com/)
+[![Python](https://img.shields.io/badge/Python-3.9%2B-blue)](https://python.org/)
+[![MongoDB](https://img.shields.io/badge/MongoDB-Atlas-green)](https://mongodb.com/)
 
-> *"The market never sleeps. Neither do we."*
-
----
-
-## 📑 Table of Contents
-
-- [The Problem](#-the-problem)
-- [Our solution](#-Why Intel Claw is here)
-- [What is ClawIntel?](#-what-is-clawintel)
-- [Vision](#-vision)
-- [How It Works](#-how-it-works)
-- [Agent Architecture](#-agent-architecture)
-- [Core Capabilities](#-core-capabilities)
-- [Intelligence Interfaces](#-intelligence-interfaces)
-- [Tech Stack](#-tech-stack)
-- [Supported Chains](#-supported-chains)
-- [Getting Started](#-getting-started)
-- [Use Cases](#-use-cases)
-- [Research Direction](#-research-direction)
-- [Disclaimer](#-disclaimer)
-- [License](#-license)
+> *"We don't hunt scams. We read the chain."*
 
 ---
 
-##  The Problem
+## Table of Contents
 
-Every single day, hundreds of new tokens drop across Ethereum, BNB Chain, Base, Solana, and beyond.
-
-Most of them will be dead within a week. A significant chunk are outright traps — honeypots, rugs, liquidity scams designed to bleed retail traders dry before vanishing into the blockchain.
-
-**By the time the community figures it out, the money is gone and the devs are ghosts.**
-
-The threats are relentless:
-
--  **Rug pulls** — Dev drains liquidity and disappears
--  **Honeypots** — You can buy, but you can never sell
--  **Liquidity traps** — Fake depth, real losses
--  **Hidden transfer restrictions** — Blacklists that freeze your wallet
--  **Malicious contract permissions** — Mint functions that dilute holders to zero
--  **Fake community growth** — Bot armies manufacturing hype
--  **Repeat scam creators** — Same playbook, new ticker, new victims
--  **Coordinated market manipulation** — Pump groups, wash trading, exit liquidity
-
-Dashboards give you **data**. They don't give you **answers**.
-
-You are expected to manually decode hundreds of on-chain signals, cross-reference contract code, verify creator histories, and simulate trades — all while the clock ticks and the devs are already cashing out.
-
-**Manual investigation doesn't scale. And in crypto, time is money.**
+- [The Problem](#the-problem)
+- [Why ClawIntel](#why-clawintel)
+- [What is ClawIntel](#what-is-clawintel)
+- [Vision](#vision)
+- [How It Works](#how-it-works)
+- [Agent Architecture](#agent-architecture)
+- [Core Capabilities](#core-capabilities)
+- [Intelligence Interfaces](#intelligence-interfaces)
+- [Tech Stack](#tech-stack)
+- [Supported Chains](#supported-chains)
+- [Getting Started](#getting-started)
+- [Use Cases](#use-cases)
+- [Research Direction](#research-direction)
+- [Disclaimer](#disclaimer)
+- [License](#license)
 
 ---
 
-##  Why The Intel Claw is here?
+## The Problem
 
-ClawIntel is not a dashboard. It is an **autonomous intelligence swarm** that never blinks.
+Every day, hundreds of new tokens launch across Ethereum, BNB Chain, Base, Solana, and beyond.
 
-Five specialized AI agents operate in concert — continuously scanning the chain, simulating trades, dissecting contracts, profiling creators, and rendering verdicts in real time. Every investigation is a full-spectrum analysis. Every verdict is explainable. Every signal is preserved in memory.
+Most fade within a week. Some gain traction. A few become something real. Separating signal from noise requires reading liquidity, contract structure, creator history, and market momentum — simultaneously, across multiple chains, in real time.
 
-Instead of drowning you in charts and raw logs, ClawIntel delivers **actionable intelligence** — clear, fast, and backed by evidence.
+Dashboards give you **data**. They don't give you **context**.
+
+You are expected to decode on-chain signals, cross-reference contract code, verify creator histories, and simulate trade mechanics — all while new tokens launch faster than any single person can track.
+
+**Manual analysis doesn't scale. And in crypto, being late is the same as being wrong.**
+
+---
+
+## Why ClawIntel
+
+ClawIntel is not a scam detector. It is an **autonomous market intelligence team** that never sleeps.
+
+Five specialized AI agents operate in concert — continuously scanning the chain, testing trade mechanics, reading contracts, profiling creators, and debating what it all means. Every token gets a full-spectrum analysis. Every finding is evidence-based. Every perspective is preserved in memory.
+
+Instead of drowning you in charts and raw logs, ClawIntel delivers **clear, structured market intelligence** — what the token is, how it moves, who built it, and where it might be heading.
 
 > **Our mission:**
 >
-> *Detect the trap before you step in it. Surface the signal before the noise drowns it out. Make elite-grade intelligence accessible to everyone.*
+> *Surface the signal before the noise drowns it out. Make elite-grade market intelligence accessible to everyone.*
 
 ---
 
-##  What is ClawIntel?
+## What is ClawIntel?
 
-ClawIntel is an AI-powered multi-agent intelligence platform engineered to investigate, monitor, and evaluate digital assets across multiple blockchain ecosystems in real time.
+ClawIntel is an AI-powered multi-agent intelligence platform engineered to observe, analyze, and evaluate digital assets across multiple blockchain ecosystems in real time.
 
-The platform deploys a coordinated network of autonomous agents — each a specialist in its domain — that collaborate through a shared intelligence pipeline. Together they form a continuously operating surveillance and analysis system capable of:
+The platform deploys a coordinated network of autonomous agents — each a specialist in its domain — that collaborate through a shared intelligence pipeline. Together they form a continuously operating market analysis system capable of:
 
-- Discovering emerging tokens the moment they hit the chain and began gaining attraction
-- Simulating buy/sell behavior to expose hidden restrictions
-- Dissecting smart contract architecture for structural risks
-- Building persistent profiles of token creators and their histories
-- Detecting recurring scam patterns and repeat offenders
-- Generating human-readable, evidence-backed verdicts
-- Streaming live intelligence to users as investigations unfold
+- Discovering emerging tokens the moment they hit the chain
+- Simulating buy/sell behavior to measure mechanics and slippage
+- Dissecting smart contract architecture for structural features
+- Building persistent profiles of token creators and their track records
+- Detecting patterns in deployment history and market behavior
+- Generating human-readable, evidence-backed perspectives
+- Streaming live intelligence to users as analysis unfolds
 
-**This is not analytics. This is autonomous reasoning.**
+**This is not a security tool. This is autonomous market reasoning.**
 
 ---
 
-## 🎯 Vision
+## Vision
 
 We believe the next generation of blockchain intelligence will not be built on dashboards.
 
-It will be built on **autonomous systems** that think, remember, collaborate, and explain — operating 24/7 across every chain, every DEX, every launch.
+It will be built on **autonomous systems** that watch, remember, analyze, and debate — operating 24/7 across every chain, every DEX, every launch.
 
-Systems that don't just show you what happened. They tell you what it means. And they tell you **before** it costs you.
+Systems that don't just show you what happened. They tell you what it means. And they tell you **while it's still happening**.
 
 ClawIntel is a step toward that future.
 
-Our long-term mission is to build an intelligence layer for decentralized ecosystems — one that learns from historical behavior, adapts to emerging threats, and empowers humans to navigate increasingly complex digital markets with clarity and confidence.
+Our long-term mission is to build an intelligence layer for decentralized markets — one that learns from historical behavior, adapts to emerging patterns, and empowers humans to navigate increasingly complex digital markets with clarity and confidence.
 
 ---
 
-## ⚙️ How It Works
+## How It Works
 
-When a token is discovered or submitted for forensic analysis, it enters the ClawIntel pipeline:
+When a token is discovered or submitted for analysis, it enters the ClawIntel pipeline:
 
-1. **Discovery** — Nova spots the token across the chain
-2. **Simulation** — Atlas stress-tests buy/sell behavior without spending gas
-3. **Analysis** — Vega dissects the contract for structural risks
-4. **Memory** — Echo retrieves the creator's full on-chain history
-5. **Synthesis** — Orion weighs all evidence and renders a verdict
+1. **Discovery** — Nova spots the token and reports its market metrics
+2. **Simulation** — Atlas tests trade paths and measures slippage and taxes
+3. **Analysis** — Vega reads the contract structure and maps holder distribution
+4. **Investigation** — Echo digs into the creator's wallet history and debates the team's findings
+5. **Synthesis** — Orion weighs all perspectives, assigns a score, and calls a direction
 6. **Delivery** — Results stream live to the Detectives Room, Market Wall, and Forensic Lab
 
-Every stage is observable. Every agent speaks. Every verdict is traceable.
+One token at a time. First come, first served. Every stage is observable. Every agent speaks. Every conclusion is traceable.
 
 ---
 
-## 🧠 Agent Architecture
+## Agent Architecture
 
-ClawIntel operates through **five specialized AI agents**. Each performs independent reasoning before contributing to the final investigation outcome.
+ClawIntel operates through **five specialized AI agents**. Each performs independent reasoning before contributing to the final synthesis.
 
-### 👁 Nova — The Scout
-**Role:** Discovery & Market Surveillance
+### Nova — The Observer
+**Role:** Market Surveillance & Discovery
 
-Nova is the eyes and ears of the operation. She never sleeps, never blinks, and never misses a launch that started gaining traction.
+Nova is the eyes of the operation. She watches the chains, spots new tokens with early traction, and reports what she sees — liquidity, volume, age, and anything that stands out. She is curious, not alarmist. She describes, she does not condemn.
 
 | Capability | Description |
 |------------|-------------|
 | New token discovery | Identifies freshly deployed assets across chains |
 | Liquidity pair detection | Tracks new liquidity pool formations in real time |
 | DEX monitoring | Watches decentralized exchange activity across ecosystems |
-| Early market movement | Detects abnormal volume and price action |
+| Market metrics scoring | Calculates attention scores from liquidity, volume, and age |
 | Multi-chain surveillance | Monitors all supported blockchains simultaneously |
-| Volume anomaly identification | Flags suspicious trading patterns before they trend |
+| Quality gating | Filters tokens by minimum liquidity, market cap, and volume thresholds |
 
-*Nova's mission: see everything first.*
+*Nova's mission: see everything first, report it calmly.*
 
 ---
 
-###  Atlas — The Tester
-**Role:** Behavioral Simulation Engine
+### Atlas — The Trader
+**Role:** Trade Mechanics & Simulation
 
-Atlas doesn't read the whitepaper. He reads the bytecode. And then he tries to break it.
+Atlas doesn't read the whitepaper. He reads the chain. Then he tests what the chain actually allows.
 
 | Capability | Description |
 |------------|-------------|
-| Buy simulations | Tests token purchase functionality via `eth_call` |
-| Sell simulations | Verifies token sellability — the honeypot test |
-| Honeypot detection | Identifies trap contracts that lock your funds |
-| Liquidity validation | Checks pool depth, lock status, and withdrawal risks |
-| Transfer testing | Validates peer-to-peer transfer paths |
-| Tax analysis | Detects hidden transaction fees and dynamic taxes |
-| Trading restriction detection | Finds transfer limits, blacklists, and pausable functions |
+| Buy simulations | Tests token purchase paths via `eth_call` and Jupiter RPC |
+| Sell simulations | Verifies exit paths and measures actual slippage |
+| Tax analysis | Detects buy/sell taxes and effective slippage |
+| Liquidity validation | Checks pool depth and lock status |
+| Multi-layer testing | Runs eth_call, Tenderly, and Jupiter simulations where available |
+| Evidence-based reporting | Reports observations as data, not verdicts |
 
-*Atlas focuses on behavioral truth — not what the contract claims, but what it actually does.*
+*Atlas focuses on what the chain actually does — not what the contract claims.*
 
 ---
 
-###  Vega — The Analyst
-**Role:** Contract Risk Intelligence
+### Vega — The Analyst
+**Role:** Contract Structure & Market Intelligence
 
-Vega reads between the lines of every smart contract. If there's a backdoor, she finds it.
+Vega reads between the lines of every smart contract. She maps ownership, checks for upgradeable logic, and tracks holder concentration. She reports structural findings as facts, not fears.
 
 | Capability | Description |
 |------------|-------------|
-| Ownership analysis | Examines contract ownership and admin privileges |
-| Mint authority detection | Identifies unlimited minting risks and inflation vectors |
-| Blacklist verification | Checks for wallet blacklisting and exclusion functions |
-| Privileged function discovery | Maps every admin-only capability in the contract |
-| Liquidity control assessment | Evaluates LP token ownership and rug mechanisms |
-| Centralization analysis | Scores decentralization and trustlessness metrics |
-| Governance risk evaluation | Reviews governance mechanisms and upgrade paths |
+| Ownership analysis | Examines contract ownership and renunciation status |
+| Proxy detection | Identifies upgradeable contracts and their implementations |
+| Bytecode function mapping | Detects mint, blacklist, pause, fee manipulation, and recovery functions |
+| LP ownership analysis | Checks if LP tokens are burned, locked, or dev-controlled |
+| Holder distribution | Maps concentration and wallet count |
+| Solana deep analysis | Reads DexScreener data for volume, price action, buy pressure, and social signals |
 
-*Vega identifies structural risks hidden in plain sight.*
+*Vega identifies structure. She does not cry wolf.*
 
 ---
 
-###  Echo — The Archivist
-**Role:** Historical Intelligence & Creator Profiling
+### Echo — The Investigator
+**Role:** Creator Profiling, Pattern Detection & Debate
 
-Echo never forgets. Every creator. Every token. Every rug. It's all in the archive.
+Echo never forgets. Every creator. Every token. Every pattern. It's all in the archive. And when his findings contradict the rest of the team, he says so.
 
 | Capability | Description |
 |------------|-------------|
-| Creator profiling | Builds persistent profiles of deployer wallets |
-| Wallet history analysis | Tracks historical transaction patterns across chains |
-| Deployment pattern detection | Identifies repeated scam behaviors and MOs |
-| Historical scam associations | Links new tokens to known malicious actors |
-| Behavioral fingerprinting | Creates unique signatures for repeat offenders |
-| Reputation scoring | Calculates dynamic trust scores over time |
-| Predictive intelligence | Forecasts likely outcomes based on historical patterns |
+| Creator profiling | Builds persistent profiles of deployer wallets across chains |
+| Wallet history analysis | Tracks age, balance, transaction count, and funding status |
+| Deployment pattern detection | Identifies rapid launchers, serial deployers, and copycats |
+| Historical token reputation | Checks previous tokens for survival, death, or abandonment |
+| Reputation scoring | Calculates dynamic trust scores from historical outcomes |
+| Predictive intelligence | Forecasts likely outcomes based on creator track record |
+| Debate engine | Challenges Atlas and Vega when creator data contradicts their findings |
 
-*Echo ensures that ClawIntel remembers what the market forgets.*
+*Echo ensures that ClawIntel remembers what the market forgets — and argues when the data demands it.*
 
 ---
 
-###  Orion — The Judge
-**Role:** Decision Intelligence Layer
+### Orion — The Lead
+**Role:** Synthesis & Direction Calling
 
-Orion has the final word. He weighs every piece of evidence, every agent's finding, every historical signal — and delivers a verdict you can act on.
+Orion has the final word. He weighs every agent's findings, forms his own view on where the token is heading, assigns a score, and moves the room forward. He never advises trading. He simply assesses and calls the next play.
 
 | Capability | Description |
 |------------|-------------|
 | Evidence aggregation | Compiles findings from all four agents |
 | Multi-agent reasoning | Weighs conflicting signals and resolves contradictions |
-| Confidence scoring | Assigns calibrated confidence levels to every verdict |
-| Risk explanation | Generates human-readable justifications with evidence |
-| Verdict generation | Produces clear, actionable final assessments |
+| Direction prediction | Calls UP, DOWN, SIDEWAYS, or UNKNOWN based on score and momentum |
+| Score assignment | Assigns a calibrated 0-100 score with confidence percentage |
+| Nova callbacks | Ends every synthesis by calling Nova back to the chains — sometimes with a roast |
 
-**Verdict Outcomes:**
+**Direction Outcomes:**
 
-| Verdict | Meaning | Action |
-|---------|---------|--------|
-| 🟢 **SAFE** | No significant risks detected | Monitor with confidence |
-| 🟡 **WARNING** | Caution advised — mixed signals | Investigate further before committing |
-| 🔴 **HIGH RISK** | Malicious indicators present | Avoid. Do not interact. |
+| Direction | Meaning |
+|-----------|---------|
+| **UP** | Momentum and structure suggest upward price pressure |
+| **DOWN** | Structural or creator risks suggest decline |
+| **SIDEWAYS** | Mixed signals — no clear directional bias |
+| **UNKNOWN** | Insufficient data to form a directional view |
 
-*Orion transforms raw intelligence into clear, decisive conclusions.*
+*Orion transforms raw intelligence into a clear perspective — then tells Nova to find the next one.*
 
 ---
 
-##  Core Capabilities
+## Core Capabilities
 
 | Feature | Description |
 |---------|-------------|
 | **Real-Time Token Discovery** | Continuous autonomous surveillance of emerging digital assets |
-| **Behavioral Simulation** | Gasless transaction simulation to expose hidden restrictions |
-| **Smart Contract Intelligence** | Deep contract investigation for structural and permission risks |
+| **Trade Mechanics Simulation** | Gasless transaction simulation to measure slippage, taxes, and path viability |
+| **Smart Contract Analysis** | Deep contract reading for structural features and permission risks |
 | **Creator Intelligence** | Persistent reputation tracking and pattern detection for deployers |
-| **AI Verdict Generation** | Explainable risk assessments via multi-agent collaboration |
-| **Live Intelligence Streaming** | Real-time WebSocket updates as investigations unfold |
+| **Agent Debate** | Cross-agent disagreement detection and evidence-based challenge |
+| **Direction & Score Synthesis** | Calibrated market direction calls with confidence scoring |
+| **Live Intelligence Streaming** | Real-time WebSocket updates as analysis unfolds |
 | **Multi-Chain Monitoring** | Unified intelligence across Ethereum, BSC, Base, and Solana |
-| **Forensic Lab** | Manual investigation mode for user-submitted contracts |
+| **Forensic Lab** | Manual analysis mode for user-submitted contracts |
 | **Persistent Memory** | Historical data and creator profiles preserved across sessions |
 
 ---
 
-##  Intelligence Interfaces
+## Intelligence Interfaces
 
-###  Detectives Room
-The live operational nerve center. Watch Nova, Atlas, Vega, Echo, and Orion communicate, debate, and investigate in real time as events unfold across the chain.
+### Detectives Room
+The live operational nerve center. Watch Nova, Atlas, Vega, Echo, and Orion communicate, debate, and analyze in real time as events unfold across the chain.
 
 **Features:**
 - Real-time agent communication and reasoning
-- Live investigation feed with stage-by-stage progress
+- Live analysis feed with stage-by-stage progress
 - Market alerts and anomaly notifications
 - Autonomous intelligence updates
 - Full audit trail of every agent's contribution
 
 ---
 
-###  Market Intelligence Wall
+### Market Intelligence Wall
 A market-wide command center displaying:
 
 - Tokens discovered by the agent swarm
-- Completed investigations with verdicts
-- AI-verified opportunities
-- Emerging risk signals and scam alerts
+- Completed analyses with direction and score
+- AI-evaluated market opportunities
+- Emerging risk signals and pattern alerts
 - Real-time market activity and volume anomalies
 
 ---
 
-### 🔬 Forensic Lab
-Submit any contract address for a full multi-agent forensic investigation.
+### Forensic Lab
+Submit any contract address for a full multi-agent analysis.
 
 **Features:**
 - Manual investigation triggers
 - Live agent reasoning and evidence presentation
-- Detailed risk breakdowns by category
+- Detailed structural breakdowns by category
 - Historical intelligence retrieval
-- Final verdict synthesis with confidence scoring
+- Final synthesis with direction, score, and confidence
 
 ---
 
-##  Tech Stack
+## Tech Stack
 
 | Layer | Technologies |
 |-------|-------------|
 | **Server** | Python, aiohttp, WebSocket, REST API |
 | **Intelligence Engine** | Python, Async Multi-Agent Orchestration, Blockchain RPC |
-| **Database** | MongoDB (persistent queue, creator profiles, investigation history) |
-| **AI Systems** | Google Gemini for natural language reasoning and agent personas |
-| **Data Sources** | DexScreener, Multi-Chain RPC Providers, Block Explorers (Etherscan, BscScan) |
+| **Database** | MongoDB (persistent queue, creator profiles, analysis history) |
+| **AI Systems** | Google Gemini with multi-model fallback chain for natural language reasoning |
+| **Data Sources** | DexScreener, Multi-Chain RPC Providers, Block Explorers (Etherscan, BscScan, BaseScan), Jupiter API |
 | **Frontend** | HTML5, CSS3, JavaScript (Vanilla) |
 
 ---
 
-##  Supported Chains
+## Supported Chains
 
 - **Ethereum** — The foundation of DeFi. Primary surveillance target.
-- **BNB Chain** — High-volume retail market with significant scam activity.
+- **BNB Chain** — High-volume retail market with significant token activity.
 - **Base** — Coinbase's L2. Fastest-growing ecosystem for new token launches.
 - **Solana** — High-speed alternative L1. Major memecoin and DeFi activity.
 
-*ClawIntel focuses on the four chains where 80% of new token volume and risk concentration occurs. Additional ecosystems can be integrated through the modular agent architecture.*
+*ClawIntel focuses on the four chains where the majority of new token volume and market activity occurs. Additional ecosystems can be integrated through the modular agent architecture.*
 
 ---
 
-##  Getting Started
+## Getting Started
 
 ### Prerequisites
 - Python 3.9+
@@ -334,17 +321,19 @@ GEMINI_MODEL=your_gemini_model
 # Database
 MONGODB_URI=your_mongodb_connection_string
 
-# RPC Providers (public free endpoints work for low-volume testing)
-ETH_RPC_URL=https://ethereum-rpc.publicnode.com
-BSC_RPC_URL=https://bsc-rpc.publicnode.com
-BASE_RPC_URL=https://base-rpc.publicnode.com
-SOLANA_RPC_URL=https://solana-rpc.publicnode.com
+# Primary RPCs — set these to your preferred endpoints.
+# If left empty or if they fail, agents fall back to built-in public pools.
+ETH_RPC_URL=
+BSC_RPC_URL=
+BASE_RPC_URL=
+SOLANA_RPC_URL=
 
-# Optional: Block Explorer APIs (for deeper creator history analysis)
+# Optional: Block Explorer APIs (for Echo's creator history analysis)
 ETHERSCAN_API_KEY=your_etherscan_key
 BSCSCAN_API_KEY=your_bscscan_key
+BASESCAN_API_KEY=your_basescan_key
 
-# Optional: Tenderly (for advanced transaction simulation)
+# Optional: Tenderly (for Atlas advanced simulation)
 TENDERLY_API_KEY=your_tenderly_key
 TENDERLY_ACCOUNT=your_account
 TENDERLY_PROJECT=your_project
@@ -360,43 +349,43 @@ Open your browser at: [http://localhost:3000](http://localhost:3000)
 
 ---
 
-##  Use Cases
+## Use Cases
 
 ClawIntel is built for:
 
--  **Crypto Intelligence Operations** — Autonomous surveillance and threat detection
--  **Token Due Diligence** — Pre-investment risk assessment
--  **Smart Contract Investigation** — Deep security analysis
--  **Risk Assessment** — Real-time verdict generation
--  **Web3 Security Research** — Pattern discovery and threat modeling
--  **Creator Tracking** — Reputation monitoring and repeat offender detection
--  **Market Monitoring** — Early anomaly detection
--  **Autonomous AI Research** — Multi-agent system experimentation
--  **Blockchain Intelligence Workflows** — End-to-end investigation pipelines
+- **Crypto Market Research** — Autonomous surveillance and pattern detection
+- **Token Due Diligence** — Pre-commitment structural and creator analysis
+- **Smart Contract Reading** — Deep architecture and permission mapping
+- **Risk Assessment** — Evidence-based structural and creator risk evaluation
+- **Web3 Market Intelligence** — Pattern discovery and momentum modeling
+- **Creator Tracking** — Reputation monitoring and deployment pattern detection
+- **Market Monitoring** — Early anomaly and momentum detection
+- **Autonomous AI Research** — Multi-agent system experimentation
+- **Blockchain Intelligence Workflows** — End-to-end analysis pipelines
 
 ---
 
-##  Research Direction
+## Research Direction
 
 ClawIntel is more than a crypto analysis platform. It is a living research initiative into the future of autonomous multi-agent intelligence.
 
 We are actively exploring:
 
 - **Persistent observation** — Agents that never stop watching
-- **Collaborative reasoning** — Multiple specialists converging on truth
+- **Collaborative reasoning** — Multiple specialists converging on truth through debate
 - **Memory-driven intelligence** — Systems that learn from history
-- **Explainable decision-making** — Verdicts you can verify and trust
-- **Predictive modeling** — Forecasting outcomes before they happen
+- **Explainable analysis** — Perspectives you can verify and trace
+- **Predictive modeling** — Forecasting outcomes before they fully materialize
 
-The project demonstrates how specialized AI agents can work together to investigate complex, high-stakes environments in real time — producing conclusions that no single system could generate alone.
+The project demonstrates how specialized AI agents can work together to analyze complex, high-stakes markets in real time — producing perspectives that no single system could generate alone.
 
 ---
 
-## ⚠️ Disclaimer
+## Disclaimer
 
 ClawIntel provides AI-generated intelligence for **informational and research purposes only**.
 
-Nothing produced by the platform should be interpreted as financial advice, investment guidance, trading recommendations, or guarantees of future outcomes.
+Nothing produced by the platform should be interpreted as financial advice, investment guidance, trading recommendations, or guarantees of future outcomes. ClawIntel does not advise you to buy, sell, or trade any asset.
 
 **Users remain fully responsible for their own decisions, actions, and risk management.**
 
@@ -404,7 +393,7 @@ Always conduct your own research. Never invest more than you can afford to lose.
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License.
 

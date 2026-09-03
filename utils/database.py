@@ -27,8 +27,9 @@ class Database:
         await self.db.discovered_tokens.create_index([("discovered_at", DESCENDING)])
         await self.db.discovered_tokens.create_index([("status", ASCENDING)])
         await self.db.discovered_tokens.create_index([("token_address", ASCENDING)])
-        await self.db.tokens_queue.create_index([("timestamp", DESCENDING)])
+        await self.db.tokens_queue.create_index([("timestamp", ASCENDING)])
         await self.db.tokens_queue.create_index([("status", ASCENDING)])
+        await self.db.tokens_queue.create_index([("status", ASCENDING), ("timestamp", ASCENDING)])
         await self.db.investigations.create_index([("timestamp", DESCENDING)])
         await self.db.investigations.create_index([("token_address", ASCENDING)])
         await self.db.creator_profiles.create_index([("address", ASCENDING)], unique=True)
@@ -41,7 +42,6 @@ class Database:
         await self.db.discovered_tokens.create_index([("symbol", ASCENDING)])
         await self.db.discovered_tokens.create_index([("name", ASCENDING)])
         await self.db.discovered_tokens.create_index([("address", ASCENDING)])
-        # cursor persistence index for Nova watcher
         await self.db.cursors.create_index([("chain", ASCENDING)], unique=True)
 
         print("[db] ✅ Indexes created")
@@ -124,18 +124,11 @@ class Database:
     async def count_pending_tokens(self) -> int:
         return await self.db.tokens_queue.count_documents({"status": "pending"})
 
-    # FIX: Query by token_address (not address) to match queue schema
-    async def update_token_status(self, token_address: str, status: str):
-        await self.db.tokens_queue.update_one(
-            {"token_address": token_address},
-            {"$set": {"status": status, "updated_at": time.time()}},
-        )
-
-    # Fetch highest-attention pending token
+    # v5.0: FIFO — oldest pending token first
     async def get_next_pending_token(self) -> Optional[dict]:
         cursor = (
             self.db.tokens_queue.find({"status": "pending"})
-            .sort("attention_score", DESCENDING)
+            .sort("timestamp", ASCENDING)
             .limit(1)
         )
         docs = await cursor.to_list(length=1)
@@ -144,18 +137,39 @@ class Database:
             return docs[0]
         return None
 
-    # Mark token completed with verdict
-    async def mark_token_completed(self, token_address: str, chain: str, verdict: str):
+    # v5.0: Mark token as investigating (prevents duplicate pickup)
+    async def mark_token_investigating(self, token_address: str, chain: str):
         await self.db.tokens_queue.update_one(
             {"token_address": token_address, "chain": chain},
-            {"$set": {"status": "completed", "verdict": verdict, "updated_at": time.time()}},
+            {"$set": {"status": "investigating", "updated_at": time.time()}},
         )
         await self.db.discovered_tokens.update_one(
             {"token_address": token_address, "chain": chain},
-            {"$set": {"status": "completed", "verdict": verdict, "updated_at": time.time()}},
+            {"$set": {"status": "investigating", "updated_at": time.time()}},
         )
 
-    # Lowest attention score for queue eviction
+    # v5.0: Mark token completed with direction (not verdict)
+    async def mark_token_completed(self, token_address: str, chain: str, direction: str):
+        await self.db.tokens_queue.update_one(
+            {"token_address": token_address, "chain": chain},
+            {"$set": {"status": "completed", "direction": direction, "updated_at": time.time()}},
+        )
+        await self.db.discovered_tokens.update_one(
+            {"token_address": token_address, "chain": chain},
+            {"$set": {"status": "completed", "direction": direction, "updated_at": time.time()}},
+        )
+
+    # v5.0: Generic status update (fallback for orchestrator)
+    async def update_token_status(self, token_address: str, chain: str, status: str):
+        await self.db.tokens_queue.update_one(
+            {"token_address": token_address, "chain": chain},
+            {"$set": {"status": status, "updated_at": time.time()}},
+        )
+        await self.db.discovered_tokens.update_one(
+            {"token_address": token_address, "chain": chain},
+            {"$set": {"status": status, "updated_at": time.time()}},
+        )
+
     async def get_lowest_attention_in_queue(self) -> Optional[float]:
         cursor = (
             self.db.tokens_queue.find({"status": "pending"})
@@ -167,7 +181,6 @@ class Database:
             return docs[0].get("attention_score", 0.0)
         return None
 
-    # Fetch token by address + chain
     async def get_token(self, address: str, chain: str) -> Optional[dict]:
         doc = await self.db.discovered_tokens.find_one(
             {"token_address": address, "chain": chain}
@@ -203,9 +216,11 @@ class Database:
         address = profile.get("address")
         if not address:
             return
+        # v5.0: Strip _id from dict before upsert to avoid duplicate key errors
+        clean = {k: v for k, v in profile.items() if not k.startswith("_")}
         await self.db.creator_profiles.update_one(
             {"address": address},
-            {"$set": {**profile, "updated_at": time.time()}},
+            {"$set": {**clean, "updated_at": time.time()}},
             upsert=True,
         )
 
@@ -302,12 +317,19 @@ class Database:
             r["_id"] = str(r["_id"])
         return results
 
+    # v5.0: Stats now count by direction instead of verdict
     async def get_stats(self) -> dict:
         total_tokens = await self.db.discovered_tokens.estimated_document_count()
         total_investigations = await self.db.investigations.estimated_document_count()
         total_creators = await self.db.creator_profiles.estimated_document_count()
         total_messages = await self.db.chat_messages.estimated_document_count()
 
+        up_count = await self.db.investigations.count_documents({"direction": "UP"})
+        down_count = await self.db.investigations.count_documents({"direction": "DOWN"})
+        sideways_count = await self.db.investigations.count_documents({"direction": "SIDEWAYS"})
+        unknown_count = await self.db.investigations.count_documents({"direction": "UNKNOWN"})
+
+        # Backward compatibility: also count old verdict field
         safe_count = await self.db.investigations.count_documents({"verdict": "SAFE"})
         warning_count = await self.db.investigations.count_documents({"verdict": "WARNING"})
         high_risk_count = await self.db.investigations.count_documents({"verdict": "HIGH_RISK"})
@@ -317,12 +339,16 @@ class Database:
             "total_investigations": total_investigations,
             "total_creators": total_creators,
             "total_messages": total_messages,
+            "up_count": up_count,
+            "down_count": down_count,
+            "sideways_count": sideways_count,
+            "unknown_count": unknown_count,
             "safe_count": safe_count,
             "warning_count": warning_count,
             "high_risk_count": high_risk_count,
         }
 
-    # ── CURSOR PERSISTENCE (for Nova watcher resume) ──
+    # ── CURSOR PERSISTENCE ──
 
     async def save_cursor(self, chain: str, block_number: int):
         await self.db.cursors.update_one(

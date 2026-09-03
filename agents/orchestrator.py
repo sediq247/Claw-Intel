@@ -1,17 +1,3 @@
-"""
-ORCHESTRATOR — Conductor v4.1 (PATCHED)
-Theatrical multi-agent investigation conductor.
-Polls MongoDB for pending tokens, runs 5-stage theatrical pipeline,
-broadcasts AGENT_WORKING spinners, enforces minimum stage duration.
-
-FIXES APPLIED:
-1. STAGE_MIN_SECONDS reduced from 15 to 10 seconds per agent stage.
-2. Investigation object now includes nova_message and risk_score at top level
-   so history.js can display them correctly.
-3. Rest period is strictly enforced — no token fetch happens until rest completes.
-4. Nova's discovery message is broadcast WITHOUT re-saving to DB (Nova already saved it).
-"""
-
 import asyncio
 import time
 from typing import Optional, Any, Dict
@@ -20,24 +6,13 @@ from utils.publisher import EventPublisher
 from agents.watcher import WatcherAgent
 from agents.simulator import SimulatorAgent
 from agents.analyzer import AnalyzerAgent
-from agents.memory import MemoryAgent
+from agents.memory import InvestigatorAgent
 from agents.decision import DecisionAgent
 from utils.marketEngine import MarketEngine
 
 
 class AgentOrchestrator:
-    """
-    The Conductor.
-    Reads pending tokens from DB, runs theatrical 5-stage investigations,
-    broadcasts progress to frontend via EventPublisher, saves results to DB.
-
-    FLOW:
-    1. IDLE → poll DB for next pending token
-    2. INVESTIGATING → run 5 stages (Nova broadcast → Atlas → Vega → Echo → Orion)
-    3. RESTING → wait REST_SECONDS before returning to IDLE
-    """
-
-    STAGE_MIN_SECONDS = 10  
+    STAGE_MIN_SECONDS = 10
     REST_SECONDS = 45
     MAX_QUEUE_SIZE = 100
 
@@ -46,29 +21,30 @@ class AgentOrchestrator:
         self.db = db
         self.name = "Orchestrator"
         self.running = False
-        self.state = "IDLE"         
+        self.state = "IDLE"
         self.rest_until = 0.0
         self._tasks: list[asyncio.Task] = []
         self.agents: Dict[str, Any] = {}
         self.nova: Optional[WatcherAgent] = None
         self.market_engine: Optional[MarketEngine] = None
+        self._current_token: Optional[dict] = None
+        self._investigation_lock = asyncio.Lock()
 
         self.publisher = EventPublisher(db=db, server=server)
 
     async def start(self):
-        """Initialize agents and start the main loop."""
         self.running = True
-        print(f"🎭 {self.name}: Conductor v4.1 starting...")
+        print(f"🎭 {self.name}: Conductor v5.0 starting...")
 
         self.agents = {
             "atlas": SimulatorAgent(server=self.publisher),
             "vega":  AnalyzerAgent(server=self.publisher),
-            "echo":  MemoryAgent(server=self.publisher, db=self.db),
+            "echo":  InvestigatorAgent(server=self.publisher, db=self.db),
             "orion": DecisionAgent(server=self.publisher),
         }
         print(f"✅ {self.name}: Agents initialized — Atlas, Vega, Echo, Orion")
 
-        self.nova = WatcherAgent(server=self.publisher, db=self.db)
+        self.nova = WatcherAgent(server=self.publisher, db=self.db, publisher=self.publisher)
         self._tasks.append(asyncio.create_task(self.nova.start()))
         print(f"✅ {self.name}: Nova (Watcher) started as background task")
 
@@ -80,15 +56,15 @@ class AgentOrchestrator:
         print(f"✅ {self.name}: Main loop started")
 
         await self.publisher.system_message(
-            f"ClawIntel v4.1 online. Investigation cycle: ~90s per token, "
-            f"{self.REST_SECONDS}s rest between cases. Nova scanning 4 chains..."
+            f"ClawIntel v5.0 online. One token at a time, first-come-first-serve. "
+            f"Investigation cycle: ~{self.STAGE_MIN_SECONDS * 4}s per token, "
+            f"{self.REST_SECONDS}s rest between cases. Nova scanning chains..."
         )
 
         while self.running:
             await asyncio.sleep(1)
 
     async def stop(self):
-        """Graceful shutdown."""
         print(f"🎭 {self.name}: Stopping conductor...")
         self.running = False
 
@@ -131,23 +107,13 @@ class AgentOrchestrator:
         print(f"✅ {self.name}: Conductor stopped")
 
     async def _main_loop(self):
-        """
-        Main orchestration loop.
-
-        STATE MACHINE:
-        - RESTING: Wait until rest_until timestamp passes, then transition to IDLE
-        - IDLE: Poll DB for next pending token. If found, transition to INVESTIGATING
-        - INVESTIGATING: Run _run_investigation(), then transition to RESTING
-
-        NO token is fetched during RESTING or INVESTIGATING states.
-        """
         while self.running:
             try:
                 if self.state == "RESTING":
                     now = time.time()
                     if now < self.rest_until:
                         remaining = int(self.rest_until - now)
-                        if remaining % 10 == 0: 
+                        if remaining % 10 == 0:
                             print(f"😴 {self.name}: Resting... {remaining}s remaining")
                         await asyncio.sleep(1)
                         continue
@@ -156,42 +122,65 @@ class AgentOrchestrator:
                     await self.publisher.system_message("Agents rested. Resuming token surveillance.")
 
                 if self.state == "IDLE":
-                    token = await self._get_next_token()
-                    if not token:
-                        await asyncio.sleep(3)
-                        continue
+                    async with self._investigation_lock:
+                        if self.state != "IDLE":
+                            await asyncio.sleep(1)
+                            continue
+                        token = await self._get_next_token()
+                        if not token:
+                            await asyncio.sleep(3)
+                            continue
+                        self._current_token = token
+                        self.state = "INVESTIGATING"
+
                     await self._run_investigation(token)
+                    self._current_token = None
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 print(f"❌ {self.name}: Main loop error: {e}")
+                self._current_token = None
+                self.state = "IDLE"
                 await asyncio.sleep(5)
 
     async def _get_next_token(self) -> Optional[dict]:
-        """Fetch the highest-attention pending token from DB."""
         try:
-            if self.db and hasattr(self.db, "get_next_pending_token"):
-                return await self.db.get_next_pending_token()
-            return None
+            if not self.db or not hasattr(self.db, "get_next_pending_token"):
+                return None
+
+            token = await self.db.get_next_pending_token()
+            if not token:
+                return None
+
+            addr = token.get("token_address", "")
+            chain = token.get("chain", "")
+            if not addr or not chain:
+                print(f"⚠️ {self.name}: Skipping token with missing address or chain")
+                try:
+                    if hasattr(self.db, "mark_token_completed"):
+                        await self.db.mark_token_completed(addr or "unknown", chain or "unknown", "INVALID")
+                except Exception:
+                    pass
+                return None
+
+            try:
+                if hasattr(self.db, "mark_token_investigating"):
+                    await self.db.mark_token_investigating(addr, chain)
+                    print(f"🔒 {self.name}: Marked {token.get('symbol', '???')} as investigating")
+                elif hasattr(self.db, "update_token_status"):
+                    await self.db.update_token_status(addr, chain, "investigating")
+                    print(f"🔒 {self.name}: Marked {token.get('symbol', '???')} as investigating")
+            except Exception as e:
+                print(f"⚠️ {self.name}: Failed to mark token investigating: {e}")
+
+            return token
+
         except Exception as e:
             print(f"⚠️ {self.name}: Failed to get next token: {e}")
             return None
 
     async def _run_investigation(self, token: dict):
-        """
-        Run the full 5-stage investigation with theatrical pacing.
-
-        STAGES:
-        1. Nova broadcast (discovery message from queue)
-        2. Atlas (Simulation) — trade path analysis
-        3. Vega (Analysis) — contract risk analysis
-        4. Echo (Memory) — creator history & prediction
-        5. Orion (Decision) — final verdict
-
-        After all stages: save investigation, broadcast verdict, mark token complete,
-        then enter RESTING state for REST_SECONDS.
-        """
         token_address = token.get("token_address", "unknown")
         chain = token.get("chain", "unknown")
         symbol = token.get("symbol", "???")
@@ -200,16 +189,18 @@ class AgentOrchestrator:
         nova_message = token.get("nova_message", f"New token discovered: {symbol}")
 
         print(f"🎭 {self.name}: Starting investigation on {symbol} ({chain})")
-        self.state = "INVESTIGATING"
-
 
         await self.publisher.broadcast("AGENT_MESSAGE", {
             "agent": "Nova",
             "message": nova_message,
             "type": "discovery",
             "channel": "main",
-            "timestamp": time.time()
+            "timestamp": time.time(),
+            "token_address": token_address,
+            "chain": chain,
+            "symbol": symbol,
         })
+        print(f"📡 {self.name}: Broadcast Nova discovery for {symbol}")
 
         sim_data = await self._run_stage(
             agent_name="Atlas",
@@ -223,7 +214,7 @@ class AgentOrchestrator:
         analysis_data = await self._run_stage(
             agent_name="Vega",
             token=token,
-            action="analyzing contract risks",
+            action="analyzing contract structure",
             completion_event="ANALYSIS_COMPLETE",
             work_fn=self.agents["vega"].analyze,
             work_args=(sim_data,)
@@ -232,7 +223,7 @@ class AgentOrchestrator:
         memory_data = await self._run_stage(
             agent_name="Echo",
             token=token,
-            action="searching creator archives",
+            action="investigating creator history",
             completion_event="MEMORY_INTELLIGENCE",
             work_fn=self.agents["echo"].analyze,
             work_args=(token,)
@@ -241,7 +232,7 @@ class AgentOrchestrator:
         decision_data = await self._run_stage(
             agent_name="Orion",
             token=token,
-            action="weighing evidence",
+            action="synthesizing all findings",
             completion_event="DECISION_COMPLETE",
             work_fn=self.agents["orion"].decide,
             work_args=(sim_data, analysis_data, memory_data)
@@ -254,12 +245,11 @@ class AgentOrchestrator:
             "token_symbol": symbol,
             "name": name,
             "creator": creator,
-            "nova_message": nova_message,                          
-            "risk_score": analysis_data.get("risk_score", 0),  
-            "verdict": decision_data.get("verdict", "UNKNOWN"),
+            "nova_message": nova_message,
+            "final_score": decision_data.get("final_score", 0),
+            "direction": decision_data.get("direction", "UNKNOWN"),
             "confidence": decision_data.get("confidence", 0),
-            "reasoning": decision_data.get("reasoning", ""),
-            "action": decision_data.get("action", "UNKNOWN"),
+            "perspective": decision_data.get("perspective", ""),
             "simulation": sim_data,
             "analysis": analysis_data,
             "memory": memory_data,
@@ -267,6 +257,7 @@ class AgentOrchestrator:
             "timestamp": time.time(),
             "status": "completed",
         }
+
         try:
             if self.db and hasattr(self.db, "save_investigation"):
                 await self.db.save_investigation(investigation)
@@ -280,24 +271,23 @@ class AgentOrchestrator:
             token=token_address,
             chain=chain,
             symbol=symbol,
-            verdict=decision_data.get("verdict", "UNKNOWN"),
+            direction=decision_data.get("direction", "UNKNOWN"),
             score=decision_data.get("final_score", 0),
             confidence=decision_data.get("confidence", 0),
         )
 
         try:
             if self.db and hasattr(self.db, "mark_token_completed"):
-                verdict = decision_data.get("verdict", "UNKNOWN")
-                await self.db.mark_token_completed(token_address, chain, verdict)
-                print(f"✅ {self.name}: Token {symbol} marked completed — verdict: {verdict}")
+                await self.db.mark_token_completed(token_address, chain, decision_data.get("direction", "UNKNOWN"))
+                print(f"✅ {self.name}: Token {symbol} marked completed — direction: {decision_data.get('direction', 'UNKNOWN')}")
         except Exception as e:
             print(f"⚠️ {self.name}: Failed to mark token completed: {e}")
 
         self.state = "RESTING"
         self.rest_until = time.time() + self.REST_SECONDS
         await self.publisher.system_message(
-            f"Investigation complete on {symbol}. Verdict: {decision_data.get('verdict', 'UNKNOWN')}. "
-            f"Agents resting for {self.REST_SECONDS}s."
+            f"Investigation complete on {symbol}. Direction: {decision_data.get('direction', 'UNKNOWN')} "
+            f"at {decision_data.get('final_score', 0):.0f}/100. Agents resting for {self.REST_SECONDS}s."
         )
         print(f"😴 {self.name}: Investigation complete. Resting for {self.REST_SECONDS}s.")
 
@@ -310,7 +300,6 @@ class AgentOrchestrator:
         work_fn,
         work_args: tuple
     ) -> dict:
-        
         symbol = token.get("symbol", "???")
         chain = token.get("chain", "unknown")
         stage_start = time.time()
@@ -340,7 +329,7 @@ class AgentOrchestrator:
         elapsed = time.time() - stage_start
         if elapsed < self.STAGE_MIN_SECONDS:
             remaining = self.STAGE_MIN_SECONDS - elapsed
-            print(f"⏱️ {self.name}: Stage {agent_name} done in {elapsed:.1f}s — waiting {remaining:.1f}s for theatrical minimum")
+            print(f"⏱️ {self.name}: Stage {agent_name} done in {elapsed:.1f}s — waiting {remaining:.1f}s")
             await asyncio.sleep(remaining)
 
         await self.publisher.broadcast(completion_event, result)
