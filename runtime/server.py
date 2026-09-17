@@ -36,6 +36,7 @@ class ClawIntelServer:
     def _setup_routes(self):
         
         self.app.router.add_get("/", self._index)
+        self.app.router.add_get("/index.html", self._index)
         self.app.router.add_get("/ws", self._ws_handler)
         self.app.router.add_get("/health", self._health)
         self.app.router.add_post("/api/analyze", self._api_analyze)

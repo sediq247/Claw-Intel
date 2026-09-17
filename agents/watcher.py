@@ -17,58 +17,13 @@ import aiohttp
 from web3 import Web3
 from dotenv import load_dotenv
 
-try:
-    from google import genai
-    from google.genai import types as genai_types
-    HAS_GENAI = True
-except ImportError:
-    genai = None
-    genai_types = None
-    HAS_GENAI = False
-
 load_dotenv()
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
-FALLBACK_MODELS = [
-    GEMINI_MODEL,
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
-    "gemini-1.5-flash-latest",
-    "gemini-2.0-flash-lite",
-    "gemini-2.0-flash",
-]
-
-
-class GeminiWrapper:
-    def __init__(self, api_key: str):
-        self._client = genai.Client(api_key=api_key)
-        self._models = [m for m in FALLBACK_MODELS if m]
-
-    async def generate(self, contents: str, config=None):
-        last_err = None
-        for model in self._models:
-            try:
-                def _call():
-                    kwargs = {"model": model, "contents": contents}
-                    if config and genai_types:
-                        kwargs["config"] = config
-                    return self._client.models.generate_content(**kwargs)
-                return await asyncio.wait_for(asyncio.to_thread(_call), timeout=15)
-            except Exception as e:
-                err_str = str(e)
-                if "404" in err_str or "NOT_FOUND" in err_str:
-                    print(f"⚠️ Nova: Model {model} unavailable, trying fallback...")
-                    last_err = e
-                    continue
-                raise
-        raise last_err or Exception("All Gemini models exhausted")
-
-
-gemini = GeminiWrapper(GEMINI_API_KEY) if GEMINI_API_KEY and HAS_GENAI else None
+from agents.llm_client import llm
+gemini = llm if llm.is_available else None
 if not gemini:
-    print("⚠️ Nova: Gemini unavailable. Running fallback mode.")
+    print("⚠️ Agent: No LLM providers available. Running fallback mode.")
 
 
 @dataclass
@@ -404,6 +359,33 @@ class WatcherAgent:
         except Exception as e:
             print(f"❌ Nova: Discovery handling error: {e}")
 
+
+    async def _llm_attention_note(self, event: "TokenEvent") -> str:
+        """Optional LLM note on why this token deserves attention."""
+        from agents.llm_client import llm
+        if not llm.is_available:
+            return ""
+
+        evidence = {
+            "symbol": event.token_symbol,
+            "chain": event.chain,
+            "liquidity_usd": event.liquidity_usd,
+            "market_cap": event.market_cap,
+            "volume_24h": getattr(event, "volume_24h", None),
+            "attention_score": getattr(event, "attention_score", None),
+        }
+        system = (
+            "You are Nova, the market observer. Give a one-sentence note on why this token is worth watching. "
+            "Be calm and factual. Pure text, no JSON."
+        )
+        user = f"Token data: {__import__('json').dumps(evidence, default=str)}"
+        try:
+            note = await llm.generate(contents=user, system=system, temperature=0.6, max_tokens=60)
+            return (note or "").strip()[:180]
+        except Exception:
+            return ""
+
+
     async def _generate_nova_message(self, event: TokenEvent) -> str:
         if not gemini:
             return self._fallback_message(event)
@@ -440,17 +422,20 @@ class WatcherAgent:
         )
 
         try:
-            config = None
-            if genai_types:
-                config = genai_types.GenerateContentConfig(temperature=0.9, max_output_tokens=200)
-            response = await gemini.generate(f"{system_prompt}\n\n{user_prompt}", config=config)
-            text = response.text if hasattr(response, "text") else str(response)
-            return text.strip() if text else self._fallback_message(event)
-        except asyncio.TimeoutError:
-            print("⚠️ Nova: Gemini timed out")
-            return self._fallback_message(event)
+            from agents.llm_client import llm
+            text = await llm.generate(
+                contents=f"{system_prompt}\n\n{user_prompt}",
+                temperature=0.85,
+                max_tokens=280,
+            )
+            msg = text.strip() if text else self._fallback_message(event)
+            # Optional extra attention note from LLM
+            note = await self._llm_attention_note(event)
+            if note:
+                msg = f"{msg} {note}".strip()
+            return msg
         except Exception as e:
-            print(f"⚠️ Nova: Gemini error: {e}")
+            print(f"⚠️ Agent: LLM error: {e}")
             return self._fallback_message(event)
 
     def _fallback_message(self, event: TokenEvent) -> str:
@@ -729,10 +714,13 @@ class WatcherAgent:
                         event_type="NEW_TOKEN",
                         chain="solana",
                         token_address=mint,
-                        token_symbol=info.get("symbol", "UNKNOWN"),
-                        token_name=info.get("name", "Unknown"),
+                        token_symbol=info.get("symbol") or "UNKNOWN",
+                        token_name=info.get("name") or "Unknown",
                         creator="unknown",
                         timestamp=time.time(),
+                        liquidity_usd=info.get("liquidity_usd"),
+                        market_cap=info.get("market_cap"),
+                        volume_24h=info.get("volume_24h"),
                         origin_source="raydium",
                         raw_data={"signature": sig, "supply": sinfo.get("uiAmountString")},
                     )
@@ -756,21 +744,65 @@ class WatcherAgent:
             return False
 
     async def _fetch_solana_token_info_rpc(self, mint: str, rpc: str, session: aiohttp.ClientSession) -> dict:
-        payload = {"jsonrpc": "2.0", "id": 1, "method": "getTokenSupply", "params": [mint]}
+        """Resolve Solana name/symbol via DexScreener first, then supply via RPC."""
+        name, symbol, decimals, creator = "Unknown", "???", 9, "unknown"
+        supply = "0"
+
+        # 1) DexScreener — real ticker/name for most traded mints
         try:
-            async with session.post(rpc, json=payload, headers={"Content-Type": "application/json"}, timeout=10) as resp:
-                data = await resp.json()
-                value = data.get("result", {}).get("value", {})
-                return {
-                    "name": "Unknown",
-                    "symbol": "???",
-                    "decimals": value.get("decimals", 9),
-                    "creator": "unknown",
-                    "supply": value.get("uiAmountString", "0"),
-                }
+            ds = await self._fetch_dexscreener_token(mint, "solana")
+            pairs = ds.get("all_pairs") or []
+            if pairs:
+                bt = pairs[0].get("baseToken") or {}
+                # Prefer the mint that matches our address
+                for p in pairs:
+                    b = p.get("baseToken") or {}
+                    if (b.get("address") or "").lower() == mint.lower():
+                        bt = b
+                        break
+                if bt.get("symbol"):
+                    symbol = str(bt["symbol"]).strip() or symbol
+                if bt.get("name"):
+                    name = str(bt["name"]).strip() or name
+            # also surface market fields callers may want
+            _ds_extra = {
+                "liquidity_usd": ds.get("liquidity_usd"),
+                "market_cap": ds.get("market_cap"),
+                "volume_24h": ds.get("volume_24h"),
+            }
         except Exception as e:
-            print(f"⚠️ Nova: Solana token info failed: {e}")
-            return {"name": "Unknown", "symbol": "???", "decimals": 9, "creator": "unknown"}
+            print(f"⚠️ Nova: DexScreener name lookup failed: {e}")
+            _ds_extra = {}
+
+        # 2) RPC supply/decimals
+        if rpc:
+            payload = {"jsonrpc": "2.0", "id": 1, "method": "getTokenSupply", "params": [mint]}
+            try:
+                async with session.post(
+                    rpc, json=payload, headers={"Content-Type": "application/json"}, timeout=10
+                ) as resp:
+                    data = await resp.json()
+                    value = data.get("result", {}).get("value", {}) or {}
+                    decimals = value.get("decimals", decimals)
+                    supply = value.get("uiAmountString", supply)
+            except Exception as e:
+                print(f"⚠️ Nova: Solana supply RPC failed: {e}")
+
+        # 3) Short mint fallback so UI never stays on ???
+        if symbol in ("???", "UNKNOWN", "", None):
+            symbol = (mint[:4] + "…" + mint[-4:]) if len(mint) > 8 else mint
+        if name in ("Unknown", "", None):
+            name = symbol
+
+        out = {
+            "name": name,
+            "symbol": symbol,
+            "decimals": decimals,
+            "creator": creator,
+            "supply": supply,
+        }
+        out.update({k: v for k, v in _ds_extra.items() if v is not None})
+        return out
 
     async def _fetch_dexscreener_token(self, token_address: str, chain_slug: str) -> dict:
         url = f"https://api.dexscreener.com/tokens/v1/{chain_slug}/{token_address}"
@@ -784,13 +816,16 @@ class WatcherAgent:
                 if not pairs:
                     return {}
                 best = pairs[0]
+                bt = best.get("baseToken") or {}
                 return {
-                    "liquidity_usd": best.get("liquidity", {}).get("usd"),
+                    "liquidity_usd": (best.get("liquidity") or {}).get("usd"),
                     "market_cap": best.get("marketCap"),
                     "price_usd": best.get("priceUsd"),
-                    "volume_24h": best.get("volume", {}).get("h24"),
+                    "volume_24h": (best.get("volume") or {}).get("h24"),
                     "pair_address": best.get("pairAddress"),
                     "dex_id": best.get("dexId"),
+                    "symbol": bt.get("symbol"),
+                    "name": bt.get("name"),
                     "all_pairs": pairs,
                 }
         except Exception as e:
@@ -830,16 +865,23 @@ class WatcherAgent:
         dex_slug = self.CHAIN_CONFIG.get(chain, {}).get("dex_slug", chain)
         market = await self._fetch_dexscreener_token(token_address, dex_slug)
 
+        sym = info.get("symbol") or market.get("symbol") or "UNKNOWN"
+        nam = info.get("name") or market.get("name") or "Unknown"
+        if sym in ("???", "UNKNOWN") and market.get("symbol"):
+            sym = market["symbol"]
+        if nam in ("Unknown",) and market.get("name"):
+            nam = market["name"]
         event = TokenEvent(
             event_type="USER_QUERY",
             chain=chain,
             token_address=token_address,
-            token_symbol=info.get("symbol", "UNKNOWN"),
-            token_name=info.get("name", "Unknown"),
+            token_symbol=sym,
+            token_name=nam,
             creator=info.get("creator", "unknown"),
             timestamp=time.time(),
             liquidity_usd=market.get("liquidity_usd"),
             market_cap=market.get("market_cap"),
+            volume_24h=market.get("volume_24h"),
             origin_source="user_query",
             raw_data={"token_info": info, "market": market},
         )

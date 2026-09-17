@@ -17,58 +17,13 @@ import aiohttp
 from web3 import Web3
 from dotenv import load_dotenv
 
-try:
-    from google import genai
-    from google.genai import types as genai_types
-    HAS_GENAI = True
-except ImportError:
-    genai = None
-    genai_types = None
-    HAS_GENAI = False
-
 load_dotenv()
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
-FALLBACK_MODELS = [
-    GEMINI_MODEL,
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
-    "gemini-1.5-flash-latest",
-    "gemini-2.0-flash-lite",
-    "gemini-2.0-flash",
-]
-
-
-class GeminiWrapper:
-    def __init__(self, api_key: str):
-        self._client = genai.Client(api_key=api_key)
-        self._models = [m for m in FALLBACK_MODELS if m]
-
-    async def generate(self, contents: str, config=None):
-        last_err = None
-        for model in self._models:
-            try:
-                def _call():
-                    kwargs = {"model": model, "contents": contents}
-                    if config and genai_types:
-                        kwargs["config"] = config
-                    return self._client.models.generate_content(**kwargs)
-                return await asyncio.wait_for(asyncio.to_thread(_call), timeout=15)
-            except Exception as e:
-                err_str = str(e)
-                if "404" in err_str or "NOT_FOUND" in err_str:
-                    print(f"⚠️ Atlas: Model {model} unavailable, trying fallback...")
-                    last_err = e
-                    continue
-                raise
-        raise last_err or Exception("All Gemini models exhausted")
-
-
-gemini = GeminiWrapper(GEMINI_API_KEY) if GEMINI_API_KEY and HAS_GENAI else None
+from agents.llm_client import llm
+gemini = llm if llm.is_available else None
 if not gemini:
-    print("⚠️ Atlas: Gemini unavailable. Running fallback mode.")
+    print("⚠️ Agent: No LLM providers available. Running fallback mode.")
 
 
 @dataclass
@@ -584,6 +539,55 @@ class SimulatorAgent:
         except Exception as e:
             print(f"⚠️ Atlas: Simulation task failed: {e}")
 
+
+    async def _llm_interpret_simulation(self, sim_result: dict, symbol: str) -> dict:
+        """Use multi-LLM to interpret simulation outcomes and add insight."""
+        from agents.llm_client import llm
+        if not llm.is_available:
+            return sim_result
+
+        evidence = {
+            "symbol": symbol,
+            "can_buy": sim_result.get("can_buy"),
+            "can_sell": sim_result.get("can_sell"),
+            "honeypot_risk": sim_result.get("honeypot_risk"),
+            "buy_tax": sim_result.get("buy_tax"),
+            "sell_tax": sim_result.get("sell_tax"),
+            "liquidity_usd": sim_result.get("liquidity_usd"),
+            "liquidity_locked": sim_result.get("liquidity_locked"),
+            "mint_function": sim_result.get("mint_function"),
+            "blacklist_function": sim_result.get("blacklist_function"),
+            "simulation_confidence": sim_result.get("simulation_confidence"),
+            "chain": sim_result.get("chain"),
+        }
+
+        system = (
+            "You are Atlas, the trader who tests real on-chain mechanics. "
+            "Interpret the simulation results. Respond with pure JSON only. Never give financial advice."
+        )
+        user = (
+            f"Simulation evidence:\n{__import__('json').dumps(evidence, default=str)}\n\n"
+            "Return JSON:\n"
+            '{"interpretation": "<1-2 sentence mechanical read>", '
+            '"severity": "<0.0-1.0>", "red_flag_summary": "<short or null>"}'
+        )
+
+        try:
+            result = await llm.generate_json(contents=user, system=system, temperature=0.3, max_tokens=250)
+            sim_result["llm_interpretation"] = result.get("interpretation", "")
+            if result.get("confidence") is not None:
+                # blend lightly with existing confidence
+                old = float(sim_result.get("simulation_confidence") or 0.5)
+                new = float(result["confidence"])
+                sim_result["simulation_confidence"] = max(0.0, min(1.0, (old * 0.6 + new * 0.4)))
+            if result.get("red_flag_summary"):
+                sim_result["llm_red_flag"] = result["red_flag_summary"]
+            print(f"✅ Atlas: LLM interpretation added")
+        except Exception as e:
+            print(f"⚠️ Atlas: LLM interpret skipped → {e}")
+        return sim_result
+
+
     async def _generate_atlas_message(self, sim: SimulationResult, symbol: str, context: str) -> str:
         if not gemini:
             return self._fallback_message(sim, symbol)
@@ -668,17 +672,15 @@ Requirements:
 7. Sound like a trader who trusts the chain, not the contract"""
 
         try:
-            config = None
-            if genai_types:
-                config = genai_types.GenerateContentConfig(temperature=0.85, max_output_tokens=250)
-            response = await gemini.generate(f"{system_prompt}\n\n{user_prompt}", config=config)
-            text = response.text if hasattr(response, "text") else str(response)
+            from agents.llm_client import llm
+            text = await llm.generate(
+                contents=f"{system_prompt}\n\n{user_prompt}",
+                temperature=0.85,
+                max_tokens=280,
+            )
             return text.strip() if text else self._fallback_message(sim, symbol)
-        except asyncio.TimeoutError:
-            print("⚠️ Atlas: Gemini timed out")
-            return self._fallback_message(sim, symbol)
         except Exception as e:
-            print(f"⚠️ Atlas: Gemini error: {e}")
+            print(f"⚠️ Agent: LLM error: {e}")
             return self._fallback_message(sim, symbol)
 
     def _fallback_message(self, sim: SimulationResult, symbol: str) -> str:
@@ -797,10 +799,24 @@ Requirements:
 
             await self.results_cache.set(token_address, simulation)
 
+            # LLM interpretation of mechanical results
+            sim_dict = {**simulation.__dict__}
+            sim_dict = await self._llm_interpret_simulation(sim_dict, symbol)
+            # blend confidence back onto the dataclass if present
+            if "simulation_confidence" in sim_dict:
+                try:
+                    simulation.simulation_confidence = float(sim_dict["simulation_confidence"])
+                except Exception:
+                    pass
+
             context = f"Token discovered by Nova on {chain}. Running trade simulation."
             report = await self._generate_atlas_message(simulation, symbol, context)
 
             result = {**simulation.__dict__, "message": report, "token_symbol": symbol, "token_name": name, "token_address": token_address, "chain": chain}
+            if sim_dict.get("llm_interpretation"):
+                result["llm_interpretation"] = sim_dict["llm_interpretation"]
+            if sim_dict.get("llm_red_flag"):
+                result["llm_red_flag"] = sim_dict["llm_red_flag"]
             for key in ["creator", "origin_source", "timestamp", "attention_score", "volume_24h", "liquidity_usd", "market_cap"]:
                 if key in event_data and key not in result:
                     result[key] = event_data[key]

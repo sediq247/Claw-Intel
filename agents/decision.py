@@ -1,65 +1,20 @@
+"""
+Orion — The Lead
+================
+Real multi-LLM synthesis, scoring and direction calling.
+Uses the unified LLMClient (Gemini / Grok / Cerebras / OpenRouter)
+with strong rule-based fallback.
+"""
+
 import json
 import time
-import os
 import asyncio
 import random
 from dataclasses import dataclass, asdict
 from typing import Dict, Any, Optional, List
 from enum import Enum
-from dotenv import load_dotenv
 
-try:
-    from google import genai
-    from google.genai import types as genai_types
-    HAS_GENAI = True
-except ImportError:
-    genai = None
-    genai_types = None
-    HAS_GENAI = False
-
-load_dotenv()
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
-
-FALLBACK_MODELS = [
-    GEMINI_MODEL,
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
-    "gemini-1.5-flash-latest",
-    "gemini-2.0-flash-lite",
-    "gemini-2.0-flash",
-]
-
-
-class GeminiWrapper:
-    def __init__(self, api_key: str):
-        self._client = genai.Client(api_key=api_key)
-        self._models = [m for m in FALLBACK_MODELS if m]
-
-    async def generate(self, contents: str, config=None):
-        last_err = None
-        for model in self._models:
-            try:
-                def _call():
-                    kwargs = {"model": model, "contents": contents}
-                    if config and genai_types:
-                        kwargs["config"] = config
-                    return self._client.models.generate_content(**kwargs)
-                return await asyncio.wait_for(asyncio.to_thread(_call), timeout=15)
-            except Exception as e:
-                err_str = str(e)
-                if "404" in err_str or "NOT_FOUND" in err_str:
-                    print(f"⚠️ Orion: Model {model} unavailable, trying fallback...")
-                    last_err = e
-                    continue
-                raise
-        raise last_err or Exception("All Gemini models exhausted")
-
-
-gemini = GeminiWrapper(GEMINI_API_KEY) if GEMINI_API_KEY and HAS_GENAI else None
-if not gemini:
-    print("⚠️ Orion: Gemini unavailable. Running fallback mode.")
+from agents.llm_client import llm
 
 
 class Direction(Enum):
@@ -93,6 +48,7 @@ class DecisionAgent:
         self.name = "Orion"
         self.SAFE_THRESHOLD = 30
         self.WARNING_THRESHOLD = 60
+        # Legacy weights kept only for pure rule-based fallback
         self.weights = {"simulation": 0.30, "analysis": 0.40, "memory": 0.30}
 
         self._nova_roasts = [
@@ -114,89 +70,102 @@ class DecisionAgent:
             "Nova spotted this one clean. I expect the next one just as fast.",
         ]
 
-    async def decide(self, sim_data: dict, analysis_data: dict, memory_data: Optional[dict] = None) -> dict:
-        return await self._make_decision(sim_data, analysis_data, memory_data)
+        if llm.is_available:
+            print(f"✅ Orion: Multi-LLM brain online → {llm.status()['available_providers']}")
+        else:
+            print("⚠️ Orion: No LLM providers available. Running pure rule-based fallback.")
+
+    async def decide(self, sim_data: dict, analysis_data: dict, memory_data: Optional[dict] = None, debate_data: Optional[dict] = None) -> dict:
+        return await self._make_decision(sim_data, analysis_data, memory_data, debate_data)
 
     def _pick_nova_call(self, roast: bool = True) -> str:
         if roast:
             return random.choice(self._nova_roasts)
         return random.choice(self._nova_praises)
 
-    async def _generate_orion_message(self, result: SynthesisResult, sim: dict, analysis: dict, memory: Optional[dict]) -> str:
-        if not gemini:
-            return self._fallback_message(result, sim, analysis, memory)
+    # ------------------------------------------------------------------
+    # Rule-based fallback (used when all LLMs fail)
+    # ------------------------------------------------------------------
+    def _rule_based_score(self, sim: dict, analysis: dict, memory: Optional[dict]) -> tuple:
+        sim_score = 50.0
+        if sim.get("honeypot_risk") or not sim.get("can_sell", True):
+            sim_score = 95.0
+        elif not sim.get("can_buy", True):
+            sim_score = 80.0
+        else:
+            tax = max(sim.get("buy_tax", 0) or 0, sim.get("sell_tax", 0) or 0)
+            if tax > 15:
+                sim_score = 75.0
+            elif tax > 8:
+                sim_score = 60.0
+            liq = sim.get("liquidity_usd", 0) or 0
+            if liq < 1000:
+                sim_score = max(sim_score, 70.0)
+            elif liq > 20000:
+                sim_score = min(sim_score, 35.0)
 
-        profile = (memory or {}).get("profile", {}) or {}
-        tags = profile.get("tags", [])
-        rep = profile.get("reputation_score", "Unknown")
-        creator = (memory or {}).get("creator", "unknown")
-        creator_short = creator[:10] + "..." + creator[-4:] if creator != "unknown" else "unknown"
-        nova_call = result.nova_call
+        analysis_risk = float(analysis.get("risk_score", 50) or 50)
 
-        debate = (memory or {}).get("message", "") if memory else ""
-        has_debate = bool(debate) and ("disagree" in debate.lower() or "contradict" in debate.lower() or "optimistic" in debate.lower())
+        memory_score = 50.0
+        if memory:
+            profile = memory.get("profile", {}) or {}
+            rep = float(profile.get("reputation_score", 50) or 50)
+            memory_score = 100 - rep  # higher reputation → lower risk score
+            pred = (memory.get("predicted_outcome") or "").upper()
+            if pred in ("HIGH_RISK", "DEAD", "RUG"):
+                memory_score = max(memory_score, 80.0)
+            elif pred in ("SAFE", "LEGIT"):
+                memory_score = min(memory_score, 30.0)
 
-        system_prompt = (
-            "You are Orion, the team lead of a crypto research squad. You weigh everyone's findings, "
-            "form your own view on where the token is heading, and give a final score. You are sharp, "
-            "confident, and occasionally playful. You NEVER tell anyone to buy, sell, or trade. You simply "
-            "assess and move on. You sometimes tease Nova in a lighthearted way. You speak like someone "
-            "who has seen a thousand tokens and knows the patterns."
+        final = (
+            sim_score * self.weights["simulation"]
+            + analysis_risk * self.weights["analysis"]
+            + memory_score * self.weights["memory"]
         )
+        final = max(0.0, min(100.0, final))
 
-        user_prompt = (
-            f"Token: {result.symbol}\n"
-            f"Chain: {result.chain}\n\n"
-            f"Atlas (Trade Mechanics):\n"
-            f"- Buy path: {'open' if sim.get('can_buy') else 'blocked'}\n"
-            f"- Sell path: {'open' if sim.get('can_sell') else 'blocked'}\n"
-            f"- Honeypot flag: {'yes' if sim.get('honeypot_risk') else 'no'}\n"
-            f"- Liquidity: ${sim.get('liquidity_usd', 0):,.0f}\n"
-            f"- Buy tax: {sim.get('buy_tax', 0)}%\n"
-            f"- Sell tax: {sim.get('sell_tax', 0)}%\n"
-            f"- Mint function: {'yes' if sim.get('mint_function') else 'no'}\n"
-            f"- Blacklist: {'yes' if sim.get('blacklist_function') else 'no'}\n"
-            f"- Owner renounced: {'yes' if sim.get('owner_renounced') else 'no'}\n\n"
-            f"Vega (Contract & Market):\n"
-            f"- Risk score: {analysis.get('risk_score', 'N/A')}/100\n"
-            f"- Risk level: {analysis.get('risk_level', 'N/A')}\n"
-            f"- Red flags: {', '.join(analysis.get('red_flags', [])) if analysis.get('red_flags') else 'None'}\n"
-            f"- Yellow flags: {', '.join(analysis.get('yellow_flags', [])) if analysis.get('yellow_flags') else 'None'}\n"
-            f"- Green flags: {', '.join(analysis.get('green_flags', [])) if analysis.get('green_flags') else 'None'}\n\n"
-            f"Echo (Creator & Debate):\n"
-            f"- Creator: {creator_short}\n"
-            f"- Reputation: {rep}/100\n"
-            f"- Tags: {', '.join(tags) if tags else 'None'}\n"
-            f"- Prediction: {(memory or {}).get('predicted_outcome', 'unknown')} ({(memory or {}).get('prediction_confidence', 0)*100:.0f}% confidence)\n"
-            f"- Debate with team: {'Yes — Echo disagrees with other agents' if has_debate else 'No contradictions'}\n\n"
-            f"Orion's Synthesis:\n"
-            f"- Final score: {result.final_score:.0f}/100\n"
-            f"- Direction: {result.direction}\n"
-            f"- Confidence: {result.confidence*100:.0f}%\n\n"
-            f"Requirements:\n"
-            f"1. Summarize what the team found in 1-2 sentences\n"
-            f"2. Give your own perspective on where this token is heading\n"
-            f"3. If Echo debated the team, acknowledge the tension neutrally\n"
-            f"4. State the final score and direction clearly\n"
-            f"5. NEVER advise buying, selling, or trading\n"
-            f"6. End by calling on Nova with this exact line (use it verbatim, do not modify): {nova_call}\n"
-            f"7. Keep it under 6 sentences\n"
-            f"8. Sound like a lead who trusts data but keeps the room light"
-        )
+        # Hard overrides
+        if sim.get("honeypot_risk") or not sim.get("can_sell", True):
+            final = max(final, 85.0)
 
-        try:
-            config = None
-            if genai_types:
-                config = genai_types.GenerateContentConfig(temperature=0.9, max_output_tokens=280)
-            response = await gemini.generate(f"{system_prompt}\n\n{user_prompt}", config=config)
-            text = response.text if hasattr(response, "text") else str(response)
-            return text.strip() if text else self._fallback_message(result, sim, analysis, memory)
-        except asyncio.TimeoutError:
-            print("⚠️ Orion: Gemini timed out")
-            return self._fallback_message(result, sim, analysis, memory)
-        except Exception as e:
-            print(f"⚠️ Orion: Gemini error: {e}")
-            return self._fallback_message(result, sim, analysis, memory)
+        direction = self._calculate_direction(final, sim, analysis, memory)
+        confidence = 0.55 if final > 70 or final < 30 else 0.45
+        return final, direction, confidence
+
+    def _calculate_direction(self, final_score: float, sim: dict, analysis: dict, memory: Optional[dict]) -> str:
+        if sim.get("honeypot_risk") or not sim.get("can_sell", True):
+            return Direction.DOWN.value
+
+        momentum = 0
+        pc = analysis.get("price_change_24h")
+        if pc is not None:
+            if pc > 50:
+                momentum += 2
+            elif pc < -50:
+                momentum -= 2
+        bp = analysis.get("buy_pressure")
+        if bp is not None:
+            if bp > 0.6:
+                momentum += 1
+            elif bp < 0.3:
+                momentum -= 1
+        if memory and memory.get("predicted_outcome") == "HIGH_RISK":
+            momentum -= 2
+        elif memory and memory.get("predicted_outcome") == "SAFE":
+            momentum += 1
+
+        if final_score >= 70:
+            return Direction.DOWN.value
+        elif final_score <= 30:
+            if momentum >= 1:
+                return Direction.UP.value
+            return Direction.SIDEWAYS.value
+        else:
+            if momentum >= 2:
+                return Direction.UP.value
+            if momentum <= -2:
+                return Direction.DOWN.value
+            return Direction.SIDEWAYS.value
 
     def _fallback_message(self, result: SynthesisResult, sim: dict, analysis: dict, memory: Optional[dict]) -> str:
         parts = []
@@ -224,128 +193,247 @@ class DecisionAgent:
             parts.append(f"Echo's creator track record looks solid ({rep:.0f}/100). ")
 
         if memory and memory.get("predicted_outcome"):
-            parts.append(f"Echo predicts {memory['predicted_outcome'].lower()} ({memory.get('prediction_confidence', 0)*100:.0f}% confidence). ")
+            parts.append(
+                f"Echo predicts {memory['predicted_outcome'].lower()} "
+                f"({memory.get('prediction_confidence', 0)*100:.0f}% confidence). "
+            )
 
         parts.append(f"My read: {direction} with a {score:.0f}/100 score ({confidence:.0f}% confidence). ")
         parts.append(result.nova_call)
         return "".join(parts)
 
-    def _calculate_direction(self, final_score: float, sim: dict, analysis: dict, memory: Optional[dict]) -> str:
-        if sim.get("honeypot_risk") or not sim.get("can_sell", True):
-            return Direction.DOWN.value
+    # ------------------------------------------------------------------
+    # Real LLM synthesis
+    # ------------------------------------------------------------------
+    async def _llm_synthesize(self, sim: dict, analysis: dict, memory: Optional[dict], debate: Optional[dict] = None) -> Optional[Dict[str, Any]]:
+        if not llm.is_available:
+            return None
 
-        momentum = 0
-        if analysis.get("price_change_24h", 0) > 50:
-            momentum += 2
-        elif analysis.get("price_change_24h", 0) < -50:
-            momentum -= 2
-        if analysis.get("buy_pressure") is not None and analysis["buy_pressure"] > 0.6:
-            momentum += 1
-        elif analysis.get("buy_pressure") is not None and analysis["buy_pressure"] < 0.3:
-            momentum -= 1
-        if memory and memory.get("predicted_outcome") == "HIGH_RISK":
-            momentum -= 2
-        elif memory and memory.get("predicted_outcome") == "SAFE":
-            momentum += 1
+        profile = (memory or {}).get("profile", {}) or {}
+        creator = (memory or {}).get("creator", "unknown")
+        creator_short = (creator[:10] + "..." + creator[-4:]) if len(creator) > 16 else creator
 
-        if final_score >= 70:
-            return Direction.DOWN.value
-        elif final_score <= 30:
-            if momentum > 0:
-                return Direction.UP.value
-            return Direction.SIDEWAYS.value
-        else:
-            if momentum > 1:
-                return Direction.UP.value
-            elif momentum < -1:
-                return Direction.DOWN.value
-            return Direction.SIDEWAYS.value
+        evidence = {
+            "token": {
+                "symbol": sim.get("token_symbol") or sim.get("symbol") or analysis.get("token_symbol") or "???",
+                "address": sim.get("token_address") or analysis.get("token_address"),
+                "chain": sim.get("chain") or analysis.get("chain"),
+            },
+            "atlas_simulation": {
+                "can_buy": sim.get("can_buy"),
+                "can_sell": sim.get("can_sell"),
+                "honeypot_risk": sim.get("honeypot_risk"),
+                "buy_tax": sim.get("buy_tax"),
+                "sell_tax": sim.get("sell_tax"),
+                "liquidity_usd": sim.get("liquidity_usd"),
+                "liquidity_locked": sim.get("liquidity_locked"),
+                "mint_function": sim.get("mint_function"),
+                "blacklist_function": sim.get("blacklist_function"),
+                "simulation_confidence": sim.get("simulation_confidence"),
+            },
+            "vega_analysis": {
+                "risk_score": analysis.get("risk_score"),
+                "risk_level": analysis.get("risk_level"),
+                "red_flags": analysis.get("red_flags", []),
+                "yellow_flags": analysis.get("yellow_flags", []),
+                "green_flags": analysis.get("green_flags", []),
+                "ownership_renounced": analysis.get("ownership_renounced"),
+                "is_proxy": analysis.get("is_proxy"),
+                "lp_ownership": analysis.get("lp_ownership"),
+                "top_holder_percent": analysis.get("top_holder_percent"),
+                "holder_count": analysis.get("holder_count"),
+                "volume_24h": analysis.get("volume_24h"),
+                "price_change_24h": analysis.get("price_change_24h"),
+                "buy_pressure": analysis.get("buy_pressure"),
+            },
+            "echo_memory": {
+                "creator": creator_short,
+                "reputation_score": profile.get("reputation_score"),
+                "tags": profile.get("tags", []),
+                "total_tokens_created": profile.get("total_tokens_created"),
+                "predicted_outcome": (memory or {}).get("predicted_outcome"),
+                "prediction_confidence": (memory or {}).get("prediction_confidence"),
+                "is_new_creator": (memory or {}).get("is_new"),
+            },
+            "team_debate": {
+                "transcript": (debate or {}).get("transcript", []),
+                "consensus_notes": (debate or {}).get("consensus_notes", ""),
+                "disagreements": (debate or {}).get("disagreements", []),
+                "had_conflict": (debate or {}).get("had_conflict", False),
+            },
+        }
 
-    async def _make_decision(self, sim: dict, analysis: dict, memory: Optional[dict] = None) -> dict:
+        system_prompt = (
+            "You are Orion, the lead analyst of a crypto market intelligence team. "
+            "You receive structured evidence from three specialists:\n"
+            "- Atlas (trade simulation & mechanics)\n"
+            "- Vega (contract structure & market metrics)\n"
+            "- Echo (creator history & reputation)\n\n"
+            "Your job is to synthesize everything — including the team debate — into a calibrated judgment.\nIf agents disagreed, resolve the tension using the strongest on-chain evidence.\n"
+            "Rules:\n"
+            "1. Never give financial advice (no buy/sell recommendations).\n"
+            "2. Hard red flags (honeypot, blocked sell, unlimited mint) must push score high and direction DOWN.\n"
+            "3. Score is 0-100 risk-oriented (higher = more dangerous / worse outlook).\n"
+            "4. Direction must be one of: UP, DOWN, SIDEWAYS, UNKNOWN.\n"
+            "5. Be concise but precise. Base every claim on the evidence."
+        )
+
+        user_prompt = (
+            "Here is the full evidence package (JSON):\n\n"
+            f"{json.dumps(evidence, indent=2, default=str)}\n\n"
+            "Return a JSON object with exactly these keys:\n"
+            "{\n"
+            '  "final_score": <number 0-100>,\n'
+            '  "direction": "<UP|DOWN|SIDEWAYS|UNKNOWN>",\n'
+            '  "confidence": <number 0.0-1.0>,\n'
+            '  "key_factors": ["factor1", "factor2", ...],\n'
+            '  "reasoning": "<2-4 sentence internal reasoning>",\n'
+            '  "perspective": "<1-2 sentence public perspective for the team>"\n'
+            "}"
+        )
+
         try:
-            symbol = sim.get("token_symbol", sim.get("symbol",
-                       analysis.get("token_symbol", analysis.get("symbol", "???"))))
-            token = sim.get("token_address", analysis.get("token_address", "unknown"))
-            chain = sim.get("chain", analysis.get("chain", "unknown"))
-            creator = (memory or {}).get("creator", sim.get("creator", analysis.get("creator", "")))
-
-            sim_score = 0
-            if sim.get("honeypot_risk"):
-                sim_score += 50
-            if not sim.get("can_sell", True):
-                sim_score += 40
-            if not sim.get("can_buy", True):
-                sim_score += 20
-            if sim.get("mint_function"):
-                sim_score += 15
-            if sim.get("blacklist_function"):
-                sim_score += 15
-            liquidity = sim.get("liquidity_usd", 0)
-            if liquidity == 0:
-                sim_score += 20
-            elif liquidity < 1000:
-                sim_score += 10
-
-            analysis_risk = analysis.get("risk_score", 50)
-
-            profile = (memory or {}).get("profile", {}) or {}
-            creator_rep = profile.get("reputation_score", 50)
-            tags = profile.get("tags", [])
-            is_scammer = any(t in tags for t in ("repeat_rugger", "honeypot_dev", "known_scammer", "serial_rugger", "ghost_dev"))
-            memory_score = 100 - creator_rep
-            if is_scammer:
-                memory_score += 30
-
-            final_score = (
-                sim_score * self.weights["simulation"] +
-                analysis_risk * self.weights["analysis"] +
-                memory_score * self.weights["memory"]
+            result = await llm.generate_json(
+                contents=user_prompt,
+                system=system_prompt,
+                temperature=0.35,
+                max_tokens=900,
             )
-            final_score = max(0, min(100, final_score))
+            # Basic validation
+            if not isinstance(result.get("final_score"), (int, float)):
+                return None
+            score = max(0.0, min(100.0, float(result["final_score"])))
+            direction = str(result.get("direction", "UNKNOWN")).upper()
+            if direction not in ("UP", "DOWN", "SIDEWAYS", "UNKNOWN"):
+                direction = "UNKNOWN"
+            confidence = max(0.0, min(1.0, float(result.get("confidence", 0.5))))
+            return {
+                "final_score": score,
+                "direction": direction,
+                "confidence": confidence,
+                "key_factors": result.get("key_factors", []),
+                "reasoning": result.get("reasoning", ""),
+                "perspective": result.get("perspective", ""),
+            }
+        except Exception as e:
+            print(f"⚠️ Orion: LLM synthesis failed → {e}")
+            return None
 
-            if is_scammer or sim.get("honeypot_risk"):
-                final_score = max(final_score, 75)
+    async def _generate_orion_message(
+        self,
+        result: SynthesisResult,
+        sim: dict,
+        analysis: dict,
+        memory: Optional[dict],
+        llm_meta: Optional[dict] = None,
+    ) -> str:
+        """Natural language speech. Prefer LLM, fall back to template."""
+        if not llm.is_available:
+            return self._fallback_message(result, sim, analysis, memory)
 
-            direction = self._calculate_direction(final_score, sim, analysis, memory)
+        profile = (memory or {}).get("profile", {}) or {}
+        tags = profile.get("tags", [])
+        rep = profile.get("reputation_score", "Unknown")
+        creator = (memory or {}).get("creator", "unknown")
+        creator_short = (creator[:10] + "..." + creator[-4:]) if len(creator) > 16 else "unknown"
+        nova_call = result.nova_call
 
-            has_sim = bool(sim and sim.get("token_address"))
-            has_analysis = bool(analysis and analysis.get("token_address"))
-            has_memory = bool(memory and memory.get("token_address"))
+        system_prompt = (
+            "You are Orion, the team lead of a crypto research squad. "
+            "You speak clearly, with quiet authority, and a dry sense of humor. "
+            "You never advise anyone to buy or sell. "
+            "You end every message by calling Nova with the exact line provided."
+        )
 
-            if has_sim and has_analysis and has_memory:
-                confidence = sim.get("simulation_confidence", 0.5) * 0.4 + 0.4 + 0.2
-            elif has_sim and has_analysis:
-                confidence = (sim.get("simulation_confidence", 0.5) * 0.4 + 0.4) * 0.7
-                print(f"⚠️ Orion: Memory data missing -- confidence reduced")
+        user_prompt = (
+            f"Token: {result.symbol}\n"
+            f"Final score: {result.final_score:.0f}/100\n"
+            f"Direction: {result.direction}\n"
+            f"Confidence: {result.confidence*100:.0f}%\n"
+            f"Key factors: {', '.join((llm_meta or {}).get('key_factors', [])[:5]) or 'see evidence'}\n"
+            f"Internal reasoning: {(llm_meta or {}).get('reasoning', result.perspective)}\n\n"
+            f"Atlas: can_buy={sim.get('can_buy')}, can_sell={sim.get('can_sell')}, "
+            f"honeypot={sim.get('honeypot_risk')}, liq=${sim.get('liquidity_usd', 0):,.0f}\n"
+            f"Vega risk: {analysis.get('risk_score', 'N/A')}/100 ({analysis.get('risk_level', 'N/A')})\n"
+            f"Echo: creator {creator_short}, rep {rep}/100, tags {tags}\n\n"
+            f"Write 4-6 sentences max.\n"
+            f"1. Summarize what the team found.\n"
+            f"2. Give your perspective on where this token is heading.\n"
+            f"3. State score and direction clearly.\n"
+            f"4. End with this exact line (do not change it): {nova_call}"
+        )
+
+        try:
+            text = await llm.generate(
+                contents=user_prompt,
+                system=system_prompt,
+                temperature=0.85,
+                max_tokens=320,
+            )
+            return text.strip() if text else self._fallback_message(result, sim, analysis, memory)
+        except Exception as e:
+            print(f"⚠️ Orion: Speech generation failed → {e}")
+            return self._fallback_message(result, sim, analysis, memory)
+
+    # ------------------------------------------------------------------
+    # Main decision entry
+    # ------------------------------------------------------------------
+    async def _make_decision(
+        self, sim: dict, analysis: dict, memory: Optional[dict] = None, debate: Optional[dict] = None
+    ) -> dict:
+        try:
+            symbol = (
+                sim.get("token_symbol")
+                or sim.get("symbol")
+                or analysis.get("token_symbol")
+                or "???"
+            )
+            token_address = sim.get("token_address") or analysis.get("token_address") or "unknown"
+            chain = sim.get("chain") or analysis.get("chain") or "unknown"
+
+            print(f"🧠 Orion: Synthesizing {symbol} ({chain})...")
+
+            # 1. Try real LLM reasoning first
+            llm_result = await self._llm_synthesize(sim, analysis, memory, debate)
+
+            if llm_result:
+                final_score = llm_result["final_score"]
+                direction = llm_result["direction"]
+                confidence = llm_result["confidence"]
+                perspective = llm_result.get("perspective") or llm_result.get("reasoning", "")
+                factors = {
+                    "source": "llm",
+                    "key_factors": llm_result.get("key_factors", []),
+                    "reasoning": llm_result.get("reasoning", ""),
+                }
+                print(f"✅ Orion: LLM synthesis → {direction} @ {final_score:.0f}/100 ({confidence*100:.0f}%)")
             else:
-                confidence = 0.4
-                print(f"⚠️ Orion: Incomplete data -- confidence reduced")
-            confidence = max(0.0, min(1.0, confidence))
+                # 2. Pure rule-based fallback
+                final_score, direction, confidence = self._rule_based_score(sim, analysis, memory)
+                perspective = f"Rule-based synthesis for {symbol}."
+                factors = {"source": "rules"}
+                print(f"📐 Orion: Rule fallback → {direction} @ {final_score:.0f}/100")
 
             roast = final_score < 50 or random.random() < 0.4
             nova_call = self._pick_nova_call(roast=roast)
 
             result = SynthesisResult(
-                token_address=token, chain=chain, symbol=symbol,
-                final_score=final_score, direction=direction,
-                confidence=confidence, perspective="",
-                factors={
-                    "simulation_score": sim_score,
-                    "analysis_risk": analysis_risk,
-                    "memory_score": memory_score,
-                    "creator_reputation": creator_rep,
-                    "is_known_scammer": is_scammer,
-                    "liquidity_usd": liquidity,
-                    "honeypot": sim.get("honeypot_risk", False),
-                    "can_sell": sim.get("can_sell", True),
-                    "data_completeness": {"simulation": has_sim, "analysis": has_analysis, "memory": has_memory},
-                },
+                token_address=token_address,
+                chain=chain,
+                symbol=symbol,
+                final_score=final_score,
+                direction=direction,
+                confidence=confidence,
+                perspective=perspective,
+                factors=factors,
                 timestamp=time.time(),
-                creator=creator,
+                creator=(memory or {}).get("creator", ""),
                 nova_call=nova_call,
             )
 
-            report = await self._generate_orion_message(result, sim, analysis, memory)
+            report = await self._generate_orion_message(
+                result, sim, analysis, memory, llm_meta=llm_result
+            )
 
             result_dict = {**result.__dict__, "message": report}
             for key in ["creator", "origin_source", "timestamp", "attention_score", "volume_24h", "market_cap"]:
@@ -362,9 +450,12 @@ class DecisionAgent:
                 "token_address": sim.get("token_address", "unknown"),
                 "chain": sim.get("chain", "unknown"),
                 "symbol": sim.get("token_symbol", sim.get("symbol", "???")),
-                "final_score": 50, "direction": "UNKNOWN", "confidence": 0.0,
+                "final_score": 50,
+                "direction": "UNKNOWN",
+                "confidence": 0.0,
                 "perspective": f"Synthesis crashed: {e}",
-                "message": f"Orion failed to synthesize: {e}", "error": str(e),
+                "message": f"Orion failed to synthesize: {e}",
+                "error": str(e),
                 "nova_call": self._pick_nova_call(),
             }
 
@@ -376,24 +467,38 @@ if __name__ == "__main__":
     orion = DecisionAgent()
     test_sim = {
         "token_address": "0x1234567890abcdef1234567890abcdef12345678",
-        "chain": "bsc", "token_symbol": "TEST",
-        "can_buy": True, "can_sell": True, "honeypot_risk": False,
-        "liquidity_usd": 15000, "buy_tax": 2, "sell_tax": 3,
-        "mint_function": False, "blacklist_function": False,
-        "owner_renounced": True, "simulation_confidence": 0.85,
+        "chain": "bsc",
+        "token_symbol": "TEST",
+        "can_buy": True,
+        "can_sell": True,
+        "honeypot_risk": False,
+        "liquidity_usd": 15000,
+        "buy_tax": 2,
+        "sell_tax": 3,
+        "mint_function": False,
+        "blacklist_function": False,
+        "owner_renounced": True,
+        "simulation_confidence": 0.85,
     }
     test_analysis = {
         "token_address": "0x1234567890abcdef1234567890abcdef12345678",
-        "chain": "bsc", "token_symbol": "TEST",
-        "risk_score": 25, "risk_level": "SAFE",
-        "red_flags": [], "yellow_flags": ["Moderate taxes"], "green_flags": ["Healthy liquidity"],
+        "chain": "bsc",
+        "token_symbol": "TEST",
+        "risk_score": 25,
+        "risk_level": "SAFE",
+        "red_flags": [],
+        "yellow_flags": ["Moderate taxes"],
+        "green_flags": ["Healthy liquidity"],
     }
     test_memory = {
         "token_address": "0x1234567890abcdef1234567890abcdef12345678",
-        "chain": "bsc", "symbol": "TEST",
+        "chain": "bsc",
+        "symbol": "TEST",
         "creator": "0xabcdef1234567890abcdef1234567890abcdef12",
         "profile": {"reputation_score": 75, "tags": ["legit_builder"], "total_tokens_created": 3},
-        "is_new": False, "predicted_outcome": "SAFE", "prediction_confidence": 0.6,
+        "is_new": False,
+        "predicted_outcome": "SAFE",
+        "prediction_confidence": 0.6,
     }
     try:
         asyncio.run(orion.decide(test_sim, test_analysis, test_memory))

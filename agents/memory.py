@@ -8,58 +8,13 @@ from dotenv import load_dotenv
 
 import aiohttp
 
-try:
-    from google import genai
-    from google.genai import types as genai_types
-    HAS_GENAI = True
-except ImportError:
-    genai = None
-    genai_types = None
-    HAS_GENAI = False
-
 load_dotenv()
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
-FALLBACK_MODELS = [
-    GEMINI_MODEL,
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
-    "gemini-1.5-flash-latest",
-    "gemini-2.0-flash-lite",
-    "gemini-2.0-flash",
-]
-
-
-class GeminiWrapper:
-    def __init__(self, api_key: str):
-        self._client = genai.Client(api_key=api_key)
-        self._models = [m for m in FALLBACK_MODELS if m]
-
-    async def generate(self, contents: str, config=None):
-        last_err = None
-        for model in self._models:
-            try:
-                def _call():
-                    kwargs = {"model": model, "contents": contents}
-                    if config and genai_types:
-                        kwargs["config"] = config
-                    return self._client.models.generate_content(**kwargs)
-                return await asyncio.wait_for(asyncio.to_thread(_call), timeout=15)
-            except Exception as e:
-                err_str = str(e)
-                if "404" in err_str or "NOT_FOUND" in err_str:
-                    print(f"⚠️ Echo: Model {model} unavailable, trying fallback...")
-                    last_err = e
-                    continue
-                raise
-        raise last_err or Exception("All Gemini models exhausted")
-
-
-gemini = GeminiWrapper(GEMINI_API_KEY) if GEMINI_API_KEY and HAS_GENAI else None
+from agents.llm_client import llm
+gemini = llm if llm.is_available else None
 if not gemini:
-    print("⚠️ Echo: Gemini unavailable. Running fallback mode.")
+    print("⚠️ Agent: No LLM providers available. Running fallback mode.")
 
 
 @dataclass
@@ -620,6 +575,10 @@ class InvestigatorAgent:
             await self._detect_patterns(profile)
 
             predicted_outcome, confidence, reasoning = self._predict_outcome(profile, symbol, solana_data)
+            # LLM refinement of prediction
+            predicted_outcome, confidence, reasoning = await self._llm_refine_prediction(
+                profile, creator, symbol, is_new, predicted_outcome, confidence, reasoning, upstream_data or {}
+            )
             profile.predicted_outcome = predicted_outcome
             profile.prediction_confidence = confidence
 
@@ -705,6 +664,55 @@ class InvestigatorAgent:
             debates.append(f"Creator launched {len([t for t in profile.tokens if time.time() - t.get('time', 0) < 86400 * 7])} tokens in the last 7 days. Rapid deployment often precedes exit.")
 
         return debates
+
+
+    async def _llm_refine_prediction(self, profile, creator: str, symbol: str, is_new: bool,
+                                     predicted_outcome: str, confidence: float, reasoning: str,
+                                     upstream_data: dict) -> tuple:
+        """Use multi-LLM to refine creator outcome prediction."""
+        from agents.llm_client import llm
+        if not llm.is_available:
+            return predicted_outcome, confidence, reasoning
+
+        evidence = {
+            "symbol": symbol,
+            "creator": creator[:12] + "..." if len(creator) > 14 else creator,
+            "is_new_creator": is_new,
+            "reputation_score": getattr(profile, "reputation_score", None) or (profile.get("reputation_score") if isinstance(profile, dict) else None),
+            "tags": getattr(profile, "tags", None) or (profile.get("tags") if isinstance(profile, dict) else []),
+            "total_tokens_created": getattr(profile, "total_tokens_created", None) or (profile.get("total_tokens_created") if isinstance(profile, dict) else None),
+            "deterministic_prediction": predicted_outcome,
+            "deterministic_confidence": confidence,
+            "upstream_risk": upstream_data.get("risk_score") or upstream_data.get("analysis", {}).get("risk_score"),
+            "honeypot": upstream_data.get("honeypot_risk"),
+            "can_sell": upstream_data.get("can_sell"),
+        }
+
+        system = (
+            "You are Echo, the investigator who profiles token creators and predicts outcomes from history. "
+            "Respond with pure JSON only. Never give financial advice."
+        )
+        user = (
+            f"Evidence:\n{__import__('json').dumps(evidence, default=str)}\n\n"
+            "Return JSON:\n"
+            '{"predicted_outcome": "SAFE|HIGH_RISK|UNKNOWN|DEAD", "confidence": <0.0-1.0>, '
+            '"reasoning": "<2 sentences>", "debate_note": "<optional challenge to other agents>"}'
+        )
+
+        try:
+            result = await llm.generate_json(contents=user, system=system, temperature=0.35, max_tokens=350)
+            pred = str(result.get("predicted_outcome", predicted_outcome)).upper()
+            if pred not in ("SAFE", "HIGH_RISK", "UNKNOWN", "DEAD", "LEGIT"):
+                pred = predicted_outcome
+            conf = float(result.get("confidence", confidence))
+            conf = max(0.0, min(1.0, conf))
+            reason = result.get("reasoning") or reasoning
+            print(f"✅ Echo: LLM refined prediction → {pred} ({conf*100:.0f}%)")
+            return pred, conf, reason
+        except Exception as e:
+            print(f"⚠️ Echo: LLM refine skipped → {e}")
+            return predicted_outcome, confidence, reasoning
+
 
     async def _generate_echo_message(self, profile: CreatorProfile, creator: str, symbol: str, name: str, is_new: bool, predicted_outcome: str, confidence: float, reasoning: str, solana_data: dict, upstream_data: dict) -> str:
         if not gemini:
@@ -792,17 +800,15 @@ Requirements:
 7. Sound like an investigator who trusts patterns over single data points"""
 
         try:
-            config = None
-            if genai_types:
-                config = genai_types.GenerateContentConfig(temperature=0.85, max_output_tokens=280)
-            response = await gemini.generate(f"{system_prompt}\n\n{user_prompt}", config=config)
-            text = response.text if hasattr(response, "text") else str(response)
+            from agents.llm_client import llm
+            text = await llm.generate(
+                contents=f"{system_prompt}\n\n{user_prompt}",
+                temperature=0.85,
+                max_tokens=280,
+            )
             return text.strip() if text else self._fallback_message(profile, creator, symbol, is_new, predicted_outcome, confidence, reasoning, solana_data, upstream_data)
-        except asyncio.TimeoutError:
-            print("⚠️ Echo: Gemini timed out")
-            return self._fallback_message(profile, creator, symbol, is_new, predicted_outcome, confidence, reasoning, solana_data, upstream_data)
         except Exception as e:
-            print(f"⚠️ Echo: Gemini error: {e}")
+            print(f"⚠️ Agent: LLM error: {e}")
             return self._fallback_message(profile, creator, symbol, is_new, predicted_outcome, confidence, reasoning, solana_data, upstream_data)
 
     def _fallback_message(self, profile: CreatorProfile, creator: str, symbol: str, is_new: bool, predicted_outcome: str, confidence: float, reasoning: str, solana_data: dict, upstream_data: dict) -> str:

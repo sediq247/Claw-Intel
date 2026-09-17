@@ -11,58 +11,13 @@ import aiohttp
 from web3 import Web3
 from dotenv import load_dotenv
 
-try:
-    from google import genai
-    from google.genai import types as genai_types
-    HAS_GENAI = True
-except ImportError:
-    genai = None
-    genai_types = None
-    HAS_GENAI = False
-
 load_dotenv()
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
-FALLBACK_MODELS = [
-    GEMINI_MODEL,
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
-    "gemini-1.5-flash-latest",
-    "gemini-2.0-flash-lite",
-    "gemini-2.0-flash",
-]
-
-
-class GeminiWrapper:
-    def __init__(self, api_key: str):
-        self._client = genai.Client(api_key=api_key)
-        self._models = [m for m in FALLBACK_MODELS if m]
-
-    async def generate(self, contents: str, config=None):
-        last_err = None
-        for model in self._models:
-            try:
-                def _call():
-                    kwargs = {"model": model, "contents": contents}
-                    if config and genai_types:
-                        kwargs["config"] = config
-                    return self._client.models.generate_content(**kwargs)
-                return await asyncio.wait_for(asyncio.to_thread(_call), timeout=15)
-            except Exception as e:
-                err_str = str(e)
-                if "404" in err_str or "NOT_FOUND" in err_str:
-                    print(f"⚠️ Vega: Model {model} unavailable, trying fallback...")
-                    last_err = e
-                    continue
-                raise
-        raise last_err or Exception("All Gemini models exhausted")
-
-
-gemini = GeminiWrapper(GEMINI_API_KEY) if GEMINI_API_KEY and HAS_GENAI else None
+from agents.llm_client import llm
+gemini = llm if llm.is_available else None
 if not gemini:
-    print("⚠️ Vega: Gemini unavailable. Running fallback mode.")
+    print("⚠️ Agent: No LLM providers available. Running fallback mode.")
 
 
 @dataclass
@@ -533,6 +488,65 @@ class AnalyzerAgent:
             print(f"⚠️ Vega: Solana DexScreener analysis failed: {e}")
             return result
 
+
+    async def _llm_refine_analysis(self, analysis: "AnalysisResult", sim_data: dict, symbol: str) -> "AnalysisResult":
+        """Use multi-LLM to refine risk score and reasoning after deterministic analysis."""
+        from agents.llm_client import llm
+        if not llm.is_available:
+            return analysis
+
+        evidence = {
+            "symbol": symbol,
+            "chain": analysis.chain,
+            "deterministic_risk_score": analysis.risk_score,
+            "risk_level": analysis.risk_level,
+            "red_flags": analysis.red_flags,
+            "yellow_flags": analysis.yellow_flags,
+            "green_flags": analysis.green_flags,
+            "ownership_renounced": analysis.ownership_renounced,
+            "is_proxy": analysis.is_proxy,
+            "lp_ownership": analysis.lp_ownership,
+            "top_holder_percent": analysis.top_holder_percent,
+            "holder_count": analysis.holder_count,
+            "volume_24h": getattr(analysis, "volume_24h", None),
+            "price_change_24h": getattr(analysis, "price_change_24h", None),
+            "buy_pressure": getattr(analysis, "buy_pressure", None),
+            "sim_can_buy": sim_data.get("can_buy"),
+            "sim_can_sell": sim_data.get("can_sell"),
+            "honeypot_risk": sim_data.get("honeypot_risk"),
+            "liquidity_usd": sim_data.get("liquidity_usd"),
+            "buy_tax": sim_data.get("buy_tax"),
+            "sell_tax": sim_data.get("sell_tax"),
+        }
+
+        system = (
+            "You are Vega, a smart-contract and market structure analyst. "
+            "You receive deterministic findings and must produce a refined risk judgment. "
+            "Never give financial advice. Respond with pure JSON only."
+        )
+        user = (
+            f"Evidence:\n{__import__('json').dumps(evidence, default=str)}\n\n"
+            "Return JSON with keys:\n"
+            '{"refined_score": <0-100>, "risk_level": "SAFE|WARNING|HIGH_RISK", '
+            '"key_insight": "<one sentence>", "reasoning": "<2-3 sentences>"}'
+        )
+
+        try:
+            result = await llm.generate_json(contents=user, system=system, temperature=0.3, max_tokens=400)
+            score = float(result.get("refined_score", analysis.risk_score))
+            score = max(0, min(100, score))
+            level = str(result.get("risk_level", analysis.risk_level)).upper()
+            if level not in ("SAFE", "WARNING", "HIGH_RISK"):
+                level = analysis.risk_level
+            analysis.risk_score = int(score)
+            analysis.risk_level = level
+            analysis.reasoning = result.get("reasoning") or result.get("key_insight") or analysis.reasoning
+            print(f"✅ Vega: LLM refined score → {score:.0f}/100 ({level})")
+        except Exception as e:
+            print(f"⚠️ Vega: LLM refine skipped → {e}")
+        return analysis
+
+
     async def _generate_vega_message(self, analysis: AnalysisResult, sim_data: dict, symbol: str) -> str:
         if not gemini:
             return self._fallback_message(analysis, sim_data, symbol)
@@ -635,17 +649,15 @@ Requirements:
 7. Sound like a researcher who reads contracts for a living"""
 
         try:
-            config = None
-            if genai_types:
-                config = genai_types.GenerateContentConfig(temperature=0.85, max_output_tokens=250)
-            response = await gemini.generate(f"{system_prompt}\n\n{user_prompt}", config=config)
-            text = response.text if hasattr(response, "text") else str(response)
+            from agents.llm_client import llm
+            text = await llm.generate(
+                contents=f"{system_prompt}\n\n{user_prompt}",
+                temperature=0.85,
+                max_tokens=280,
+            )
             return text.strip() if text else self._fallback_message(analysis, sim_data, symbol)
-        except asyncio.TimeoutError:
-            print("⚠️ Vega: Gemini timed out")
-            return self._fallback_message(analysis, sim_data, symbol)
         except Exception as e:
-            print(f"⚠️ Vega: Gemini error: {e}")
+            print(f"⚠️ Agent: LLM error: {e}")
             return self._fallback_message(analysis, sim_data, symbol)
 
     def _fallback_message(self, analysis: AnalysisResult, sim_data: dict, symbol: str) -> str:
@@ -991,6 +1003,7 @@ Requirements:
                 })
 
             analysis = AnalysisResult(**analysis_kwargs)
+            analysis = await self._llm_refine_analysis(analysis, sim_data, symbol)
             await self.analysis_cache.set(token_address, analysis)
 
             report = await self._generate_vega_message(analysis, sim_data, symbol)

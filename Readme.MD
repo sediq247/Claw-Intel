@@ -60,7 +60,7 @@ Instead of drowning you in charts and raw logs, ClawIntel delivers **clear, stru
 
 ## What is ClawIntel?
 
-ClawIntel is an AI-powered multi-agent intelligence platform engineered to observe, analyze, and evaluate digital assets across multiple blockchain ecosystems in real time.
+ClawIntel is an LLM-powered multi-agent intelligence platform engineered to observe, analyze, and evaluate digital assets across multiple blockchain ecosystems in real time.
 
 The platform deploys a coordinated network of autonomous agents — each a specialist in its domain — that collaborate through a shared intelligence pipeline. Together they form a continuously operating market analysis system capable of:
 
@@ -269,7 +269,7 @@ Submit any contract address for a full multi-agent analysis.
 | **Server** | Python, aiohttp, WebSocket, REST API |
 | **Intelligence Engine** | Python, Async Multi-Agent Orchestration, Blockchain RPC |
 | **Database** | MongoDB (persistent queue, creator profiles, analysis history) |
-| **AI Systems** | Google Gemini with multi-model fallback chain for natural language reasoning |
+| **AI Systems** | Multi-provider LLM router (Gemini + Grok/xAI + Cerebras + OpenRouter) with free-tier model fallbacks. Orion uses real LLM reasoning for scoring & direction; other agents use LLM for speech. Fully configurable model lists. |
 | **Data Sources** | DexScreener, Multi-Chain RPC Providers, Block Explorers (Etherscan, BscScan, BaseScan), Jupiter API |
 | **Frontend** | HTML5, CSS3, JavaScript (Vanilla) |
 
@@ -317,6 +317,15 @@ PORT=3000
 # AI
 GEMINI_API_KEY=your_api_key_here
 GEMINI_MODEL=your_gemini_model
+LLM_PROVIDERS=gemini,cerebras,openrouter,grok
+OpenAI-compatible
+XAI_API_KEY=
+XAI_MODELS=grok-4.1-fast,grok-2-mini,grok-2
+CEREBRAS_API_KEY=
+CEREBRAS_MODELS=gpt-oss-120b,llama3.1-8b,qwen-3.8-27b
+OPENROUTER_API_KEY=
+OPENROUTER_MODELS=nvidia/nemotron-3-ultra-550b-a55b:free,openai/gpt-oss-120b:free,meta-llama/llama-3.3-70b-instruct:free,openrouter/free
+
 
 # Database
 MONGODB_URI=your_mongodb_connection_string
@@ -408,3 +417,37 @@ See the [LICENSE](LICENSE) file for more information.
 *ClawIntel © 2026*
 
 </div>
+
+---
+
+## Multi-LLM Upgrade (v5.1)
+
+ClawIntel now uses a unified multi-provider LLM router (`agents/llm_client.py`):
+
+- **Providers**: Gemini · Grok (xAI) · Cerebras · OpenRouter
+- **Default models**: latest free / free-tier friendly models for test
+- **Configurable**: set `LLM_PROVIDERS` and `*_MODELS` lists in `.env`
+
+### How agents use the LLM
+
+| Agent | Role | LLM usage |
+|-------|------|-----------|
+| **Orion** | Lead synthesis | Full reasoning: score, direction, confidence, key factors (JSON) + speech |
+| **Vega** | Contract & structure | Refines deterministic risk score + deeper insight after rule-based analysis |
+| **Echo** | Creator profiling | Refines outcome prediction + confidence from historical patterns |
+| **Atlas** | Trade simulation | Interprets mechanical simulation results and blends confidence |
+| **Nova** | Discovery | Optional short attention note on why a token is worth watching |
+
+All agents keep their fast deterministic cores (honeypot detection, bytecode flags, etc.) and fall back cleanly when no LLM keys are configured.
+
+See `.env.example` for full configuration.
+
+### Team Awareness & Debate (v5.1+)
+
+Agents no longer work in isolation:
+
+1. **Shared context** — After Atlas, Vega, and Echo finish, each agent’s brief is packaged into a shared team context.
+2. **Debate round** — Atlas, Vega, and Echo speak in turn (and Echo can rebut on conflict). Lines are broadcast as `debate` messages.
+3. **Orion with full awareness** — Final synthesis includes the debate transcript, consensus notes, and disagreements.
+
+New module: `agents/team_debate.py`
