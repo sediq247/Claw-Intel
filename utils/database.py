@@ -138,6 +138,23 @@ class Database:
         return None
 
     # v5.0: Mark token as investigating (prevents duplicate pickup)
+
+    async def recover_stale_investigating(self, max_age_seconds: int = 900):
+        """Reset tokens stuck in investigating back to pending."""
+        cutoff = time.time() - max_age_seconds
+        result = await self.db.tokens_queue.update_many(
+            {"status": "investigating", "updated_at": {"$lt": cutoff}},
+            {"$set": {"status": "pending", "updated_at": time.time()}},
+        )
+        await self.db.discovered_tokens.update_many(
+            {"status": "investigating", "updated_at": {"$lt": cutoff}},
+            {"$set": {"status": "pending", "updated_at": time.time()}},
+        )
+        n = getattr(result, "modified_count", 0) or 0
+        if n:
+            print(f"♻️ DB: Recovered {n} stale investigating token(s) → pending")
+        return n
+
     async def mark_token_investigating(self, token_address: str, chain: str):
         await self.db.tokens_queue.update_one(
             {"token_address": token_address, "chain": chain},
@@ -198,6 +215,58 @@ class Database:
         }
         result = await self.db.investigations.insert_one(doc)
         return str(result.inserted_id)
+
+
+    async def get_ai_verified_tokens(self, limit: int = 30) -> list:
+        """
+        Tokens the swarm marked positively (direction UP, or legacy SAFE).
+        Used only by the Markets AI Verified tab — not for live market lists.
+        """
+        cursor = (
+            self.db.investigations.find(
+                {
+                    "$or": [
+                        {"direction": "UP"},
+                        {"verdict": "SAFE"},
+                        {"final_score": {"$gte": 70}},
+                    ]
+                }
+            )
+            .sort("timestamp", DESCENDING)
+            .limit(limit * 2)
+        )
+        rows = await cursor.to_list(length=limit * 2)
+        out = []
+        seen = set()
+        for r in rows:
+            addr = r.get("token_address") or r.get("address") or ""
+            chain = r.get("chain") or "unknown"
+            key = f"{chain}:{addr}".lower()
+            if not addr or key in seen:
+                continue
+            seen.add(key)
+            score = r.get("final_score") or 0
+            direction = r.get("direction") or r.get("verdict") or "UP"
+            out.append({
+                "id": key,
+                "symbol": r.get("symbol") or r.get("token_symbol") or "???",
+                "name": r.get("name") or r.get("token_name") or r.get("symbol") or "Unknown",
+                "chain": chain,
+                "price": "—",
+                "price_change_24h": "—",
+                "volume_24h": "—",
+                "liquidity": "—",
+                "market_cap": "—",
+                "address": addr,
+                "ai_verified": True,
+                "ai_verdict": str(direction),
+                "ai_confidence": f"{(r.get('confidence') or 0) * 100:.0f}%" if r.get("confidence") is not None else "—",
+                "final_score": score,
+                "source": "ai_verified",
+            })
+            if len(out) >= limit:
+                break
+        return out
 
     async def get_completed_investigations(self, limit: int = 100) -> List[dict]:
         cursor = (

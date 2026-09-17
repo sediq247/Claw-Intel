@@ -125,10 +125,8 @@ class EventPublisher:
         await self.broadcast("INVESTIGATION_COMPLETE", investigation)
 
     async def market_update(self, market_data: dict):
-        """Save market snapshot to DB + broadcast MARKET_UPDATE."""
-        try:
-            if self.db and hasattr(self.db, "save_market_data"):
-                await self.db.save_market_data(market_data)
-        except Exception as e:
-            print(f"⚠️ Publisher: Market data save failed: {e}")
+        """Broadcast MARKET_UPDATE only — live lists are not stored in DB.
+        AI-verified tokens come from investigations/signals collections.
+        """
+        # Strip bulk lists before any accidental persist; keep ai_verified if present for WS clients
         await self.broadcast("MARKET_UPDATE", market_data)

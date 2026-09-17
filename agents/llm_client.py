@@ -62,14 +62,15 @@ except ImportError:
 # Default free / free-tier friendly model lists (Sep 2026)
 # ---------------------------------------------------------------------------
 DEFAULT_MODELS: Dict[str, List[str]] = {
+    # Free-tier friendly first; paid/newer models as later fallbacks
     "gemini": [
-        "gemini-3.8-flash",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-3.5-flash-lite",
-        "gemini-3.1-flash-lite",
-        "gemini-2.5-flash",
         "gemini-2.5-flash-lite",
+        "gemini-2.5-flash",
+        "gemini-3.1-flash-lite",
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-3.6-flash",
+        "gemini-3.8-flash",
     ],
     "grok": [
         "grok-4.1-fast",
@@ -200,15 +201,39 @@ class LLMClient:
             config = genai_types.GenerateContentConfig(**kwargs)
 
         def _sync_call():
-            return client.models.generate_content(
-                model=model,
-                contents=contents,
-                config=config,
-            )
+            # Prefer explicit config; avoid AFC path that triggers SDK warnings
+            try:
+                return client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=config,
+                )
+            except TypeError:
+                # Older SDK without config kw
+                return client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                )
 
         response = await asyncio.wait_for(asyncio.to_thread(_sync_call), timeout=25)
-        text = response.text if hasattr(response, "text") else str(response)
-        return (text or "").strip()
+        # Prefer .text; some responses need candidates path
+        out = ""
+        if hasattr(response, "text"):
+            try:
+                out = response.text or ""
+            except Exception as te:
+                # blocked / empty candidates
+                out = ""
+                raise RuntimeError(f"Gemini empty/blocked response: {te}") from te
+        if not out and hasattr(response, "candidates"):
+            try:
+                parts = response.candidates[0].content.parts
+                out = "".join(getattr(p, "text", "") or "" for p in parts)
+            except Exception:
+                pass
+        if not (out or "").strip():
+            raise RuntimeError("Gemini returned empty text (possible safety block or bad model id)")
+        return out.strip()
 
     async def _call_openai_compatible(
         self,
@@ -389,7 +414,6 @@ async def generate(contents: str, config=None, **kwargs) -> Any:
         **kwargs,
     )
 
-    # Mimic the old response object that had .text
     class _Resp:
         def __init__(self, t):
             self.text = t

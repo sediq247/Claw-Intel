@@ -275,12 +275,22 @@ class MarketEngine:
             print(f"⚠️ {self.name}: All fetch methods failed, skipping MARKET_UPDATE broadcast.")
             return
 
+        # Live lists only from DexScreener; AI list prefers DB investigations
+        ai_list = [t.to_dict() for t in list(self.ai_verified_tokens.values())[:20]]
+        if self.db and hasattr(self.db, "get_ai_verified_tokens"):
+            try:
+                from_db = await self.db.get_ai_verified_tokens(limit=20)
+                if from_db:
+                    ai_list = from_db
+            except Exception:
+                pass
         market_payload = {
             "trending": [t.to_dict() for t in self.trending_tokens[:20]],
             "gainers": [t.to_dict() for t in self.top_gainers[:20]],
             "losers": [t.to_dict() for t in self.top_losers[:20]],
-            "ai_verified": [t.to_dict() for t in list(self.ai_verified_tokens.values())[:20]],
+            "ai_verified": ai_list,
             "timestamp": time.time(),
+            "source": "live",
         }
 
         if self.publisher is not None and hasattr(self.publisher, "market_update"):

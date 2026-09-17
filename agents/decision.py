@@ -167,7 +167,7 @@ class DecisionAgent:
                 return Direction.DOWN.value
             return Direction.SIDEWAYS.value
 
-    def _fallback_message(self, result: SynthesisResult, sim: dict, analysis: dict, memory: Optional[dict]) -> str:
+    def _fallback_message(self, result: SynthesisResult, sim: dict, analysis: dict, memory: Optional[dict], debate: Optional[dict] = None) -> str:
         parts = []
         symbol = result.symbol
         score = result.final_score
@@ -198,7 +198,9 @@ class DecisionAgent:
                 f"({memory.get('prediction_confidence', 0)*100:.0f}% confidence). "
             )
 
-        parts.append(f"My read: {direction} with a {score:.0f}/100 score ({confidence:.0f}% confidence). ")
+        if debate and (debate.get("transcript") or debate.get("consensus_notes")):
+            parts.append("I heard the team debate — closing it now. ")
+        parts.append(f"My final call: {direction} at {score:.0f}/100 ({confidence:.0f}% confidence). ")
         parts.append(result.nova_call)
         return "".join(parts)
 
@@ -326,10 +328,11 @@ class DecisionAgent:
         analysis: dict,
         memory: Optional[dict],
         llm_meta: Optional[dict] = None,
+        debate: Optional[dict] = None,
     ) -> str:
-        """Natural language speech. Prefer LLM, fall back to template."""
+        """Acknowledge team debate, close it, deliver final decision, call Nova."""
         if not llm.is_available:
-            return self._fallback_message(result, sim, analysis, memory)
+            return self._fallback_message(result, sim, analysis, memory, debate)
 
         profile = (memory or {}).get("profile", {}) or {}
         tags = profile.get("tags", [])
@@ -338,42 +341,60 @@ class DecisionAgent:
         creator_short = (creator[:10] + "..." + creator[-4:]) if len(creator) > 16 else "unknown"
         nova_call = result.nova_call
 
+        debate = debate or {}
+        transcript = debate.get("transcript") or []
+        consensus = debate.get("consensus_notes") or ""
+        disagreements = debate.get("disagreements") or []
+        debate_lines = []
+        for t in transcript[:6]:
+            debate_lines.append(
+                f"- {(t.get('agent') or '?').upper()}: {(t.get('message') or '')[:160]}"
+            )
+        debate_block = "\n".join(debate_lines) if debate_lines else "(No debate transcript.)"
+
         system_prompt = (
-            "You are Orion, the team lead of a crypto research squad. "
-            "You speak clearly, with quiet authority, and a dry sense of humor. "
-            "You never advise anyone to buy or sell. "
-            "You end every message by calling Nova with the exact line provided."
+            "You are Orion, team lead of a crypto research squad. "
+            "The specialists have already debated. Your job is to: "
+            "(1) acknowledge what Atlas, Vega, and Echo argued, "
+            "(2) formally close the debate, "
+            "(3) deliver YOUR final decision (score + direction), "
+            "(4) release the team for the next token by calling Nova. "
+            "Quiet authority. Never advise buying or selling. "
+            "End with the exact Nova line provided — do not change it."
         )
 
         user_prompt = (
             f"Token: {result.symbol}\n"
-            f"Final score: {result.final_score:.0f}/100\n"
-            f"Direction: {result.direction}\n"
+            f"Your final score: {result.final_score:.0f}/100\n"
+            f"Your direction: {result.direction}\n"
             f"Confidence: {result.confidence*100:.0f}%\n"
             f"Key factors: {', '.join((llm_meta or {}).get('key_factors', [])[:5]) or 'see evidence'}\n"
-            f"Internal reasoning: {(llm_meta or {}).get('reasoning', result.perspective)}\n\n"
+            f"Your reasoning: {(llm_meta or {}).get('reasoning', result.perspective)}\n\n"
             f"Atlas: can_buy={sim.get('can_buy')}, can_sell={sim.get('can_sell')}, "
-            f"honeypot={sim.get('honeypot_risk')}, liq=${sim.get('liquidity_usd', 0):,.0f}\n"
+            f"honeypot={sim.get('honeypot_risk')}, liq=${(sim.get('liquidity_usd') or 0):,.0f}\n"
             f"Vega risk: {analysis.get('risk_score', 'N/A')}/100 ({analysis.get('risk_level', 'N/A')})\n"
             f"Echo: creator {creator_short}, rep {rep}/100, tags {tags}\n\n"
-            f"Write 4-6 sentences max.\n"
-            f"1. Summarize what the team found.\n"
-            f"2. Give your perspective on where this token is heading.\n"
-            f"3. State score and direction clearly.\n"
-            f"4. End with this exact line (do not change it): {nova_call}"
+            f"TEAM DEBATE:\n{debate_block}\n"
+            f"Consensus notes: {consensus or 'n/a'}\n"
+            f"Disagreements: {', '.join(disagreements) if disagreements else 'none flagged'}\n\n"
+            f"Write 5-8 sentences in this order:\n"
+            f"1. Acknowledge the team discussion (reference Atlas/Vega/Echo if useful).\n"
+            f"2. State clearly that the debate is closed.\n"
+            f"3. Deliver YOUR final decision: score, direction, brief why.\n"
+            f"4. End with this exact line (verbatim): {nova_call}"
         )
 
         try:
-            text = await llm.generate(
+            text_out = await llm.generate(
                 contents=user_prompt,
                 system=system_prompt,
-                temperature=0.85,
-                max_tokens=320,
+                temperature=0.8,
+                max_tokens=360,
             )
-            return text.strip() if text else self._fallback_message(result, sim, analysis, memory)
+            return text_out.strip() if text_out else self._fallback_message(result, sim, analysis, memory, debate)
         except Exception as e:
             print(f"⚠️ Orion: Speech generation failed → {e}")
-            return self._fallback_message(result, sim, analysis, memory)
+            return self._fallback_message(result, sim, analysis, memory, debate)
 
     # ------------------------------------------------------------------
     # Main decision entry
@@ -432,7 +453,7 @@ class DecisionAgent:
             )
 
             report = await self._generate_orion_message(
-                result, sim, analysis, memory, llm_meta=llm_result
+                result, sim, analysis, memory, llm_meta=llm_result, debate=debate
             )
 
             result_dict = {**result.__dict__, "message": report}

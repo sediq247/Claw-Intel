@@ -386,6 +386,40 @@ class WatcherAgent:
             return ""
 
 
+
+    async def get_next_token(self) -> Optional[dict]:
+        """Claim next pending token for the orchestrator (FIFO)."""
+        if not self.db:
+            return None
+        try:
+            # Recover tokens stuck in investigating > 15 min
+            if hasattr(self.db, "recover_stale_investigating"):
+                try:
+                    await self.db.recover_stale_investigating(max_age_seconds=900)
+                except Exception:
+                    pass
+
+            token = await self.db.get_next_pending_token()
+            if not token:
+                return None
+
+            addr = token.get("token_address") or token.get("address")
+            chain = token.get("chain", "unknown")
+            if addr and hasattr(self.db, "mark_token_investigating"):
+                await self.db.mark_token_investigating(addr, chain)
+                token["status"] = "investigating"
+
+            # Normalize fields for orchestrator
+            token.setdefault("token_symbol", token.get("symbol") or "???")
+            token.setdefault("token_name", token.get("name") or "Unknown")
+            token.setdefault("symbol", token.get("token_symbol"))
+            token.setdefault("name", token.get("token_name"))
+            print(f"🎯 Nova: Claimed {token.get('symbol')} ({chain}) for investigation")
+            return token
+        except Exception as e:
+            print(f"⚠️ Nova: get_next_token failed: {e}")
+            return None
+
     async def _generate_nova_message(self, event: TokenEvent) -> str:
         if not gemini:
             return self._fallback_message(event)
@@ -598,7 +632,27 @@ class WatcherAgent:
                     await asyncio.sleep(3)
 
             except Exception as e:
+                err = str(e)
                 print(f"⚠️ Nova: {chain} watcher loop error: {e}")
+                if any(x in err for x in ("403", "Forbidden", "429", "Too Many", "timeout", "Timeout")):
+                    print(f"🔄 Nova: Rotating RPC for {chain} after error...")
+                    await self._rotate_rpc(chain)
+                    w3 = self.web3_instances.get(chain)
+                    if w3:
+                        factory = w3.eth.contract(
+                            address=Web3.to_checksum_address(config["factory"]),
+                            abi=[{
+                                "anonymous": False,
+                                "inputs": [
+                                    {"indexed": True, "name": "token0", "type": "address"},
+                                    {"indexed": True, "name": "token1", "type": "address"},
+                                    {"indexed": False, "name": "pair", "type": "address"},
+                                    {"indexed": False, "name": "", "type": "uint256"},
+                                ],
+                                "name": "PairCreated",
+                                "type": "event",
+                            }],
+                        )
                 await asyncio.sleep(5)
 
     async def _fetch_evm_token_info(self, w3: Web3, token_address: str) -> dict:

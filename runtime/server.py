@@ -300,17 +300,196 @@ class ClawIntelServer:
         return web.json_response({"investigations": []})
 
     async def _api_markets(self, request: web.Request) -> web.Response:
-        """Return latest market data from DB (populated by MarketEngine)."""
-        if self.db and hasattr(self.db, "get_market_data"):
+        """
+        Markets tab:
+          - trending / gainers / losers  → always LIVE from DexScreener (no DB)
+          - ai_verified                 → only from DB (Orion completed investigations)
+        """
+        import time as _time
+        data = {
+            "trending": [],
+            "gainers": [],
+            "losers": [],
+            "ai_verified": [],
+            "timestamp": _time.time(),
+            "source": "live",
+        }
+        try:
+            live = await self._live_fetch_markets()
+            if live:
+                data["trending"] = live.get("trending") or []
+                data["gainers"] = live.get("gainers") or []
+                data["losers"] = live.get("losers") or []
+                data["timestamp"] = live.get("timestamp") or data["timestamp"]
+                data["source"] = live.get("source") or "live"
+        except Exception as e:
+            print(f"[server] live markets fetch failed: {e}")
+
+        # AI-verified only from DB
+        if self.db and hasattr(self.db, "get_ai_verified_tokens"):
             try:
-                data = await self.db.get_market_data()
-                return web.json_response(data)
+                data["ai_verified"] = await self.db.get_ai_verified_tokens(limit=30)
             except Exception as e:
-                return web.json_response({"error": str(e)}, status=500)
-        return web.json_response({
-            "trending": [], "gainers": [], "losers": [],
-            "ai_verified": [], "timestamp": 0,
-        })
+                print(f"[server] ai_verified load failed: {e}")
+
+        return web.json_response(data)
+
+    async def _live_fetch_markets(self) -> dict:
+        """Minimal DexScreener pull so Markets tab works even without agents process."""
+        import time as _time
+        trending, gainers, losers = [], [], []
+        timeout = aiohttp.ClientTimeout(total=12)
+        headers = {"User-Agent": "ClawIntel/5.1"}
+
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            # Boosted / trending
+            try:
+                async with session.get("https://api.dexscreener.com/token-boosts/top/v1") as resp:
+                    if resp.status == 200:
+                        items = await resp.json()
+                        if isinstance(items, list):
+                            for item in items[:15]:
+                                tok = self._ds_item_to_market_row(item, source="boosted")
+                                if tok:
+                                    trending.append(tok)
+            except Exception as e:
+                print(f"[server] boosted fetch: {e}")
+
+            # Search-based gainers proxy
+            for q in ("SOL", "ETH", "PEPE", "BONK"):
+                try:
+                    async with session.get(
+                        f"https://api.dexscreener.com/latest/dex/search?q={q}"
+                    ) as resp:
+                        if resp.status != 200:
+                            continue
+                        body = await resp.json()
+                        pairs = body.get("pairs") or []
+                        for p in pairs[:8]:
+                            row = self._ds_pair_to_market_row(p)
+                            if not row:
+                                continue
+                            ch = (row.get("price_change_24h") or 0)
+                            if ch >= 0:
+                                gainers.append(row)
+                            else:
+                                losers.append(row)
+                except Exception:
+                    continue
+
+        # de-dupe by id
+        def dedupe(rows):
+            seen, out = set(), []
+            for r in rows:
+                i = r.get("id")
+                if i and i not in seen:
+                    seen.add(i)
+                    out.append(r)
+            return out
+
+        gainers = sorted(dedupe(gainers), key=lambda x: x.get("_change_num") or 0, reverse=True)[:20]
+        losers = sorted(dedupe(losers), key=lambda x: x.get("_change_num") or 0)[:20]
+        trending = dedupe(trending)[:20]
+
+        return {
+            "trending": trending,
+            "gainers": gainers,
+            "losers": losers,
+            "ai_verified": [],
+            "timestamp": _time.time(),
+            "source": "live_fallback",
+        }
+
+    def _ds_item_to_market_row(self, item: dict, source: str = "") -> dict:
+        if not isinstance(item, dict):
+            return None
+        token_addr = item.get("tokenAddress") or item.get("address")
+        chain = (item.get("chainId") or item.get("chain") or "unknown")
+        if isinstance(chain, str) and chain.startswith("0x"):
+            chain = "ethereum"
+        symbol = item.get("symbol") or "???"
+        name = item.get("name") or symbol
+        # boosted payload is thin — id only
+        tid = f"{chain}:{token_addr}" if token_addr else None
+        if not tid:
+            return None
+        return {
+            "id": tid,
+            "symbol": symbol,
+            "name": name,
+            "chain": str(chain),
+            "price": 0,
+            "price_change_24h": 0,
+            "volume_24h": 0,
+            "liquidity": 0,
+            "market_cap": 0,
+            "address": token_addr,
+            "source": source or "dexscreener",
+        }
+
+    def _ds_pair_to_market_row(self, pair: dict) -> dict:
+        if not isinstance(pair, dict):
+            return None
+        bt = pair.get("baseToken") or {}
+        chain = pair.get("chainId") or "unknown"
+        addr = bt.get("address") or pair.get("pairAddress")
+        if not addr:
+            return None
+        try:
+            price = float(pair.get("priceUsd") or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        ch = (pair.get("priceChange") or {}).get("h24")
+        try:
+            ch = float(ch) if ch is not None else 0.0
+        except (TypeError, ValueError):
+            ch = 0.0
+        vol = (pair.get("volume") or {}).get("h24") or 0
+        liq = (pair.get("liquidity") or {}).get("usd") or 0
+        def _fmt_price(p):
+            try:
+                p = float(p)
+            except Exception:
+                return "$0.00"
+            if p >= 1:
+                return f"${p:,.4f}"
+            if p >= 0.0001:
+                return f"${p:.6f}"
+            return f"${p:.8f}"
+        def _fmt_pct(c):
+            try:
+                c = float(c)
+            except Exception:
+                return "0.00%"
+            return f"{c:+.2f}%"
+        def _fmt_usd(n):
+            try:
+                n = float(n)
+            except Exception:
+                return "$0"
+            if n >= 1e9:
+                return f"${n/1e9:.2f}B"
+            if n >= 1e6:
+                return f"${n/1e6:.2f}M"
+            if n >= 1e3:
+                return f"${n/1e3:.2f}K"
+            return f"${n:.2f}"
+        mcap = pair.get("marketCap") or 0
+        return {
+            "id": f"{chain}:{addr}",
+            "symbol": bt.get("symbol") or "???",
+            "name": bt.get("name") or bt.get("symbol") or "Unknown",
+            "chain": str(chain),
+            "price": _fmt_price(price),
+            "price_change_24h": _fmt_pct(ch),
+            "volume_24h": _fmt_usd(vol),
+            "liquidity": _fmt_usd(liq),
+            "market_cap": _fmt_usd(mcap),
+            "address": addr,
+            "pair_address": pair.get("pairAddress"),
+            "source": "dexscreener",
+            "_change_num": ch,
+        }
 
     async def start(self):
         self.running = True

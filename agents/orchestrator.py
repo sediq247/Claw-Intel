@@ -176,6 +176,21 @@ class AgentOrchestrator:
                     except Exception as e:
                         print(f"⚠️ {self.name}: Failed to pull token from Nova: {e}")
 
+                # Fallback: claim directly from DB if Nova helper missing
+                if not token and self.db and hasattr(self.db, "get_next_pending_token"):
+                    try:
+                        token = await self.db.get_next_pending_token()
+                        if token:
+                            addr = token.get("token_address") or token.get("address")
+                            chain = token.get("chain", "unknown")
+                            if addr and hasattr(self.db, "mark_token_investigating"):
+                                await self.db.mark_token_investigating(addr, chain)
+                            token.setdefault("token_symbol", token.get("symbol") or "???")
+                            token.setdefault("symbol", token.get("token_symbol"))
+                            print(f"🎯 {self.name}: Claimed {token.get('symbol')} via DB fallback")
+                    except Exception as e:
+                        print(f"⚠️ {self.name}: DB queue pull failed: {e}")
+
                 if not token:
                     await asyncio.sleep(2)
                     continue
@@ -304,11 +319,21 @@ class AgentOrchestrator:
 
         await self.publisher.investigation_complete(investigation)
 
+        # Map Orion direction → signal verdict for Markets AI-verified + MarketEngine
+        direction = (decision_data.get("direction") or "UNKNOWN").upper()
+        if direction == "UP":
+            signal_verdict = "SAFE"
+        elif direction == "DOWN":
+            signal_verdict = "HIGH_RISK"
+        elif direction == "SIDEWAYS":
+            signal_verdict = "WARNING"
+        else:
+            signal_verdict = direction
         await self.publisher.signal(
             token=token_address,
             chain=chain,
             symbol=symbol,
-            direction=decision_data.get("direction", "UNKNOWN"),
+            verdict=signal_verdict,
             score=decision_data.get("final_score", 0),
             confidence=decision_data.get("confidence", 0),
         )
