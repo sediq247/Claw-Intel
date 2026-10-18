@@ -1,1 +1,6 @@
 .env
+node_modules/
+.testdriver/
+__pycache__/
+*.pyc
+.vscode/
