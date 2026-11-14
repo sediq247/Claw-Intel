@@ -8,7 +8,7 @@ from typing import Set, Optional
 import aiohttp
 from aiohttp import web
 
-PORT = int(os.getenv("PORT", "3000"))
+PORT = int(os.getenv("PORT", "6548"))
 
 
 class ClawIntelServer:

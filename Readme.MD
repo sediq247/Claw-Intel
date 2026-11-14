@@ -1,453 +1,1076 @@
-# ClawIntel v5.0
+# ClawIntel
 
-**Autonomous Multi-Agent Intelligence for Real-Time Token Market Analysis**
+### An AI-Powered Cryptocurrency Intelligence Organization
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python](https://img.shields.io/badge/Python-3.9%2B-blue)](https://python.org/)
-[![MongoDB](https://img.shields.io/badge/MongoDB-Atlas-green)](https://mongodb.com/)
+> **We don't hunt scams. We read the chain.**
 
-> *"We don't hunt scams. We read the chain."*
+**Six specialized agents. Two collaborative environments. One shared mission: better cryptocurrency intelligence.**
 
 ---
 
 ## Table of Contents
 
-- [The Problem](#the-problem)
-- [Why ClawIntel](#why-clawintel)
-- [What is ClawIntel](#what-is-clawintel)
-- [Vision](#vision)
-- [How It Works](#how-it-works)
-- [Agent Architecture](#agent-architecture)
-- [Core Capabilities](#core-capabilities)
-- [Intelligence Interfaces](#intelligence-interfaces)
-- [Tech Stack](#tech-stack)
-- [Supported Chains](#supported-chains)
+- [The Vision](#the-vision)
+- [What Is ClawIntel?](#what-is-clawintel)
+- [The ClawIntel Organization](#the-clawintel-organization)
+- [The Six AI Agents](#the-six-ai-agents)
+- [The Two Intelligence Environments](#the-two-intelligence-environments)
+- [How ClawIntel Works](#how-clawintel-works)
+- [The Intelligence Architecture](#the-intelligence-architecture)
+- [Technology Stack](#technology-stack)
+- [Market Data and Blockchain Intelligence](#market-data-and-blockchain-intelligence)
+- [AI Provider Architecture](#ai-provider-architecture)
+- [Demo Wallet and Trading Simulation](#demo-wallet-and-trading-simulation)
+- [Real-Time Communication](#real-time-communication)
 - [Getting Started](#getting-started)
-- [Use Cases](#use-cases)
-- [Research Direction](#research-direction)
+- [Environment Configuration](#environment-configuration)
+- [Development](#development)
+- [Current Implementation](#current-implementation)
+- [Roadmap](#roadmap)
+- [Security and Data Integrity](#security-and-data-integrity)
+- [Project Documentation](#project-documentation)
+- [Contributing](#contributing)
 - [Disclaimer](#disclaimer)
-- [License](#license)
 
 ---
 
-## The Problem
+# The Vision
 
-Every day, hundreds of new tokens launch across Ethereum, BNB Chain, Base, Solana, and beyond.
+Cryptocurrency markets operate continuously.
 
-Most fade within a week. Some gain traction. A few become something real. Separating signal from noise requires reading liquidity, contract structure, creator history, and market momentum — simultaneously, across multiple chains, in real time.
+New tokens emerge, liquidity shifts, wallets move assets, developers deploy contracts, trading activity changes, and market narratives evolve.
 
-Dashboards give you **data**. They don't give you **context**.
+Understanding these developments requires looking at several dimensions simultaneously:
 
-You are expected to decode on-chain signals, cross-reference contract code, verify creator histories, and simulate trade mechanics — all while new tokens launch faster than any single person can track.
+- Market activity and emerging opportunities.
+- Liquidity conditions and transaction mechanics.
+- Smart-contract architecture and permissions.
+- Developer, creator, and wallet histories.
+- Token distribution and market structure.
+- Historical behavior and changing market conditions.
 
-**Manual analysis doesn't scale. And in crypto, being late is the same as being wrong.**
+Most traditional platforms present this information through charts, dashboards, scanners, and individual analytical tools.
 
----
+But information alone is not intelligence.
 
-## Why ClawIntel
+The real challenge is connecting the information, interpreting it from different perspectives, identifying disagreements, and understanding what the available evidence actually means.
 
-ClawIntel is not a scam detector. It is an **autonomous market intelligence team** that never sleeps.
+**ClawIntel approaches this problem through collaborative artificial intelligence.**
 
-Five specialized AI agents operate in concert — continuously scanning the chain, testing trade mechanics, reading contracts, profiling creators, and debating what it all means. Every token gets a full-spectrum analysis. Every finding is evidence-based. Every perspective is preserved in memory.
+We envision a future where specialized AI agents operate as an intelligent organization: continuously observing, investigating, exchanging findings, questioning one another, and helping humans understand increasingly complex digital markets.
 
-Instead of drowning you in charts and raw logs, ClawIntel delivers **clear, structured market intelligence** — what the token is, how it moves, who built it, and where it might be heading.
+ClawIntel is our step toward that future.
 
-> **Our mission:**
->
-> *Surface the signal before the noise drowns it out. Make elite-grade market intelligence accessible to everyone.*
+# What Is ClawIntel?
+ClawIntel is an AI-powered, multi-agent cryptocurrency intelligence platform built around a simple idea: complex markets deserve more than a single perspective.
 
----
+Instead of relying on one AI model to interpret everything, ClawIntel brings together a team of specialized AI agents that observe market activity, investigate digital assets, analyze blockchain evidence, challenge assumptions, debate findings, and collaborate to develop a more complete understanding of the market.
 
-## What is ClawIntel?
+It is designed as an intelligence organization, not just another crypto dashboard or token-scanning tool.
+ClawIntel is a multi-agent cryptocurrency intelligence workspace that combines autonomous market observation, specialized blockchain analysis, collaborative reasoning, and human interaction.
 
-ClawIntel is an LLM-powered multi-agent intelligence platform engineered to observe, analyze, and evaluate digital assets across multiple blockchain ecosystems in real time.
+The platform is organized into two environments:
 
-The platform deploys a coordinated network of autonomous agents — each a specialist in its domain — that collaborate through a shared intelligence pipeline. Together they form a continuously operating market analysis system capable of:
+**War Room:** An autonomous intelligence environment where agents observe, investigate, exchange findings, challenge one another, and produce collective intelligence.
 
-- Discovering emerging tokens the moment they hit the chain
-- Simulating buy/sell behavior to measure mechanics and slippage
-- Dissecting smart contract architecture for structural features
-- Building persistent profiles of token creators and their track records
-- Detecting patterns in deployment history and market behavior
-- Generating human-readable, evidence-backed perspectives
-- Streaming live intelligence to users as analysis unfolds
+**Trading Room:** An interactive environment where humans participate directly alongside the agents, discuss market opportunities, investigate assets, explore portfolio workflows, and interact with simulated trading functionality.
 
-**This is not a security tool. This is autonomous market reasoning.**
+Both environments operate within the same broader ClawIntel organization while maintaining their own room-specific agent workers and context.
 
----
+ClawIntel is designed around five principles:
 
-## Vision
-
-We believe the next generation of blockchain intelligence will not be built on dashboards.
-
-It will be built on **autonomous systems** that watch, remember, analyze, and debate — operating 24/7 across every chain, every DEX, every launch.
-
-Systems that don't just show you what happened. They tell you what it means. And they tell you **while it's still happening**.
-
-ClawIntel is a step toward that future.
-
-Our long-term mission is to build an intelligence layer for decentralized markets — one that learns from historical behavior, adapts to emerging patterns, and empowers humans to navigate increasingly complex digital markets with clarity and confidence.
+1. **Specialization:** Each agent brings a distinct area of expertise.
+2. **Collaboration:** Agents exchange findings rather than operating as isolated tools.
+3. **Challenge:** Agents can question assumptions and disagree when evidence conflicts.
+4. **Transparency:** Findings, evidence, limitations, and simulated information should remain distinguishable.
+5. **Human participation:** Intelligence should support human understanding and decision-making, not remove human responsibility.
 
 ---
 
-## How It Works
+# The ClawIntel Organization
 
-When a token is discovered or submitted for analysis, it enters the ClawIntel pipeline:
+ClawIntel operates through six specialized AI agents.
 
-1. **Discovery** — Nova spots the token and reports its market metrics
-2. **Simulation** — Atlas tests trade paths and measures slippage and taxes
-3. **Analysis** — Vega reads the contract structure and maps holder distribution
-4. **Investigation** — Echo digs into the creator's wallet history and debates the team's findings
-5. **Synthesis** — Orion weighs all perspectives, assigns a score, and calls a direction
-6. **Delivery** — Results stream live to the Detectives Room, Market Wall, and Forensic Lab
+Every agent is a member of the same intelligence organization. Each has an individual identity, expertise, reasoning responsibilities, and contribution to the team's work.
 
-One token at a time. First come, first served. Every stage is observable. Every agent speaks. Every conclusion is traceable.
+No agent is designed to be universally superior to the others.
 
----
+Their different responsibilities allow the organization to examine complex situations from multiple perspectives.
 
-## Agent Architecture
+The six agents are:
 
-ClawIntel operates through **five specialized AI agents**. Each performs independent reasoning before contributing to the final synthesis.
+| Agent | Primary Responsibility |
+|---|---|
+| Nova | Market Intelligence and Discovery |
+| Atlas | Transaction Mechanics and Liquidity Analysis |
+| Vega | Smart Contract and Market Risk Analysis |
+| Echo | Creator, Developer and Wallet Intelligence |
+| Orion | Debate Moderation and Intelligence Synthesis |
+| Makto | Trading and Portfolio Intelligence |
 
-### Nova — The Observer
-**Role:** Market Surveillance & Discovery
+The agents can collaborate, challenge conclusions, request further investigation, disagree, and revise their positions when new evidence becomes available.
 
-Nova is the eyes of the operation. She watches the chains, spots new tokens with early traction, and reports what she sees — liquidity, volume, age, and anything that stands out. She is curious, not alarmist. She describes, she does not condemn.
+Their personalities make the organization more engaging, but their conclusions must remain grounded in evidence.
 
-| Capability | Description |
-|------------|-------------|
-| New token discovery | Identifies freshly deployed assets across chains |
-| Liquidity pair detection | Tracks new liquidity pool formations in real time |
-| DEX monitoring | Watches decentralized exchange activity across ecosystems |
-| Market metrics scoring | Calculates attention scores from liquidity, volume, and age |
-| Multi-chain surveillance | Monitors all supported blockchains simultaneously |
-| Quality gating | Filters tokens by minimum liquidity, market cap, and volume thresholds |
+## The Six AI Agents
 
-*Nova's mission: see everything first, report it calmly.*
+### 1. Nova — Market Intelligence
 
----
+Nova is responsible for observing the cryptocurrency market and identifying interesting developments.
 
-### Atlas — The Trader
-**Role:** Trade Mechanics & Simulation
+Nova monitors available market data, identifies emerging activity, and helps the organization understand what is happening across the market.
 
-Atlas doesn't read the whitepaper. He reads the chain. Then he tests what the chain actually allows.
+**Primary responsibilities:**
 
-| Capability | Description |
-|------------|-------------|
-| Buy simulations | Tests token purchase paths via `eth_call` and Jupiter RPC |
-| Sell simulations | Verifies exit paths and measures actual slippage |
-| Tax analysis | Detects buy/sell taxes and effective slippage |
-| Liquidity validation | Checks pool depth and lock status |
-| Multi-layer testing | Runs eth_call, Tenderly, and Jupiter simulations where available |
-| Evidence-based reporting | Reports observations as data, not verdicts |
+- Emerging token discovery.
+- Market activity observation.
+- Liquidity and volume monitoring.
+- Market movement analysis.
+- Identification of unusual activity and potential opportunities.
+- Monitoring tokens submitted for investigation.
+- Reporting market changes to other agents.
 
-*Atlas focuses on what the chain actually does — not what the contract claims.*
+Nova provides the organization with market awareness and helps determine what deserves closer attention.
 
----
+### 2. Atlas — Transaction Mechanics and Liquidity
 
-### Vega — The Analyst
-**Role:** Contract Structure & Market Intelligence
+Atlas investigates how transactions actually behave.
 
-Vega reads between the lines of every smart contract. She maps ownership, checks for upgradeable logic, and tracks holder concentration. She reports structural findings as facts, not fears.
+Rather than relying only on token descriptions or advertised functionality, Atlas examines the practical mechanics of interacting with digital assets.
 
-| Capability | Description |
-|------------|-------------|
-| Ownership analysis | Examines contract ownership and renunciation status |
-| Proxy detection | Identifies upgradeable contracts and their implementations |
-| Bytecode function mapping | Detects mint, blacklist, pause, fee manipulation, and recovery functions |
-| LP ownership analysis | Checks if LP tokens are burned, locked, or dev-controlled |
-| Holder distribution | Maps concentration and wallet count |
-| Solana deep analysis | Reads DexScreener data for volume, price action, buy pressure, and social signals |
+**Primary responsibilities:**
 
-*Vega identifies structure. She does not cry wolf.*
+- Buy and sell path analysis.
+- Transaction feasibility assessment.
+- Liquidity depth evaluation.
+- Slippage analysis.
+- Transaction simulation where supported.
+- Execution constraints.
+- Exit feasibility and transaction-related risks.
 
----
+Atlas helps the organization understand whether a transaction is practically executable and what conditions could affect its outcome.
 
-### Echo — The Investigator
-**Role:** Creator Profiling, Pattern Detection & Debate
+### 3. Vega — Smart Contract and Market Risk
 
-Echo never forgets. Every creator. Every token. Every pattern. It's all in the archive. And when his findings contradict the rest of the team, he says so.
+Vega examines the structural and technical characteristics of digital assets.
 
-| Capability | Description |
-|------------|-------------|
-| Creator profiling | Builds persistent profiles of deployer wallets across chains |
-| Wallet history analysis | Tracks age, balance, transaction count, and funding status |
-| Deployment pattern detection | Identifies rapid launchers, serial deployers, and copycats |
-| Historical token reputation | Checks previous tokens for survival, death, or abandonment |
-| Reputation scoring | Calculates dynamic trust scores from historical outcomes |
-| Predictive intelligence | Forecasts likely outcomes based on creator track record |
-| Debate engine | Challenges Atlas and Vega when creator data contradicts their findings |
+Her work focuses on understanding what a smart contract allows, how it is configured, and what structural or market risks may exist.
 
-*Echo ensures that ClawIntel remembers what the market forgets — and argues when the data demands it.*
+**Primary responsibilities:**
 
----
+- Contract ownership analysis.
+- Proxy and upgradeability detection.
+- Minting and administrative permission analysis.
+- Blacklist, pause, and transaction restriction checks.
+- Fee and tax configuration analysis.
+- Liquidity structure examination.
+- Holder concentration and token distribution analysis.
+- Smart-contract and market risk observations.
 
-### Orion — The Lead
-**Role:** Synthesis & Direction Calling
+Vega distinguishes between verified contract characteristics, potential concerns, and information that cannot be established from the available evidence.
 
-Orion has the final word. He weighs every agent's findings, forms his own view on where the token is heading, assigns a score, and moves the room forward. He never advises trading. He simply assesses and calls the next play.
+### 4. Echo — Creator, Developer and Wallet Intelligence
 
-| Capability | Description |
-|------------|-------------|
-| Evidence aggregation | Compiles findings from all four agents |
-| Multi-agent reasoning | Weighs conflicting signals and resolves contradictions |
-| Direction prediction | Calls UP, DOWN, SIDEWAYS, or UNKNOWN based on score and momentum |
-| Score assignment | Assigns a calibrated 0-100 score with confidence percentage |
-| Nova callbacks | Ends every synthesis by calling Nova back to the chains — sometimes with a roast |
+Echo investigates the people, wallets, and deployment patterns associated with digital assets where supported data is available.
 
-**Direction Outcomes:**
+His responsibility is to provide historical and contextual intelligence that helps the organization understand the background of a project.
 
-| Direction | Meaning |
-|-----------|---------|
-| **UP** | Momentum and structure suggest upward price pressure |
-| **DOWN** | Structural or creator risks suggest decline |
-| **SIDEWAYS** | Mixed signals — no clear directional bias |
-| **UNKNOWN** | Insufficient data to form a directional view |
+**Primary responsibilities:**
 
-*Orion transforms raw intelligence into a clear perspective — then tells Nova to find the next one.*
+- Creator and deployer wallet investigation.
+- Wallet transaction history analysis.
+- Deployment history examination.
+- Previous project and token activity.
+- Supported wallet association analysis.
+- Historical behavioral pattern identification.
+- Developer and creator intelligence.
 
----
+An unknown identity is not automatically suspicious, and limited historical information is not proof of malicious activity.
 
-## Core Capabilities
+Echo focuses on what the available evidence establishes.
 
-| Feature | Description |
-|---------|-------------|
-| **Real-Time Token Discovery** | Continuous autonomous surveillance of emerging digital assets |
-| **Trade Mechanics Simulation** | Gasless transaction simulation to measure slippage, taxes, and path viability |
-| **Smart Contract Analysis** | Deep contract reading for structural features and permission risks |
-| **Creator Intelligence** | Persistent reputation tracking and pattern detection for deployers |
-| **Agent Debate** | Cross-agent disagreement detection and evidence-based challenge |
-| **Direction & Score Synthesis** | Calibrated market direction calls with confidence scoring |
-| **Live Intelligence Streaming** | Real-time WebSocket updates as analysis unfolds |
-| **Multi-Chain Monitoring** | Unified intelligence across Ethereum, BSC, Base, and Solana |
-| **Forensic Lab** | Manual analysis mode for user-submitted contracts |
-| **Persistent Memory** | Historical data and creator profiles preserved across sessions |
+### 5. Orion — Debate Moderator and Intelligence Synthesizer
 
----
+Orion helps coordinate the visible intellectual discussion inside the intelligence rooms.
 
-## Intelligence Interfaces
+He guides discussions, identifies disagreements, encourages agents to challenge one another, and brings the team's findings together.
 
-### Detectives Room
-The live operational nerve center. Watch Nova, Atlas, Vega, Echo, and Orion communicate, debate, and analyze in real time as events unfold across the chain.
+Orion is not the backend agent orchestrator. He is a visible member of the agent team with a responsibility for debate moderation and collective reasoning.
 
-**Features:**
-- Real-time agent communication and reasoning
-- Live analysis feed with stage-by-stage progress
-- Market alerts and anomaly notifications
-- Autonomous intelligence updates
-- Full audit trail of every agent's contribution
+**Primary responsibilities:**
+
+- Moderating agent discussions.
+- Identifying conflicting findings.
+- Encouraging evidence-based challenges.
+- Highlighting missing information.
+- Requesting additional analysis when necessary.
+- Evaluating competing interpretations.
+- Producing a final synthesized assessment.
+
+Orion does not simply repeat what the other agents say. His responsibility is to understand their individual contributions and explain how they fit together.
+
+### 6. Makto — Trading and Portfolio Intelligence
+
+Makto contributes trading and portfolio expertise to the ClawIntel organization.
+
+Makto works with the available wallet, portfolio, market, and trading information to help users understand their simulated trading activity and explore trading workflows.
+
+**Primary responsibilities:**
+
+- Demo portfolio monitoring.
+- Position and balance awareness.
+- Position-sizing calculations.
+- Trade workflow assistance.
+- Simulated trade execution.
+- Portfolio activity tracking.
+- Trading-related communication with the other agents.
+
+Makto collaborates with the same team and follows the same evidence, permission, and safety principles as every other agent.
 
 ---
 
-### Market Intelligence Wall
-A market-wide command center displaying:
+# The Two Intelligence Environments
 
-- Tokens discovered by the agent swarm
-- Completed analyses with direction and score
-- AI-evaluated market opportunities
-- Emerging risk signals and pattern alerts
-- Real-time market activity and volume anomalies
+ClawIntel provides two different environments for experiencing its multi-agent organization.
+
+They serve different purposes but belong to the same platform.
+
+## 1. War Room — Autonomous Intelligence
+
+The War Room is the autonomous intelligence environment of ClawIntel.
+
+It is designed for observation rather than direct conversation with the user.
+
+Agents operate within a shared intelligence environment, publishing their findings, exchanging information, challenging interpretations, and contributing to investigations.
+
+The user watches the organization work.
+
+**Key characteristics:**
+
+- Autonomous market observation.
+- Agent-led investigations.
+- Individual agent contributions.
+- Collaborative discussions.
+- Evidence-based challenges and rebuttals.
+- Visible disagreement between agents.
+- Investigation progress and status updates.
+- Collective intelligence synthesis.
+- A persistent intelligence activity feed.
+
+### Agent Debate
+
+The War Room is not simply a list of AI-generated reports.
+
+Agents can have different interpretations of the same evidence.
+
+For example:
+
+- Nova may identify unusual market activity.
+- Vega may examine the contract structure.
+- Atlas may question whether the available liquidity supports meaningful execution.
+- Echo may investigate the creator's previous activity.
+- Orion may identify disagreements and request additional analysis.
+- The agents may revise their positions when new information becomes available.
+
+The result is a collaborative intelligence process rather than a single model producing an unquestioned answer.
+
+The agents are allowed to have personalities. They can challenge one another, disagree, make humorous remarks, and occasionally argue.
+
+However, personality never replaces evidence.
+
+**The War Room is where ClawIntel thinks together.**
+
+## 2. Trading Room — Human-AI Collaboration
+
+The Trading Room brings the human into the intelligence organization.
+
+Unlike the autonomous War Room, this environment allows users to interact directly with the agents.
+
+Users can discuss markets, submit token addresses for investigation, introduce information, ask questions, and explore simulated trading and portfolio workflows.
+
+The Trading Room includes the same core agent team, with Makto contributing trading and portfolio expertise.
+
+**Key characteristics:**
+
+- Interactive AI conversations.
+- Human-led investigation requests.
+- Token and market discussions.
+- Agent-to-agent collaboration.
+- Agent responses to user-provided information.
+- Simulated NEAR wallet integration.
+- Demo portfolio monitoring.
+- Simulated trading workflows.
+- Trading-related discussions and analysis.
+
+### A Living Intelligence Team
+
+The Trading Room is designed to feel like an actual collaborative environment.
+
+Agents should not behave like disconnected customer-support bots.
+
+They can:
+
+- Challenge the user's assumptions.
+- Disagree with another agent's analysis.
+- Ask for missing information.
+- Discuss findings with one another.
+- Question unrealistic trading decisions.
+- Respond naturally to the user's comments.
+- Use humor and personality without compromising analytical quality.
+
+For example, if a user proposes a trade that exceeds the available demo wallet balance, the team can point that out naturally.
+
+The objective is to create an engaging environment where users interact with an intelligent team rather than repeatedly asking isolated questions to a chatbot.
+
+**The Trading Room is where humans work alongside ClawIntel.**
 
 ---
 
-### Forensic Lab
-Submit any contract address for a full multi-agent analysis.
+# How ClawIntel Works
 
-**Features:**
-- Manual investigation triggers
-- Live agent reasoning and evidence presentation
-- Detailed structural breakdowns by category
-- Historical intelligence retrieval
-- Final synthesis with direction, score, and confidence
+ClawIntel combines market-data collection, specialized analysis, agent collaboration, and intelligence delivery.
+
+At a high level, the workflow follows this structure:
+
+1. **Observation:** The platform collects available market and blockchain information.
+2. **Discovery or Submission:** An asset or market development becomes a subject for investigation.
+3. **Investigation:** Relevant agents examine the information from their individual areas of expertise.
+4. **Evidence Collection:** Available market, contract, transaction, and wallet information is gathered.
+5. **Collaboration:** Agents exchange findings and identify conflicting interpretations.
+6. **Challenge and Reassessment:** Agents question conclusions and request additional analysis when necessary.
+7. **Synthesis:** Orion brings the team's findings together into a collective assessment.
+8. **Delivery:** Results and agent contributions are published to the appropriate intelligence environment.
+
+This is a conceptual description of the intended intelligence workflow. The depth of investigation depends on the available data sources, configured providers, and implemented agent capabilities.
+
+## Backend Orchestration
+
+Behind the visible agents is a backend orchestration service.
+
+This is infrastructure, not another AI personality.
+
+Its responsibilities include:
+
+- Opening investigations.
+- Selecting the appropriate room-specific workers.
+- Managing agent execution.
+- Tracking investigation status.
+- Handling timeouts and retries.
+- Persisting investigation events.
+- Publishing agent contributions.
+- Managing investigation lifecycle.
+- Invoking synthesis at the appropriate stage.
+
+Each agent remains responsible for its own contribution.
+
+The orchestrator manages the process; it does not replace the agents or become another visible member of the team.
 
 ---
 
-## Tech Stack
+# The Intelligence Architecture
 
-| Layer | Technologies |
-|-------|-------------|
-| **Server** | Python, aiohttp, WebSocket, REST API |
-| **Intelligence Engine** | Python, Async Multi-Agent Orchestration, Blockchain RPC |
-| **Database** | MongoDB (persistent queue, creator profiles, analysis history) |
-| **AI Systems** | Multi-provider LLM router (Gemini + Grok/xAI + Cerebras + OpenRouter) with free-tier model fallbacks. Orion uses real LLM reasoning for scoring & direction; other agents use LLM for speech. Fully configurable model lists. |
-| **Data Sources** | DexScreener, Multi-Chain RPC Providers, Block Explorers (Etherscan, BscScan, BaseScan), Jupiter API |
-| **Frontend** | HTML5, CSS3, JavaScript (Vanilla) |
+ClawIntel uses a modular architecture designed to separate the user interface, backend services, agent execution, data collection, AI providers, and persistent storage.
+
+## High-Level Architecture
+
+```mermaid
+flowchart TD
+    USER[Human User]
+
+    subgraph FRONTEND["ClawIntel Frontend"]
+        WAR[War Room]
+        TRADE[Trading Room]
+        SETTINGS[Settings and Configuration]
+    end
+
+    subgraph BACKEND["Backend Services"]
+        API[FastAPI Application]
+        SESSION[Session and Wallet Management]
+        ORCH[Agent Orchestration]
+        EVENTS[Event and WebSocket Services]
+    end
+
+    subgraph AGENTS["AI Agent Organization"]
+        NOVA[Nova]
+        ATLAS[Atlas]
+        VEGA[Vega]
+        ECHO[Echo]
+        ORION[Orion]
+        MAKTO[Makto]
+    end
+
+    subgraph DATA["Intelligence Sources"]
+        DEX[DexScreener]
+        CG[CoinGecko - Optional]
+        RPC[Blockchain RPC Providers]
+    end
+
+    subgraph AI["LLM Provider Layer"]
+        GEMINI[Google Gemini]
+        OPENROUTER[OpenRouter]
+        CEREBRAS[Cerebras]
+    end
+
+    DB[(PostgreSQL)]
+
+    USER --> FRONTEND
+    FRONTEND --> API
+    API --> SESSION
+    API --> ORCH
+
+    ORCH --> AGENTS
+
+    AGENTS --> DATA
+    AGENTS --> AI
+
+    API --> DB
+    ORCH --> DB
+    EVENTS --> DB
+    EVENTS --> FRONTEND
+```
+
+The diagram represents the main architectural components. Actual execution depends on the configured services and implemented workflows.
+
+## Department Isolation
+
+War Room and Trading Room use separate room-specific worker contexts.
+
+This separation supports:
+
+- Independent agent activity.
+- Department-specific conversations.
+- Separate LLM provider settings.
+- Room-aware event delivery.
+- Different interaction permissions.
+- Independent operational workflows.
+
+The agents share the broader organizational identity and specialties, but their room-specific execution contexts are not intended to be one shared conversation.
+
+## Backend
+
+The backend is responsible for application logic, API requests, agent execution, data persistence, wallet workflows, and real-time communication.
+
+Core technologies include:
+
+- Python 3.12.
+- FastAPI.
+- Pydantic.
+- SQLAlchemy 2.x with asynchronous database access.
+- Alembic migrations.
+- PostgreSQL.
+
+## Frontend
+
+The frontend provides the visual and interactive experience.
+
+Core technologies include:
+
+- React 19.
+- TypeScript.
+- Vite.
+- Tailwind CSS.
+- React Router.
+- TanStack Query.
+- Lucide icons.
+- Framer Motion.
+
+## Database
+
+ClawIntel uses PostgreSQL as its current persistent database.
+
+It supports the storage of application data, sessions, investigation events, agent activity, and simulated trading records.
+
+Database schema changes are managed through Alembic migrations.
+
+The current architecture does not automatically migrate the historical MongoDB database used by the earlier version of the project.
 
 ---
 
-## Supported Chains
+# Technology Stack
 
-- **Ethereum** — The foundation of DeFi. Primary surveillance target.
-- **BNB Chain** — High-volume retail market with significant token activity.
-- **Base** — Coinbase's L2. Fastest-growing ecosystem for new token launches.
-- **Solana** — High-speed alternative L1. Major memecoin and DeFi activity.
-
-*ClawIntel focuses on the four chains where the majority of new token volume and market activity occurs. Additional ecosystems can be integrated through the modular agent architecture.*
+| Layer | Technology |
+|---|---|
+| Backend Language | Python 3.12 |
+| API Framework | FastAPI |
+| Data Validation | Pydantic |
+| ORM | SQLAlchemy 2.x |
+| Database | PostgreSQL |
+| Database Migrations | Alembic |
+| Frontend Framework | React 19 |
+| Frontend Language | TypeScript |
+| Build Tool | Vite |
+| Styling | Tailwind CSS |
+| Routing | React Router |
+| Server State | TanStack Query |
+| Icons | Lucide |
+| UI Motion | Framer Motion |
+| Real-Time Communication | WebSockets |
+| AI Provider Integration | Gemini, OpenRouter, Cerebras |
+| Market Data | DexScreener |
+| Optional Market Enrichment | CoinGecko |
+| Blockchain Information | Chain-specific RPC providers |
+| Deployment and Local Services | Docker Compose |
 
 ---
 
-## Getting Started
+# Market Data and Blockchain Intelligence
 
-### Prerequisites
-- Python 3.9+
-- MongoDB instance (local or MongoDB Atlas)
-- RPC endpoints for target chains (public free tiers work for testing)
+ClawIntel is designed to combine information from different sources rather than depend on one data provider.
 
-### 1. Clone the Repository
+## Current Data Sources
+
+### DexScreener
+
+Used for market-pair information and available token market data.
+
+The current autonomous scan uses DexScreener to retrieve market information.
+
+### CoinGecko
+
+Optional market-data enrichment when a valid API key is configured.
+
+### Blockchain RPC Providers
+
+The application supports configured RPC endpoints for retrieving basic blockchain account and code information.
+
+Current supported RPC configuration includes:
+
+- Ethereum.
+- BNB Chain.
+- Base.
+- Solana.
+
+The availability and depth of returned information depend on the configured provider and the chain-specific integration.
+
+### Evidence and Limitations
+
+ClawIntel is designed to pass retrieved information to the relevant analysis processes as evidence.
+
+The AI agents should not invent unavailable information or present missing data as verified findings.
+
+For example:
+
+- The presence of contract bytecode is not a complete smart-contract audit.
+- An unknown wallet identity does not establish malicious activity.
+- A low-liquidity pool is not, by itself, proof of fraud.
+- A simulated transaction is not equivalent to a confirmed blockchain transaction.
+
+These distinctions are important to maintaining reliable intelligence.
+
+---
+
+# AI Provider Architecture
+
+ClawIntel supports a modular LLM provider architecture.
+
+The current provider integrations include:
+
+- Google Gemini.
+- OpenRouter.
+- Cerebras.
+
+Provider adapters allow the application to communicate with different model services through a consistent internal interface.
+
+## Independent Department Configuration
+
+War Room and Trading Room have independent provider configurations.
+
+This allows the two environments to use different provider priorities and model configurations.
+
+The architecture supports provider fallback where configured.
+
+However, provider fallback must not be confused with guaranteed availability. If configured providers fail, the application should report the failure rather than silently pretend that a successful AI response was generated.
+
+## Provider Transparency
+
+ClawIntel aims to make provider failures visible.
+
+When an LLM provider is unavailable or improperly configured, the application should report the issue.
+
+It should not substitute scripted text and represent it as genuine model-generated reasoning.
+
+This distinction is especially important when evaluating agent behavior.
+
+---
+
+# Demo Wallet and Trading Simulation
+
+The Trading Room includes a simulated NEAR wallet environment.
+
+This provides a controlled way to explore wallet-connected workflows and simulated trading without requiring users to risk real cryptocurrency.
+
+## Current Demo Wallet Behavior
+
+The current implementation supports:
+
+- Session-scoped simulated wallet addresses.
+- An initial demo balance of 1,000 NEAR.
+- Backend-enforced wallet access.
+- Simulated portfolio records.
+- Controlled quote generation.
+- User approval or rejection of quotes.
+- Simulated trade execution.
+- PostgreSQL-backed ledger updates.
+
+## Current Quote Fixtures
+
+The existing quote workflow supports the following controlled fixture tokens:
+
+- `demo:claw`
+- `demo:signal`
+
+These operate on the `demo` chain using controlled fixture prices.
+
+Quotes expire after 30 seconds.
+
+When a user approves a quote, the backend updates the simulated balance and records the simulated trade and associated fee.
+
+## Important Trading Limitations
+
+The current wallet is a simulation.
+
+It does not provide:
+
+- Real NEAR wallet custody.
+- Private-key storage.
+- Real wallet signing.
+- Real NEAR account balances.
+- NEAR RPC transaction broadcasting.
+- Actual blockchain trade execution.
+
+The simulated trading environment must not be represented as live on-chain trading.
+
+Future work may expand the trading engine, quote sources, exit workflows, and real-market valuation capabilities.
+
+---
+
+# Real-Time Communication
+
+ClawIntel uses persistent event records and WebSocket communication to deliver activity to the frontend.
+
+This allows the application to publish:
+
+- Agent messages.
+- Investigation updates.
+- Department-specific events.
+- Status changes.
+- Other intelligence activity.
+
+Events are persisted in PostgreSQL before being delivered through the appropriate department or session-aware WebSocket channel.
+
+This architecture provides a foundation for reliable, observable communication between the backend and the user interface.
+
+Further work remains around missed-event replay, deduplication, and more comprehensive delivery guarantees.
+
+---
+
+# Getting Started
+
+The following instructions describe the current Docker-based development setup.
+
+## Prerequisites
+
+Install the following:
+
+- Docker Desktop with Docker Compose.
+- Node.js 20.19+ or 22.12+.
+- Python 3.12 if running the backend outside Docker.
+
+You will also need API credentials for whichever AI providers and optional data sources you intend to use.
+
+## 1. Clone the Repository
 
 ```bash
 git clone https://github.com/sediq247/Claw-Intel.git
+
 cd Claw-Intel
 ```
 
-### 2. Install Dependencies
+## 2. Configure Environment Variables
+
+Copy the example environment file:
 
 ```bash
-pip install -r requirements.txt
+cp .env.example .env
 ```
 
-### 3. Configure Environment
+On Windows PowerShell:
 
-Create a `.env` file in the project root:
-
-```env
-# Server
-PORT=3000
-
-# AI
-GEMINI_API_KEY=your_api_key_here
-GEMINI_MODEL=your_gemini_model
-LLM_PROVIDERS=gemini,cerebras,openrouter,grok
-OpenAI-compatible
-XAI_API_KEY=
-XAI_MODELS=grok-4.1-fast,grok-2-mini,grok-2
-CEREBRAS_API_KEY=
-CEREBRAS_MODELS=gpt-oss-120b,llama3.1-8b,qwen-3.8-27b
-OPENROUTER_API_KEY=
-OPENROUTER_MODELS=nvidia/nemotron-3-ultra-550b-a55b:free,openai/gpt-oss-120b:free,meta-llama/llama-3.3-70b-instruct:free,openrouter/free
-
-
-# Database
-MONGODB_URI=your_mongodb_connection_string
-
-# Primary RPCs — set these to your preferred endpoints.
-# If left empty or if they fail, agents fall back to built-in public pools.
-ETH_RPC_URL=
-BSC_RPC_URL=
-BASE_RPC_URL=
-SOLANA_RPC_URL=
-
-# Optional: Block Explorer APIs (for Echo's creator history analysis)
-ETHERSCAN_API_KEY=your_etherscan_key
-BSCSCAN_API_KEY=your_bscscan_key
-BASESCAN_API_KEY=your_basescan_key
-
-# Optional: Tenderly (for Atlas advanced simulation)
-TENDERLY_API_KEY=your_tenderly_key
-TENDERLY_ACCOUNT=your_account
-TENDERLY_PROJECT=your_project
+```powershell
+Copy-Item .env.example .env
 ```
 
-### 4. Start the Application
+Open `.env` and configure the credentials and settings you need.
+
+Do not commit your `.env` file or expose API keys publicly.
+
+## 3. Start ClawIntel
+
+From the project root:
 
 ```bash
-python main.py
+docker compose up --build
 ```
 
-Open your browser at: [http://localhost:3000](http://localhost:3000)
+Docker Compose starts the configured application services.
+
+Database migrations are expected to run before the API becomes available.
+
+## 4. Open the Application
+
+Once the services are running, open:
+
+```text
+http://localhost:6548
+```
+
+The health endpoint is available at:
+
+```text
+http://localhost:6548/health
+```
+
+The health endpoint provides application and database connectivity information and configured provider status without exposing secret credentials.
 
 ---
 
-## Use Cases
+# Environment Configuration
 
-ClawIntel is built for:
+The `.env.example` file is the source of truth for the supported environment variables.
 
-- **Crypto Market Research** — Autonomous surveillance and pattern detection
-- **Token Due Diligence** — Pre-commitment structural and creator analysis
-- **Smart Contract Reading** — Deep architecture and permission mapping
-- **Risk Assessment** — Evidence-based structural and creator risk evaluation
-- **Web3 Market Intelligence** — Pattern discovery and momentum modeling
-- **Creator Tracking** — Reputation monitoring and deployment pattern detection
-- **Market Monitoring** — Early anomaly and momentum detection
-- **Autonomous AI Research** — Multi-agent system experimentation
-- **Blockchain Intelligence Workflows** — End-to-end analysis pipelines
+Depending on your setup, configuration may include:
 
----
+| Configuration | Purpose |
+|---|---|
+| Database settings | PostgreSQL connectivity |
+| Gemini settings | Google Gemini integration |
+| OpenRouter settings | OpenRouter integration |
+| Cerebras settings | Cerebras integration |
+| War Room provider settings | War Room provider priorities and model selection |
+| Trading Room provider settings | Trading Room provider priorities and model selection |
+| Ethereum RPC | Ethereum blockchain information |
+| BNB Chain RPC | BNB Chain information |
+| Base RPC | Base blockchain information |
+| Solana RPC | Solana blockchain information |
+| CoinGecko API key | Optional market-data enrichment |
+| Application origins | Allowed frontend origins |
 
-## Research Direction
+Provider and model configuration names should be copied directly from `.env.example`.
 
-ClawIntel is more than a crypto analysis platform. It is a living research initiative into the future of autonomous multi-agent intelligence.
-
-We are actively exploring:
-
-- **Persistent observation** — Agents that never stop watching
-- **Collaborative reasoning** — Multiple specialists converging on truth through debate
-- **Memory-driven intelligence** — Systems that learn from history
-- **Explainable analysis** — Perspectives you can verify and trace
-- **Predictive modeling** — Forecasting outcomes before they fully materialize
-
-The project demonstrates how specialized AI agents can work together to analyze complex, high-stakes markets in real time — producing perspectives that no single system could generate alone.
+Do not assume that every provider or external data source is mandatory.
 
 ---
 
-## Disclaimer
+# Development
 
-ClawIntel provides AI-generated intelligence for **informational and research purposes only**.
+Developers who prefer running the frontend and backend independently can use the following setup.
 
-Nothing produced by the platform should be interpreted as financial advice, investment guidance, trading recommendations, or guarantees of future outcomes. ClawIntel does not advise you to buy, sell, or trade any asset.
+## Backend
 
-**Users remain fully responsible for their own decisions, actions, and risk management.**
+Install dependencies:
 
-Always conduct your own research. Never invest more than you can afford to lose. The blockchain is immutable — mistakes are permanent.
+```bash
+python -m pip install -r requirements.txt
+```
+
+Run database migrations:
+
+```bash
+alembic upgrade head
+```
+
+Start the API:
+
+```bash
+uvicorn backend.app.main:app --reload --port 8000
+```
+
+## Frontend
+
+Open a separate terminal:
+
+```bash
+cd frontend
+```
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Start the development server:
+
+```bash
+npm run dev
+```
+
+The Vite development server uses port `6548` and proxies `/api` and `/ws` to the backend running on port `8000`.
+
+Configure `ALLOWED_ORIGINS` to include:
+
+```text
+http://localhost:6548
+```
+
+## Compatibility Entry Points
+
+The repository also includes compatibility entry points:
+
+```bash
+python server_main.py
+```
+
+```bash
+python agents_main.py
+```
+
+These are compatibility entry points for the combined API and autonomous-worker process.
+
+Do not start multiple duplicate worker loops for the same application instance.
 
 ---
 
-## License
+# Current Implementation
 
-This project is licensed under the MIT License.
+ClawIntel is an actively evolving project.
 
-See the [LICENSE](LICENSE) file for more information.
+It is important to distinguish between existing functionality, controlled simulations, and planned capabilities.
+
+## Implemented Foundation
+
+The current rebuild includes:
+
+- PostgreSQL database foundation.
+- Initial database migrations.
+- Browser-session management.
+- Backend-enforced demo wallet access.
+- Department-scoped event persistence.
+- WebSocket event delivery.
+- Independent LLM provider settings for both departments.
+- Gemini, OpenRouter, and Cerebras provider integrations.
+- Visible provider failure handling.
+- React application shell.
+- Read-only War Room foundation.
+- Interactive Trading Room foundation.
+- Simulated NEAR wallet.
+- Fixture-based quote generation.
+- Quote approval and rejection.
+- Simulated portfolio ledger.
+- Repeatable simulated War Room investigation scenarios.
+- Bounded autonomous DexScreener market scanning.
+- Optional CoinGecko enrichment.
+- Configured chain RPC enrichment.
+
+## Simulated Capabilities
+
+Some capabilities use deterministic test scenarios rather than live market intelligence.
+
+These include controlled War Room investigation scenarios such as:
+
+- Suspicious token.
+- Potential opportunity.
+
+Their generated evidence and findings are simulated.
+
+They are useful for testing agent workflows and the user interface, but they must not be presented as genuine discoveries from live market conditions.
+
+## Work in Progress
+
+The following areas require further development and verification:
+
+- Broader autonomous market discovery.
+- Migration of historical analyzer and watcher business logic.
+- More comprehensive creator and deployer intelligence.
+- Persisted evidence-to-debate relationships.
+- Dynamic conflict and debate revisions.
+- More advanced agent-specific memory.
+- Deeper Atlas-to-Makto trading workflow integration.
+- Expanded trading risk models.
+- Sell and exit workflows.
+- Real-market portfolio valuation.
+- External holder and deployer intelligence integrations.
+- Per-department AI usage and cost tracking.
+- Multi-user authentication for public deployments.
+- Missed-event replay and deduplication improvements.
+- Comprehensive accessibility and security audits.
+- Broader frontend and integration testing.
+- PostgreSQL-backed end-to-end verification.
+- Production deployment validation.
+- Reviewed migration tooling for historical MongoDB data.
+
+The presence of a feature in the roadmap does not mean it is already implemented.
 
 ---
 
-<div align="center">
+# Roadmap
 
-**Built with precision. Operates with purpose. Never sleeps.**
+Our long-term development direction includes several areas.
 
-*ClawIntel © 2026*
+## Intelligence Development
 
-</div>
+- Expand autonomous market observation.
+- Improve multi-chain discovery.
+- Increase investigation depth.
+- Introduce richer historical intelligence.
+- Improve evidence collection and source traceability.
+
+## Agent Collaboration
+
+- Develop more advanced agent-to-agent communication.
+- Improve persistent agent memory.
+- Support dynamic debate revisions.
+- Improve disagreement detection.
+- Strengthen evidence-based reasoning.
+- Expand the team's ability to request and conduct additional investigations.
+
+## Trading Room
+
+- Expand supported market data.
+- Improve quote and execution analysis.
+- Develop more complete portfolio workflows.
+- Expand simulated buy and sell operations.
+- Improve position-sizing and risk calculations.
+- Explore additional wallet integration possibilities.
+
+## Platform Engineering
+
+- Strengthen authentication and authorization.
+- Improve multi-user isolation.
+- Expand observability.
+- Improve event replay and delivery reliability.
+- Expand automated testing.
+- Improve deployment and operational security.
+
+Our objective is to build an intelligence organization that becomes more capable through better evidence, better collaboration, and more reliable engineering.
 
 ---
 
-## Multi-LLM Upgrade (v5.1)
+# Security and Data Integrity
 
-ClawIntel now uses a unified multi-provider LLM router (`agents/llm_client.py`):
+Security and trustworthy information are important design principles.
 
-- **Providers**: Gemini · Grok (xAI) · Cerebras · OpenRouter
-- **Default models**: latest free / free-tier friendly models for test
-- **Configurable**: set `LLM_PROVIDERS` and `*_MODELS` lists in `.env`
+ClawIntel's architecture includes several safeguards:
 
-### How agents use the LLM
+- Backend-enforced Trading Room wallet access.
+- Session-scoped simulated wallet state.
+- Server-side quote approval and ledger updates.
+- Environment-based secret configuration.
+- PostgreSQL persistence.
+- Database migrations through Alembic.
+- Department-aware event delivery.
+- Visible LLM provider failure handling.
+- Explicit distinction between simulated and retrieved evidence.
 
-| Agent | Role | LLM usage |
-|-------|------|-----------|
-| **Orion** | Lead synthesis | Full reasoning: score, direction, confidence, key factors (JSON) + speech |
-| **Vega** | Contract & structure | Refines deterministic risk score + deeper insight after rule-based analysis |
-| **Echo** | Creator profiling | Refines outcome prediction + confidence from historical patterns |
-| **Atlas** | Trade simulation | Interprets mechanical simulation results and blends confidence |
-| **Nova** | Discovery | Optional short attention note on why a token is worth watching |
+## Database Safety
 
-All agents keep their fast deterministic cores (honeypot detection, bytecode flags, etc.) and fall back cleanly when no LLM keys are configured.
+The current PostgreSQL database is managed through Alembic migrations.
 
-See `.env.example` for full configuration.
+Avoid using:
 
-### Team Awareness & Debate (v5.1+)
+```python
+Base.metadata.create_all()
+```
 
-Agents no longer work in isolation:
+against a deployed database as a substitute for proper migrations.
 
-1. **Shared context** — After Atlas, Vega, and Echo finish, each agent’s brief is packaged into a shared team context.
-2. **Debate round** — Atlas, Vega, and Echo speak in turn (and Echo can rebut on conflict). Lines are broadcast as `debate` messages.
-3. **Orion with full awareness** — Final synthesis includes the debate transcript, consensus notes, and disagreements.
+Do not delete the `clawintel_postgres` Docker volume to reset the database unless you intentionally want to destroy its stored data and have appropriate backups.
 
-New module: `agents/team_debate.py`
+The historical MongoDB database is not automatically imported into the current PostgreSQL system.
+
+Any migration from the previous database should involve a reviewed export, transformation, backup, and explicit import process.
+
+---
+
+# Project Documentation
+
+Additional technical documentation is maintained in the repository.
+
+| Document | Purpose |
+|---|---|
+| `docs/ARCHITECTURE.md` | System architecture and component relationships |
+| `docs/REPOSITORY_AUDIT.md` | Repository review and implementation observations |
+| `docs/RESEARCH_AND_TECHNICAL_DECISIONS.md` | Technical research and architectural decisions |
+| `.env.example` | Environment configuration reference |
+
+These documents complement this README with deeper engineering details.
+
+---
+
+# Contributing
+
+ClawIntel is an evolving project, and contributions that improve its reliability, intelligence capabilities, and user experience are welcome.
+
+Areas where contributions may be valuable include:
+
+- AI agent development.
+- Blockchain integrations.
+- Market-data integrations.
+- Backend engineering.
+- Frontend development.
+- Agent orchestration.
+- Database engineering.
+- Testing and quality assurance.
+- Security engineering.
+- Documentation.
+
+When contributing:
+
+1. Understand the existing architecture before making structural changes.
+2. Keep agent responsibilities clearly defined.
+3. Preserve the separation between War Room and Trading Room.
+4. Avoid presenting simulated functionality as live functionality.
+5. Keep secrets out of source control.
+6. Use database migrations for schema changes.
+7. Include appropriate tests for new functionality.
+8. Document significant architectural decisions.
+
+---
+
+# Disclaimer
+
+ClawIntel is an experimental cryptocurrency intelligence and research platform.
+
+Information and assessments generated by its AI agents are provided for informational and educational purposes only.
+
+Nothing produced by ClawIntel constitutes financial advice, investment advice, or a guarantee of future market performance.
+
+Market data may be incomplete, delayed, inaccurate, or unavailable. AI-generated assessments may contain errors.
+
+Simulated wallet balances, quotes, and trades do not represent real cryptocurrency holdings or confirmed blockchain transactions.
+
+Users are responsible for independently verifying information and making their own financial decisions.
+
+Always conduct your own research and understand the risks associated with digital assets.
+
+---
+
+# Project Links
+
+**GitHub Repository:**  
+https://github.com/sediq247/Claw-Intel
+
+**Project Website:**  
+https://clawintel-page.vercel.app
+
+---
+
+# The Future of Cryptocurrency Intelligence
+
+We believe the future of cryptocurrency intelligence will be collaborative.
+
+Not one model trying to know everything.
+
+Not another dashboard filled with numbers.
+
+But specialized intelligence systems that observe, investigate, reason, challenge, and learn to work together.
+
+A team where different perspectives matter. Where conclusions can be questioned. Where evidence matters more than confidence. And where humans remain part of the process.
+
+That is the idea behind ClawIntel.
+
+**Six agents. Different minds. One intelligence organization.**
+
+*Built with precision. Operates with purpose. Never stops learning.*
+
+**ClawIntel © 2026**

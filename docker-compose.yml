@@ -1,0 +1,67 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: clawintel
+      POSTGRES_USER: clawintel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clawintel-local-only}
+    volumes:
+      - clawintel_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clawintel -d clawintel"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://clawintel:${POSTGRES_PASSWORD:-clawintel-local-only}@db:5432/clawintel
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:6548,http://127.0.0.1:6548},http://localhost:8000,http://127.0.0.1:8000"
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      AUTO_SCAN_ENABLED: ${AUTO_SCAN_ENABLED:-true}
+      AUTO_SCAN_INTERVAL_SECONDS: ${AUTO_SCAN_INTERVAL_SECONDS:-900}
+      WARROOM_PROVIDERS: ${WARROOM_PROVIDERS:-gemini,cerebras,openrouter}
+      WARROOM_GEMINI_API_KEY: ${WARROOM_GEMINI_API_KEY:-}
+      WARROOM_GEMINI_MODEL: ${WARROOM_GEMINI_MODEL:-}
+      WARROOM_OPENROUTER_API_KEY: ${WARROOM_OPENROUTER_API_KEY:-}
+      WARROOM_OPENROUTER_MODEL: ${WARROOM_OPENROUTER_MODEL:-}
+      WARROOM_CEREBRAS_API_KEY: ${WARROOM_CEREBRAS_API_KEY:-}
+      WARROOM_CEREBRAS_MODEL: ${WARROOM_CEREBRAS_MODEL:-}
+      TRADING_PROVIDERS: ${TRADING_PROVIDERS:-gemini,openrouter,cerebras}
+      TRADING_GEMINI_API_KEY: ${TRADING_GEMINI_API_KEY:-}
+      TRADING_GEMINI_MODEL: ${TRADING_GEMINI_MODEL:-}
+      TRADING_OPENROUTER_API_KEY: ${TRADING_OPENROUTER_API_KEY:-}
+      TRADING_OPENROUTER_MODEL: ${TRADING_OPENROUTER_MODEL:-}
+      TRADING_CEREBRAS_API_KEY: ${TRADING_CEREBRAS_API_KEY:-}
+      TRADING_CEREBRAS_MODEL: ${TRADING_CEREBRAS_MODEL:-}
+      GEMINI_MODELS: ${GEMINI_MODELS:-}
+      LLM_MAX_MODEL_ATTEMPTS: ${LLM_MAX_MODEL_ATTEMPTS:-3}
+      COINGECKO_API_KEY: ${COINGECKO_API_KEY:-}
+      ETH_RPC_URL: ${ETH_RPC_URL:-}
+      BSC_RPC_URL: ${BSC_RPC_URL:-}
+      BASE_RPC_URL: ${BASE_RPC_URL:-}
+      SOLANA_RPC_URL: ${SOLANA_RPC_URL:-}
+    ports:
+      - "${PORT:-6548}:8000"
+    command:
+      - sh
+      - -c
+      - >-
+        attempt=0;
+        until alembic upgrade head; do
+          attempt=$$((attempt + 1));
+          if [ "$$attempt" -ge 30 ]; then
+            echo 'Database is still unreachable after 60 seconds. Check that the db service is running and both services share the Compose network.' >&2;
+            exit 1;
+          fi;
+          echo "Database is not reachable yet; retrying migration ($$attempt/30)...";
+          sleep 2;
+        done;
+        exec uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
+volumes:
+  clawintel_postgres:
