@@ -1,40 +1,36 @@
 # ClawIntel architecture
 
-## Target runtime boundaries
+## Runtime boundaries
 
 ```text
 React / TypeScript
-  ├─ War Room (read-only feed; no human message endpoint)
-  ├─ Trading Room (backend-confirmed demo session required)
-  └─ investigations / portfolio / settings
+  ├─ War Room: public, read-only intelligence and evidence
+  ├─ Trading Room: authenticated private conversations and paper orders
+  ├─ Investigations: War Room history or the signed-in user's history
+  ├─ Portfolio: account-owned virtual USDC balance, USD-valued positions and orders
+  └─ Settings: wallet identities, providers, health and usage
           │ REST + department/session-scoped WebSocket
 FastAPI application
-  ├─ auth/session and wallet gate
-  ├─ autonomous department (Nova, Atlas, Vega, Echo, Orion)
-  ├─ trading department (isolated instances + user context)
-  ├─ Makto demo wallet, quotes, risk, approvals, positions
-  ├─ provider adapters (LLM, market data)
-  └─ typed events → PostgreSQL outbox → authorized subscribers
+  ├─ signed EVM/Solana wallet challenge auth
+  ├─ user-owned chat, investigation and paper-account routes
+  ├─ six role-specific agents, bounded debate and chat-scoped memory
+  ├─ provider adapters for LLMs and market observations
+  └─ evidence and ordered event persistence
           │ SQLAlchemy 2.x / Alembic
-PostgreSQL (durable records, evidence, conversations, demo ledger, events)
+PostgreSQL (users, wallet identity, evidence, chats, virtual ledger, events)
 ```
 
 ## Invariants
 
-- Autonomous War Room and Trading Room have separate LLM credentials, memory, budgets, event subscriptions and orchestration. Trading sessions are keyed by an opaque session/user owner; no broadcast crosses this boundary.
-- Only the War Room feed is autonomous and read-only. Trading Room human prompts have an explicit authenticated API and persist to that conversation.
-- Makto can prepare a quote and risk report, but only application-validated human approval can update the simulated ledger. Agent text is never executable input.
-- A demo wallet is database-backed simulated state, not a NEAR account. Demo quotes, balances and executions are clearly labeled. There are no keys, RPC calls or blockchain transactions.
-- Evidence records preserve their provider, observation time, chain, token/pair reference and live/delayed/simulated status. Unknown fields remain unknown.
-- Durable event rows are committed before broadcast. WebSockets can replay or deduplicate by event ID; they are not the only event store.
-- PostgreSQL migrations are explicit. Startup does not create/drop tables or silently migrate/destroy Mongo data.
+- War Room and Trading Room use separately configured provider chains and memory scopes. The War Room is read-only; private Trading Room APIs require an authenticated user ID.
+- Wallet signatures prove address control only. Login does not request a blockchain transaction. Identity supports injected EVM wallets on Ethereum/BSC/Base and Phantom on Solana.
+- Each verified user owns a single paper account initialized with $10,000 virtual USDC. User-approved paper orders use recent exact-address token/USD observations, debit or credit USDC directly, and never submit or sign an on-chain transaction.
+- Fees, slippage, latency and liquidity impact are not modeled. Portfolio value is not shown when a fresh provider mark is unavailable.
+- Makto can explain the user's paper portfolio but cannot change it from chat. Only an explicit order review can apply virtual ledger changes.
+- Evidence retains source, observation time, chain, token, status, fields and limitations. Agents receive bounded sanitized fields as untrusted data and have no shell or code-execution tools.
+- Durable event rows are committed before broadcast. Current WebSocket fanout is process-local; multi-worker delivery is not solved by this design.
+- Migrations are explicit. Startup does not create/drop schema or implicitly import/delete legacy MongoDB data.
 
-## Delivery sequencing
+## Release status
 
-1. Research and repository audit (completed in initial docs).
-2. PostgreSQL models, session management, Alembic and a no-data-loss legacy export path.
-3. API/lifecycle/event foundations and health/config diagnostics.
-4. Provider clients and agent domain services, preserving useful existing analyzers/discovery.
-5. React app and API contracts, replacing legacy static UI only when the new app is connected.
-6. Demo wallet and Trading Room access gate, then Makto and deterministic lifecycle.
-7. Scenarios, automated tests, deployment and a final audit based on observed results.
+The current schema chain reaches `0016_virtual_usdc_wallet`. Durable agent jobs, watchlists/price alerts, Telegram linking/outbox code, and shared PostgreSQL rate-limit counters are implemented, but live behavior has not been verified. HTTP metrics are process-local; WebSocket fanout is also process-local. Backup/restore, production observability, load, browser accessibility, real wallet-device behavior, and live migrations remain release gates. See `docs/audits/04-current-state-audit.md` for the audit baseline before the wallet redesign.

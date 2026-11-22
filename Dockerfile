@@ -1,5 +1,7 @@
 FROM node:24-alpine AS web-build
 WORKDIR /web
+ARG VITE_WALLETCONNECT_PROJECT_ID=
+ENV VITE_WALLETCONNECT_PROJECT_ID=$VITE_WALLETCONNECT_PROJECT_ID
 COPY frontend/package*.json ./
 RUN npm ci --no-audit --no-fund
 COPY frontend/ ./

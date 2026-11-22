@@ -217,7 +217,7 @@ Makto works with the available wallet, portfolio, market, and trading informatio
 
 **Primary responsibilities:**
 
-- Demo portfolio monitoring.
+- Virtual paper-portfolio monitoring.
 - Position and balance awareness.
 - Position-sizing calculations.
 - Trade workflow assistance.
@@ -297,9 +297,9 @@ The Trading Room includes the same core agent team, with Makto contributing trad
 - Token and market discussions.
 - Agent-to-agent collaboration.
 - Agent responses to user-provided information.
-- Simulated NEAR wallet integration.
-- Demo portfolio monitoring.
-- Simulated trading workflows.
+- Signed EVM/Solana wallet identity.
+- $10,000 virtual USDC paper allocation per verified account.
+- Exact-address provider-backed paper trading workflows.
 - Trading-related discussions and analysis.
 
 ### A Living Intelligence Team
@@ -318,7 +318,7 @@ They can:
 - Respond naturally to the user's comments.
 - Use humor and personality without compromising analytical quality.
 
-For example, if a user proposes a trade that exceeds the available demo wallet balance, the team can point that out naturally.
+For example, if a user proposes a paper order that exceeds the available virtual USDC balance, the team can point that out naturally.
 
 The objective is to create an engaging environment where users interact with an intelligent team rather than repeatedly asking isolated questions to a chatbot.
 
@@ -593,54 +593,16 @@ This distinction is especially important when evaluating agent behavior.
 
 ---
 
-# Demo Wallet and Trading Simulation
+<a id="demo-wallet-and-trading-simulation"></a>
+# Paper Trading — Virtual Funds
 
-The Trading Room includes a simulated NEAR wallet environment.
+The Trading Room authenticates accounts with wallet signatures. Ethereum, BNB Smart Chain and Base use injected EVM wallets; Solana uses Phantom. Login signs a short-lived challenge and does not submit a blockchain transaction.
 
-This provides a controlled way to explore wallet-connected workflows and simulated trading without requiring users to risk real cryptocurrency.
+Each verified account receives a $10,000 virtual USDC allocation. A paper order requires an exact supported-chain token address, a fresh token/USD provider price, and explicit user confirmation. The order amount is entered in USD and debited or credited directly in virtual USDC. Orders and positions are isolated to the verified account, and chat text alone can never alter the ledger.
 
-## Current Demo Wallet Behavior
+Paper fills use the latest provider-reported token price and debit or credit virtual USDC. Fees, slippage, latency, liquidity impact, and taxes are not modeled. Portfolio market value is withheld when a fresh mark is unavailable. The system does not submit or sign real trades; the retired fixture-trading API paths return `410 Gone`.
 
-The current implementation supports:
-
-- Session-scoped simulated wallet addresses.
-- An initial demo balance of 1,000 NEAR.
-- Backend-enforced wallet access.
-- Simulated portfolio records.
-- Controlled quote generation.
-- User approval or rejection of quotes.
-- Simulated trade execution.
-- PostgreSQL-backed ledger updates.
-
-## Current Quote Fixtures
-
-The existing quote workflow supports the following controlled fixture tokens:
-
-- `demo:claw`
-- `demo:signal`
-
-These operate on the `demo` chain using controlled fixture prices.
-
-Quotes expire after 30 seconds.
-
-When a user approves a quote, the backend updates the simulated balance and records the simulated trade and associated fee.
-
-## Important Trading Limitations
-
-The current wallet is a simulation.
-
-It does not provide:
-
-- Real NEAR wallet custody.
-- Private-key storage.
-- Real wallet signing.
-- Real NEAR account balances.
-- NEAR RPC transaction broadcasting.
-- Actual blockchain trade execution.
-
-The simulated trading environment must not be represented as live on-chain trading.
-
-Future work may expand the trading engine, quote sources, exit workflows, and real-market valuation capabilities.
+For API and migration details, see [Wallet identity and paper trading](docs/WALLET_AND_TRADING.md), [API reference](docs/API_REFERENCE.md), and [database schema](docs/DATABASE_SCHEMA.md).
 
 ---
 
@@ -713,6 +675,8 @@ docker compose up --build
 ```
 
 Docker Compose starts the configured application services.
+
+For local Compose, the app connects to PostgreSQL using the Compose service name `db`; the host-only `DATABASE_URL` in `.env` is intentionally ignored. Set `DOCKER_DATABASE_URL` only when Compose should use a different database. Do not set a container database URL to `localhost` unless PostgreSQL runs inside that same app container.
 
 Database migrations are expected to run before the API becomes available.
 
@@ -833,9 +797,7 @@ Do not start multiple duplicate worker loops for the same application instance.
 
 # Current Implementation
 
-ClawIntel is an actively evolving project.
-
-It is important to distinguish between existing functionality, controlled simulations, and planned capabilities.
+ClawIntel is an actively evolving project. Paper trades use virtual funds and provider price observations; they are not on-chain execution.
 
 ## Implemented Foundation
 
@@ -843,8 +805,9 @@ The current rebuild includes:
 
 - PostgreSQL database foundation.
 - Initial database migrations.
-- Browser-session management.
-- Backend-enforced demo wallet access.
+- Browser-session management and EVM/Solana signed wallet authentication.
+- User-owned private chats, investigations and Trading Room records.
+- One-time $10,000 virtual USDC allocation per verified account, with exact-address, fresh-price paper buy/sell records.
 - Department-scoped event persistence.
 - WebSocket event delivery.
 - Independent LLM provider settings for both departments.
@@ -853,14 +816,17 @@ The current rebuild includes:
 - React application shell.
 - Read-only War Room foundation.
 - Interactive Trading Room foundation.
-- Simulated NEAR wallet.
-- Fixture-based quote generation.
-- Quote approval and rejection.
-- Simulated portfolio ledger.
+- Paper Trading — Virtual Funds interface with order review, per-account cash and holdings.
+- Legacy fixture-trading API paths retired with HTTP 410 responses.
 - Repeatable simulated War Room investigation scenarios.
 - Bounded autonomous DexScreener market scanning.
 - Optional CoinGecko enrichment.
 - Configured chain RPC enrichment.
+- Bounded, configurable debate challenges with evidence-linked findings, revision history, call timeouts, and output-token budgets.
+- Structured human challenges that re-open an investigation and ask the selected agent to reassess stored evidence before Orion revises the synthesis.
+- Resumable WebSocket event replay with paged catch-up and client-side sequence deduplication.
+- Bounded text attachments in Trading Room messages, stored with the message and passed to agents as untrusted context.
+- Provider-reported LLM cost capture where available; costs are not estimated from token counts.
 
 ## Simulated Capabilities
 
@@ -877,28 +843,21 @@ They are useful for testing agent workflows and the user interface, but they mus
 
 ## Work in Progress
 
-The following areas require further development and verification:
+The current implementation has explicit limits that still need development or external infrastructure:
 
-- Broader autonomous market discovery.
-- Migration of historical analyzer and watcher business logic.
-- More comprehensive creator and deployer intelligence.
-- Persisted evidence-to-debate relationships.
-- Dynamic conflict and debate revisions.
-- More advanced agent-specific memory.
-- Deeper Atlas-to-Makto trading workflow integration.
-- Expanded trading risk models.
-- Sell and exit workflows.
-- Real-market portfolio valuation.
-- External holder and deployer intelligence integrations.
-- Per-department AI usage and cost tracking.
-- Multi-user authentication for public deployments.
-- Missed-event replay and deduplication improvements.
-- Comprehensive accessibility and security audits.
-- Broader frontend and integration testing.
-- PostgreSQL-backed end-to-end verification.
-- Production deployment validation.
+- Broader autonomous market discovery and migration of historical analyzer and watcher business logic.
+- Complete creator, deployer, and holder history integrations; current RPC reads do not establish full wallet attribution or historical token outcomes.
+- Telegram account linking, notification outbox, and retry code are implemented; live delivery is unverified and trade approvals are not implemented.
+- Wallet-owned watchlists and price alerts are implemented; live database/provider/browser acceptance is outstanding.
+- Durable agent jobs, leases, retries, and dead-letter state are implemented; multi-replica runtime behavior and operational queue monitoring are unverified.
+- Broader agent evidence tools, enriched historical deployer/holder data, and expanded risk/valuation analysis.
+- WalletConnect/mobile, Meteor/HOT, Solflare, and Backpack wallet integrations; current EVM extension and Phantom flows need real device validation.
+- Complete provider cost reporting. Token usage is tracked per department; costs are stored only when the provider reports them, so totals can be partial or unreported.
+- Production PostgreSQL end-to-end verification and deployment validation. The configured database refused connections and Docker was unavailable during this execution.
+- Backup/restore validation, external tracing/actionable alerts, deployment load testing, and production capacity validation.
+- Shared PostgreSQL rate limits cover selected API routes; proxy-aware client identity and production abuse policy need validation for the chosen topology.
 - Reviewed migration tooling for historical MongoDB data.
-
+- Live security, accessibility, and production operations validation.
 The presence of a feature in the roadmap does not mean it is already implemented.
 
 ---
@@ -952,9 +911,9 @@ Security and trustworthy information are important design principles.
 
 ClawIntel's architecture includes several safeguards:
 
-- Backend-enforced Trading Room wallet access.
-- Session-scoped simulated wallet state.
-- Server-side quote approval and ledger updates.
+- Short-lived signed wallet authentication and account-owned Trading Room access.
+- User-scoped virtual cash, positions and paper order records.
+- Server-side fresh-price validation and explicit paper-order confirmation.
 - Environment-based secret configuration.
 - PostgreSQL persistence.
 - Database migrations through Alembic.

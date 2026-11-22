@@ -3,7 +3,11 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "scripts": { "dev": "vite --host 0.0.0.0", "build": "tsc -b && vite build --configLoader native", "preview": "vite preview --host 0.0.0.0" },
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc -b && vite build --configLoader native",
+    "preview": "vite preview --host 0.0.0.0"
+  },
   "dependencies": {
     "@tanstack/react-query": "^5.90.0",
     "framer-motion": "^12.23.0",
@@ -11,6 +15,8 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-router-dom": "^7.9.0",
+    "viem": "^2.58.0",
+    "wagmi": "^3.7.11",
     "zustand": "^5.0.8"
   },
   "devDependencies": {

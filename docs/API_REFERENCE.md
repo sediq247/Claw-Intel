@@ -1,13 +1,13 @@
 # API reference (implemented surface)
 
-All JSON endpoints are same-origin by default. Browser requests carry an HttpOnly `claw_session` cookie created by `POST /api/session`; set `ALLOWED_ORIGINS` for development origins. A cookie is a local demo session, not a user login.
+All JSON endpoints are same-origin by default. Browser requests carry an HttpOnly `claw_session` cookie created by `POST /api/session`; set `ALLOWED_ORIGINS` for development origins. The cookie identifies a browser session; signed wallet authentication is required for private Trading Room and paper portfolio data.
 
 ## Health and public department
 
 | Method | Path | Access | Purpose |
 |---|---|---|---|
 | GET | `/health` | Public | PostgreSQL connectivity and boolean provider readiness; never returns keys. |
-| POST | `/api/session` | Public | Creates or resumes the browser demo session and sets the HttpOnly, SameSite=Strict cookie. |
+| POST | `/api/session` | Public | Creates or resumes an anonymous browser session and sets the HttpOnly, SameSite=Strict cookie. |
 | GET | `/api/agents` | Public | Returns the six role descriptions. |
 | GET | `/api/settings/status` | Public | Returns provider readiness and configured model names, without credentials. |
 | GET | `/api/autonomous/messages?limit=100` | Public | Read-only autonomous message feed. There is intentionally no POST route. |
@@ -15,20 +15,21 @@ All JSON endpoints are same-origin by default. Browser requests carry an HttpOnl
 | GET | `/api/autonomous/events?after=0` | Public | Ordered persisted event replay for the public War Room channel. |
 | GET | `/ws/autonomous?after=0` | Public | War Room real-time feed; accepts only ping messages. |
 
-## Wallet-gated Trading Room
+## Wallet-authenticated Trading Room and paper ledger
 
 | Method | Path | Access | Purpose |
 |---|---|---|---|
-| GET | `/api/wallet` | Browser session | Demo wallet connection state and simulated balance. |
-| POST | `/api/wallet/connect` | Browser session | Creates a simulated `demo://` address and initial test balance. |
-| POST | `/api/wallet/disconnect` | Browser session | Disconnects wallet and closes private WebSockets. |
-| GET | `/api/trading/messages` | Connected demo wallet | Reads this session's private conversation. |
-| POST | `/api/trading/messages` | Connected demo wallet | Body: `{"content":"@vega ..."}`. Routes a mention to that agent or defaults to Orion. Provider failure returns 503 and does not fabricate a reply. |
-| GET | `/api/trading/events?after=0` | Connected demo wallet | Ordered event replay scoped to this browser session. |
-| GET | `/api/trading/portfolio` | Connected demo wallet | Simulated balances, positions and recent trades. |
-| POST | `/api/trading/quotes` | Connected demo wallet | Body contains chain, fixture token, buy side and positive NEAR amount. Only `demo:claw` and `demo:signal` on chain `demo` are quotable. Quote expires after 30 seconds. |
-| POST | `/api/trading/approve` | Connected demo wallet | Body contains quote UUID, idempotency key and explicit approval boolean. Approved quote updates the simulated ledger atomically. |
-| GET | `/ws/trading?after=0` | Connected demo wallet | Session-scoped private feed; rejects missing/disconnected sessions and disconnect closes active subscribers. |
+| GET | `/api/trading/chats` | Verified wallet account | Lists private chats owned by the authenticated account, across browser session rotation. |
+| POST | `/api/trading/chats` | Verified wallet account | Creates a private conversation. |
+| GET | `/api/trading/messages?chat_id=...` | Chat owner | Reads messages only when the chat belongs to the verified account. |
+| POST | `/api/trading/messages` | Verified wallet account | Body: `{"content":"@vega ...","chat_id":"..."}`. Routes a mention to that agent or defaults to Nova. Provider failure does not fabricate an agent reply. |
+| GET | `/api/trading/token-search?chain=...&address=...` | Verified wallet account | Resolves exact token address, source, timestamp and limitations. Symbols are rejected. |
+| GET | `/api/paper/portfolio` | Verified wallet account | Creates the account’s one-time $10,000 virtual USDC allocation if needed; returns the USDC balance, live-marked positions, and recent paper orders. |
+| POST | `/api/paper/orders` | Verified wallet account | Requires supported chain/address, buy or sell, $1–$10,000 order value, and an idempotency key. Re-fetches exact-address token-price evidence, rejects missing/stale prices, locks the account row, and updates USDC balance, position, and order in one transaction. |
+| GET | `/api/trading/events?after=0` | Verified wallet account | Ordered event replay scoped to the current authenticated browser session. |
+| GET | `/ws/trading?after=0` | Verified wallet account | Private real-time feed; rejects sessions without an authenticated user. |
+
+Legacy `/api/wallet`, `/api/trading/portfolio`, `/api/trading/quotes`, `/api/trading/approve`, and `/api/trading/scenarios/market-shift` paths return `410 Gone`. They cannot write fixture trades or create another ledger. The current paper fill uses the latest provider-reported USD price; fees, slippage, latency, and liquidity impact are not modeled.
 
 ## Deterministic scenarios
 
@@ -39,3 +40,14 @@ All JSON endpoints are same-origin by default. Browser requests carry an HttpOnl
 | POST | `/api/scenarios/potential-opportunity/run` | Stores an opportunity fixture with explicit unknowns and limitations. |
 
 Errors return standard FastAPI JSON `{"detail":"..."}`. No endpoint accepts a private key, signs transactions or calls a blockchain.
+
+## Wallet identity endpoints
+
+| Method | Path | Access | Purpose |
+|---|---|---|---|
+| POST | `/api/auth/wallet/challenge` | Browser session + configured Origin | Create a five-minute single-use EVM/Solana sign-in challenge for an allowed wallet and validated address. |
+| POST | `/api/auth/wallet/verify` | Same browser session + configured Origin | Verify EIP-191/EIP-4361-shaped EVM signature or Solana Ed25519 signature; create/login/link wallet identity and rotate to a fresh session on login. |
+| GET | `/api/auth/me` | Browser session | Return authenticated identity state and verified wallet addresses. |
+| POST | `/api/auth/logout` | Browser session | Clear identity and rotate to an anonymous session. |
+
+Wallet authentication proves address control only. It does not enable real-chain order execution. The verified user ID owns the paper account and Trading Room chats; account data is isolated by user. See `docs/WALLET_AND_TRADING.md` for supported interfaces and untested paths.
