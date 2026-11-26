@@ -18,11 +18,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import delete, func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from .config import get_settings
 from .database import engine, get_db
-from .models import AgentJob, AgentMemory, AutonomousSchedule, BrowserSession, ConversationMessage, DemoQuote, DemoWallet, DurableEvent, Evidence, Investigation, InvestigationFinding, LLMUsage, PaperAccount, PaperOrder, PaperPosition, PaperTransfer, Position, PriceAlert, PriceAlertEvent, TelegramAccount, TelegramLinkChallenge, TelegramOutbox, Trade, TradingChat, User, WalletChallenge, WalletIdentity, WatchlistEntry
+from .models import AgentJob, AgentMemory, AutonomousSchedule, BrowserSession, ConversationMessage, DurableEvent, Investigation, InvestigationFinding, LLMUsage, MarketForecast, PaperAccount, PaperOrder, PaperPosition, PaperTransfer, PriceAlert, PriceAlertEvent, ProviderDailyBudget, TelegramAccount, TelegramLinkChallenge, TelegramOutbox, TradingChat, User, WalletChallenge, WalletIdentity, WatchlistEntry
+from .evidence import Evidence
 from .market_data import autonomous_loop, fetch_discovery_candidates, fetch_token_observation, WAR_ROOM_CHAIN_IDS
 from .orchestration import _reported_cost, run_human_challenge, run_investigation, run_trading_roundtable
 from .price_alerts import price_alert_loop
@@ -31,6 +33,15 @@ from .realtime import hub
 from .services import AGENTS, ProviderUnavailable, generate, persist_event, provider_models, recent_events
 from .rate_limits import consume_rate_limit
 from .agent_jobs import agent_job_worker_loop
+from .a2a_reception import (DuplicateGuest, ReceptionFull, ReceptionUnavailable,
+                            dismiss_request as dismiss_a2a_request,
+                            enqueue_request as enqueue_a2a_request,
+                            reception_snapshot as a2a_reception_snapshot,
+                            reception_worker_loop, serialize_request as serialize_a2a_request)
+from .forecasting import forecast_json
+from .a2a_client import discover as discover_a2a_agents
+from .stock_data import DailyBar, load_or_fetch_daily, validate_symbol as validate_stock_symbol
+from .exa_search import search as search_exa, validate_query as validate_exa_query
 import httpx
 
 settings = get_settings()
@@ -53,6 +64,11 @@ _RATE_POLICY = {
     ("POST", "/api/trading/quotes"): 30,
     ("POST", "/api/trading/approve"): 10,
     ("POST", "/api/telegram/link"): 5,
+    ("POST", "/api/autonomous/a2a/delegate"): 3,
+    ("GET", "/api/autonomous/a2a/agents"): 20,
+    ("GET", "/api/autonomous/a2a/reception"): 20,
+    ("GET", "/api/market/stocks/{symbol}/daily"): 10,
+    ("POST", "/api/autonomous/exa/search"): 5,
 }
 
 
@@ -61,8 +77,10 @@ def _rate_policy_for(method: str, path: str) -> tuple[int, str] | None:
     if direct:
         return direct, path
     parts = path.strip("/").split("/")
-    if method == "POST" and len(parts) == 4 and parts[:2] == ["api", "scenarios"] and parts[3] == "run":
-        return 5, "/api/scenarios/{scenario_id}/run"
+    if method == "GET" and len(parts) == 5 and parts[:3] == ["api", "market", "stocks"] and parts[4] == "daily":
+        return 10, "/api/market/stocks/{symbol}/daily"
+    if method == "DELETE" and len(parts) == 5 and parts[:4] == ["api", "autonomous", "a2a", "reception"]:
+        return 20, "/api/autonomous/a2a/reception/{request_id}"
     return None
 
 
@@ -89,6 +107,7 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(autonomous_loop(stop))
     alert_task = asyncio.create_task(price_alert_loop(stop))
     agent_jobs_task = asyncio.create_task(agent_job_worker_loop(stop))
+    a2a_reception_task = asyncio.create_task(reception_worker_loop(stop))
     telegram_task = asyncio.create_task(telegram_delivery_loop(stop)) if settings.telegram_bot_token else None
     webhook_task = asyncio.create_task(_try_configure_telegram_webhook()) if settings.telegram_bot_token else None
     polling_task = asyncio.create_task(telegram_polling_loop(stop)) if settings.telegram_bot_token and not settings.public_base_url.strip() else None
@@ -103,6 +122,8 @@ async def lifespan(app: FastAPI):
         await asyncio.gather(alert_task, return_exceptions=True)
         agent_jobs_task.cancel()
         await asyncio.gather(agent_jobs_task, return_exceptions=True)
+        a2a_reception_task.cancel()
+        await asyncio.gather(a2a_reception_task, return_exceptions=True)
         if telegram_task:
             telegram_task.cancel()
             await asyncio.gather(telegram_task, return_exceptions=True)
@@ -115,7 +136,7 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title="ClawIntel API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Zecto API", version="1.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=True,
                    allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type"])
 
@@ -265,17 +286,13 @@ class PaperTransferInput(BaseModel):
     idempotency_key: str = Field(min_length=12, max_length=96)
 
 
-class QuoteInput(BaseModel):
-    chain: str = Field(min_length=1, max_length=48)
-    token_address: str = Field(min_length=3, max_length=160)
-    side: str = Field(pattern="^(buy|sell)$")
-    amount_near: Decimal = Field(gt=0, le=Decimal("250"))
+class A2AResearchInput(BaseModel):
+    configured_url: str = Field(min_length=8, max_length=500)
+    question: str = Field(min_length=1, max_length=4000)
 
 
-class ApproveInput(BaseModel):
-    quote_id: UUID
-    idempotency_key: str = Field(min_length=12, max_length=96)
-    approved: bool
+class ExaSearchInput(BaseModel):
+    query: str = Field(min_length=1, max_length=500)
 
 
 async def current_session(request: Request, db: AsyncSession = Depends(get_db)) -> BrowserSession:
@@ -343,18 +360,18 @@ async def metrics(authorization: str | None = Header(default=None)):
         raise HTTPException(503, "Metrics bearer token is not configured")
     if configured and not secrets.compare_digest(authorization or "", f"Bearer {configured}"):
         raise HTTPException(403, "Metrics authentication failed")
-    lines = ["# HELP clawintel_http_requests_total Total HTTP requests by route and status.",
-             "# TYPE clawintel_http_requests_total counter"]
+    lines = ["# HELP zecto_http_requests_total Total HTTP requests by route and status.",
+             "# TYPE zecto_http_requests_total counter"]
     for (method, path, status), count in sorted(_HTTP_METRICS.items()):
         safe_path = path.replace("\\", "\\\\").replace('"', '\\"')
-        lines.append(f'clawintel_http_requests_total{{method="{method}",path="{safe_path}",status="{status}"}} {count}')
-    lines.extend(["# HELP clawintel_http_request_duration_seconds_sum Cumulative HTTP request duration in seconds.",
-                  "# TYPE clawintel_http_request_duration_seconds_sum counter"])
+        lines.append(f'zecto_http_requests_total{{method="{method}",path="{safe_path}",status="{status}"}} {count}')
+    lines.extend(["# HELP zecto_http_request_duration_seconds_sum Cumulative HTTP request duration in seconds.",
+                  "# TYPE zecto_http_request_duration_seconds_sum counter"])
     for (method, path), total in sorted(_HTTP_DURATION_SECONDS.items()):
         safe_path = path.replace("\\", "\\\\").replace('"', '\\"')
         count = _HTTP_DURATION_COUNT[(method, path)]
-        lines.append(f'clawintel_http_request_duration_seconds_sum{{method="{method}",path="{safe_path}"}} {total:.6f}')
-        lines.append(f'clawintel_http_request_duration_seconds_count{{method="{method}",path="{safe_path}"}} {count}')
+        lines.append(f'zecto_http_request_duration_seconds_sum{{method="{method}",path="{safe_path}"}} {total:.6f}')
+        lines.append(f'zecto_http_request_duration_seconds_count{{method="{method}",path="{safe_path}"}} {count}')
     return "\n".join(lines) + "\n"
 
 
@@ -399,12 +416,12 @@ def _wallet_message(chain: str, address: str, domain: str, origin: str, nonce: s
     if chain in _EVM_CHAIN_IDS:
         return (
             f"{domain} wants you to sign in with your Ethereum account:\n{address}\n\n"
-            "Sign in to ClawIntel. This signature authenticates your wallet and does not authorize a transaction.\n\n"
+            "Sign in to Zecto. This signature authenticates your wallet and does not authorize a transaction.\n\n"
             f"URI: {origin}\nVersion: 1\nChain ID: {_EVM_CHAIN_IDS[chain]}\nNonce: {nonce}\n"
             f"Issued At: {issued_at.isoformat()}\nExpiration Time: {expires_at.isoformat()}"
         )
     return (
-        "ClawIntel wallet sign-in\n"
+        "Zecto wallet sign-in\n"
         f"Address: {address}\nChain: solana\nDomain: {domain}\nURI: {origin}\n"
         f"Nonce: {nonce}\nIssued At: {issued_at.isoformat()}\nExpires At: {expires_at.isoformat()}\n"
         "This signature authenticates your wallet and does not authorize a transaction."
@@ -505,7 +522,7 @@ async def wallet_auth_verify(body: WalletAuthVerifyInput, request: Request, resp
         WalletIdentity.chain == chain, WalletIdentity.address == address,
     ).with_for_update())
     if identity and session.user_id and identity.user_id != session.user_id:
-        raise HTTPException(409, "This wallet belongs to another ClawIntel account; sign out before switching accounts")
+        raise HTTPException(409, "This wallet belongs to another Zecto account; sign out before switching accounts")
     if session.user_id:
         user_id = session.user_id
     elif identity:
@@ -617,6 +634,15 @@ def data_source_status() -> dict:
     return {
         "dexscreener": {"configured": True, "authentication_required": False},
         "coingecko": {"configured": bool(settings.coingecko_api_key)},
+        "exa": {"configured": bool(settings.exa_api_key),
+                "daily_call_budget": settings.exa_daily_call_budget},
+        "alpha_vantage_daily": {
+            "configured": bool(settings.alpha_vantage_api_key)
+            and settings.alpha_vantage_license_status != "disabled",
+            "license_status": settings.alpha_vantage_license_status,
+            "daily_call_budget": settings.alpha_vantage_daily_call_budget,
+            "real_time": False,
+        },
         "rpc": {
             "ethereum": bool(settings.eth_rpc_url),
             "bsc": bool(settings.bsc_rpc_url),
@@ -820,7 +846,7 @@ async def paper_receive_address(session: BrowserSession = Depends(trading_sessio
     if identity is None:
         raise HTTPException(409, "Link and verify a wallet identity before receiving internal virtual USDC")
     return {"chain": identity.chain, "address": identity.address, "kind": "internal_virtual_usdc",
-            "warning": "Only transfers between verified ClawIntel accounts are supported. This is not an on-chain deposit address."}
+            "warning": "Only transfers between verified Zecto accounts are supported. This is not an on-chain deposit address."}
 
 
 @app.get("/api/paper/transfers")
@@ -864,12 +890,12 @@ async def create_paper_transfer(body: PaperTransferInput, session: BrowserSessio
         WalletIdentity.chain == chain, address_match,
     ))
     if recipient_identity is None:
-        raise HTTPException(404, "Recipient must have a verified ClawIntel wallet on this network")
+        raise HTTPException(404, "Recipient must have a verified Zecto wallet on this network")
     if recipient_identity.user_id == session.user_id:
-        raise HTTPException(422, "Choose another ClawIntel account")
+        raise HTTPException(422, "Choose another Zecto account")
     recipient = await db.scalar(select(PaperAccount).where(PaperAccount.user_id == recipient_identity.user_id))
     if recipient is None:
-        raise HTTPException(404, "Recipient has not initialized a ClawIntel virtual wallet")
+        raise HTTPException(404, "Recipient has not initialized a Zecto virtual wallet")
     account_ids = sorted((sender.id, recipient.id), key=str)
     locked = (await db.scalars(select(PaperAccount).where(PaperAccount.id.in_(account_ids))
                                .order_by(PaperAccount.id).with_for_update())).all()
@@ -1122,7 +1148,7 @@ async def create_paper_swap(body: PaperSwapInput, session: BrowserSession = Depe
 
 
 @app.get("/api/settings/usage")
-async def settings_usage(db: AsyncSession = Depends(get_db)):
+async def settings_usage(session: BrowserSession = Depends(trading_session), db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(
         select(LLMUsage.department, func.count(LLMUsage.id), func.coalesce(func.sum(LLMUsage.input_tokens), 0),
                func.coalesce(func.sum(LLMUsage.output_tokens), 0), func.sum(LLMUsage.cost_usd),
@@ -1137,7 +1163,28 @@ async def settings_usage(db: AsyncSession = Depends(get_db)):
               for department, count, input_tokens, output_tokens, cost, cost_requests in rows}
     empty = {"requests": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": "0",
              "cost_reported_requests": 0, "cost_complete": True}
-    return {"departments": {key: totals.get(key, empty) for key in ("autonomous", "trading")}}
+    budget_rows = (await db.scalars(select(ProviderDailyBudget).where(
+        ProviderDailyBudget.budget_date == datetime.now(timezone.utc).date(),
+        ProviderDailyBudget.provider.like("llm_%"),
+    ))).all()
+    used = {row.provider: row.request_count for row in budget_rows}
+    budgets = {
+        "global": {"used": used.get("llm_global", 0), "limit": settings.llm_global_daily_call_budget},
+        "providers": {name: {"used": used.get(f"llm_{name}", 0),
+                             "limit": settings.llm_provider_daily_call_budget}
+                      for name in ("gemini", "openrouter", "cerebras")},
+        "departments": {name: {"used": used.get(f"llm_{name}", 0),
+                               "limit": settings.llm_department_daily_call_budget}
+                        for name in ("autonomous", "trading")},
+        "agents": {key.removeprefix("llm_"): {"used": count,
+                                                "limit": settings.llm_agent_daily_call_budget}
+                   for key, count in used.items()
+                   if key.startswith(("llm_autonomous_", "llm_trading_"))},
+        "budget_date": datetime.now(timezone.utc).date().isoformat(),
+        "cost_policy": "Provider-reported cost is shown where available; unknown prices are not estimated.",
+    }
+    return {"departments": {key: totals.get(key, empty) for key in ("autonomous", "trading")},
+            "daily_call_budgets": budgets}
 
 
 @app.get("/api/autonomous/messages")
@@ -1147,23 +1194,160 @@ async def warroom_messages(limit: int = 100, db: AsyncSession = Depends(get_db))
     return {"messages": [message_json(row) for row in reversed(rows)]}
 
 
-@app.get("/api/autonomous/evidence")
-async def warroom_evidence(db: AsyncSession = Depends(get_db)):
-    rows = (await db.scalars(select(Evidence).where(Evidence.department == "autonomous").order_by(Evidence.observed_at.desc()).limit(100))).all()
-    return {"evidence": [evidence_json(row) for row in rows]}
+@app.get("/api/autonomous/forecasts")
+async def warroom_forecasts(limit: int = 30, db: AsyncSession = Depends(get_db)):
+    rows = (await db.scalars(select(MarketForecast).order_by(
+        MarketForecast.created_at.desc(), MarketForecast.id.desc(),
+    ).limit(min(max(limit, 1), 100)))).all()
+    return {"forecasts": [forecast_json(row) for row in rows]}
+
+
+@app.get("/api/autonomous/forecasts/{forecast_id}/history")
+async def warroom_forecast_history(forecast_id: UUID, db: AsyncSession = Depends(get_db)):
+    selected = await db.get(MarketForecast, forecast_id)
+    if selected is None:
+        raise HTTPException(404, "Forecast not found")
+    rows = (await db.scalars(select(MarketForecast).where(
+        MarketForecast.asset_key == selected.asset_key,
+    ).order_by(MarketForecast.version.desc()).limit(100))).all()
+    return {"asset_key": selected.asset_key, "forecasts": [forecast_json(row) for row in rows]}
+
+
+@app.get("/api/autonomous/a2a/agents")
+async def warroom_a2a_agents(session: BrowserSession = Depends(trading_session)):
+    """Discover only the operator-configured external research agents."""
+    return {"agents": await discover_a2a_agents(settings)}
+
+
+@app.get("/api/autonomous/a2a/reception")
+async def warroom_a2a_reception(session: BrowserSession = Depends(trading_session),
+                                db: AsyncSession = Depends(get_db)):
+    """Expose the independent reception manager's current queue and admission state."""
+    schedule = await db.get(AutonomousSchedule, 1)
+    return await a2a_reception_snapshot(db, schedule)
+
+
+@app.post("/api/autonomous/a2a/delegate")
+async def warroom_a2a_delegate(body: A2AResearchInput, session: BrowserSession = Depends(trading_session),
+                               db: AsyncSession = Depends(get_db)):
+    """Submit a bounded public-research request to the persisted War Room reception queue."""
+    agents = await discover_a2a_agents(settings)
+    agent = next((row for row in agents if row.get("status") == "available"
+                  and row.get("configured_url") == body.configured_url), None)
+    if agent is None:
+        raise HTTPException(422, "The selected Agent Card is not in the configured allowlist or is unavailable")
+    try:
+        row = await enqueue_a2a_request(db, session.id, agent, body.question)
+    except ReceptionUnavailable as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ReceptionFull as exc:
+        raise HTTPException(429, str(exc)) from exc
+    except DuplicateGuest as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except (ValueError, httpx.HTTPError) as exc:
+        await persist_event(db, "autonomous", "A2A_RESEARCH_FAILED", {
+            "agent_name": agent.get("name"), "reason": type(exc).__name__,
+        }, session_id=session.id, agent_id="orion")
+        raise HTTPException(422, "The external Agent Card failed reception validation") from exc
+    snapshot = await a2a_reception_snapshot(db, await db.get(AutonomousSchedule, 1))
+    position = next((item["queue_position"] for item in snapshot.get("guests", [])
+                     if item["id"] == str(row.id)), None)
+    return serialize_a2a_request(row, position)
+
+
+@app.delete("/api/autonomous/a2a/reception/{request_id}")
+async def warroom_a2a_dismiss(request_id: UUID, session: BrowserSession = Depends(trading_session),
+                              db: AsyncSession = Depends(get_db)):
+    try:
+        return await dismiss_a2a_request(db, request_id, session.id)
+    except LookupError as exc:
+        raise HTTPException(404, "Reception request not found") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/api/autonomous/exa/search")
+async def warroom_exa_search(body: ExaSearchInput, session: BrowserSession = Depends(trading_session),
+                             db: AsyncSession = Depends(get_db)):
+    """Run a bounded, account-authenticated web search for War Room research."""
+    if not settings.exa_api_key:
+        raise HTTPException(503, "Exa search is not configured on the server")
+    try:
+        query = validate_exa_query(body.query)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    now = datetime.now(timezone.utc)
+    budget = pg_insert(ProviderDailyBudget).values(
+        provider="exa", budget_date=now.date(), request_count=1, updated_at=now,
+    )
+    budget = budget.on_conflict_do_update(
+        index_elements=["provider", "budget_date"],
+        set_={"request_count": ProviderDailyBudget.request_count + 1, "updated_at": now},
+        where=ProviderDailyBudget.request_count < settings.exa_daily_call_budget,
+    ).returning(ProviderDailyBudget.request_count)
+    if await db.scalar(budget) is None:
+        raise HTTPException(429, "The daily Exa search budget has been reached")
+    # Record each paid attempt even if the upstream provider fails.
+    await db.commit()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15, connect=5), follow_redirects=False,
+                                     trust_env=False) as client:
+            results = await search_exa(client, settings.exa_api_key, query)
+    except httpx.HTTPStatusError as exc:
+        status = 429 if exc.response.status_code == 429 else 502
+        message = "Exa rate limit reached; retry later" if status == 429 else "Exa search provider is unavailable"
+        raise HTTPException(status, message) from exc
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(502, "Exa search provider returned an invalid or unavailable response") from exc
+    return {"query": query, "source": "Exa", "observed_at": datetime.now(timezone.utc).isoformat(),
+            "results": results,
+            "limitations": "Search results are untrusted external material. Verify source claims independently; snippets are not financial advice."}
+
+
+@app.get("/api/market/stocks/{symbol}/daily")
+async def stock_daily_history(symbol: str, session: BrowserSession = Depends(trading_session),
+                              db: AsyncSession = Depends(get_db)):
+    """Return cached provider-sourced daily OHLCV. This is not an intraday quote."""
+    try:
+        ticker = validate_stock_symbol(symbol)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    try:
+        rows = await load_or_fetch_daily(db, ticker, settings)
+    except OverflowError as exc:
+        raise HTTPException(429, "The daily stock-data provider budget has been reached") from exc
+    except (PermissionError, RuntimeError) as exc:
+        raise HTTPException(503, "Daily stock data is disabled or not configured") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Daily stock provider is unavailable") from exc
+    except ValueError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return _stock_history_json(ticker, rows)
+
+
+def _stock_history_json(symbol: str, rows: list[DailyBar]) -> dict:
+    bars = [{"date": row.market_date.isoformat(), "open_usd": str(row.open_usd),
+             "high_usd": str(row.high_usd), "low_usd": str(row.low_usd),
+             "close_usd": str(row.close_usd), "volume": str(row.volume),
+             "retrieved_at": row.retrieved_at.isoformat() if row.retrieved_at else None}
+            for row in rows]
+    return {"symbol": symbol, "asset_class": "equity", "interval": "daily", "real_time": False,
+            "source": rows[0].source if rows else "Alpha Vantage TIME_SERIES_DAILY", "bars": bars,
+            "limitations": "Daily historical OHLCV. Not real-time or suitable as an executable quote; market holiday/session timing and provider delay apply."}
 
 
 @app.get("/api/intel/tokens")
 async def intel_tokens(db: AsyncSession = Depends(get_db)):
-    """Return previously analyzed live tokens with a fresh exact-address market observation."""
-    rows = (await db.scalars(select(Evidence).where(
-        Evidence.department == "autonomous", Evidence.data_kind == "live",
-    ).order_by(Evidence.observed_at.desc()).limit(200))).all()
+    """Return analyzed token identifiers with fresh, request-time provider observations."""
+    rows = (await db.scalars(select(Investigation).where(
+        Investigation.department == "autonomous",
+    ).order_by(Investigation.updated_at.desc()).limit(200))).all()
     latest = {}
     for row in rows:
         latest.setdefault((row.chain.lower(), row.token_address.lower()), row)
     selected = list(latest.values())[:30]
-    investigation_ids = {row.investigation_id for row in selected if row.investigation_id}
+    investigation_ids = {row.id for row in selected}
     findings = (await db.scalars(select(InvestigationFinding).where(
         InvestigationFinding.investigation_id.in_(investigation_ids),
     ).order_by(InvestigationFinding.created_at.desc()))).all() if investigation_ids else []
@@ -1180,7 +1364,7 @@ async def intel_tokens(db: AsyncSession = Depends(get_db)):
     for row, current in zip(selected, observed):
         if isinstance(current, Exception):
             current = None
-        fields = row.fields or {}
+        fields = current or {}
         agent_view = views.get(row.investigation_id)
         if current and str(current.get("chain", "")).lower() != row.chain.lower():
             current = None
@@ -1198,13 +1382,14 @@ async def intel_tokens(db: AsyncSession = Depends(get_db)):
             "ath_date": (current or {}).get("coingecko_ath_date"),
             "ath_source": "CoinGecko" if (current or {}).get("coingecko_status") == "listed" else None,
             "observed_at": (current or {}).get("provider_retrieved_at"),
-            "analysis_observed_at": row.observed_at.isoformat(),
-            "analysis_source": row.source, "data_kind": row.data_kind,
+            "analysis_observed_at": row.updated_at.isoformat(),
+            "analysis_source": "current provider observation" if current else "unavailable",
+            "data_kind": (current or {}).get("data_kind", "unavailable"),
             "agent_view": agent_view.content if agent_view else None,
             "agent_id": agent_view.agent_id if agent_view else None,
             "agent_confidence": str(agent_view.confidence) if agent_view and agent_view.confidence is not None else None,
             "agent_view_at": agent_view.created_at.isoformat() if agent_view else None,
-            "limitations": (current or {}).get("limitations") or row.limitations,
+            "limitations": (current or {}).get("limitations") or "A fresh provider observation is unavailable.",
             "live_available": bool(current and current.get("price_usd")),
         })
     return {"tokens": tokens, "source": "DexScreener API; ATH where CoinGecko lists the contract"}
@@ -1213,8 +1398,8 @@ async def intel_tokens(db: AsyncSession = Depends(get_db)):
 @app.get("/api/warroom/summary")
 async def warroom_summary(db: AsyncSession = Depends(get_db)):
     global _RUGCHECK_PROCESS_CACHE
-    distinct_tokens = select(Evidence.chain, func.lower(Evidence.token_address).label("address")).where(
-        Evidence.department == "autonomous", Evidence.data_kind == "live",
+    distinct_tokens = select(Investigation.chain, func.lower(Investigation.token_address).label("address")).where(
+        Investigation.department == "autonomous",
     ).distinct().subquery()
     scanned_tokens = int(await db.scalar(select(func.count()).select_from(distinct_tokens)) or 0)
     schedule = await db.get(AutonomousSchedule, 1)
@@ -1272,19 +1457,11 @@ def message_json(row: ConversationMessage):
     return {"id": str(row.id), "department": row.department, "agent_id": row.agent_id,
             "role": row.role, "content": row.content, "created_at": row.created_at.isoformat(),
             "investigation_id": str(row.investigation_id) if row.investigation_id else None,
-            "simulated": bool(row.simulated),
             "attachments": [item.get("name", "attachment") for item in (row.attachments or []) if isinstance(item, dict)],
             "sources": [{"title": item.get("title") or item.get("name") or "Source", "url": item.get("url")}
                         for item in (row.attachments or []) if isinstance(item, dict)
                         and item.get("source_kind") == "world-news-headline"
                         and isinstance(item.get("url"), str) and item["url"].startswith("https://")]}
-
-
-def evidence_json(row: Evidence):
-    return {"id": str(row.id), "chain": row.chain, "token_address": row.token_address,
-            "source": row.source, "data_kind": row.data_kind, "observed_at": row.observed_at.isoformat(),
-            "fields": row.fields, "limitations": row.limitations,
-            "investigation_id": str(row.investigation_id) if row.investigation_id else None}
 
 
 async def investigation_records(db: AsyncSession, department: str, session_id: UUID | None = None,
@@ -1306,11 +1483,11 @@ async def investigation_records(db: AsyncSession, department: str, session_id: U
             "id": str(finding.id), "agent_id": finding.agent_id, "round": finding.round_number,
             "phase": finding.phase, "content": finding.content,
             "confidence": float(finding.confidence) if finding.confidence is not None else None,
-            "evidence_ids": finding.evidence_ids, "created_at": finding.created_at.isoformat(),
+            "created_at": finding.created_at.isoformat(),
         })
     return {"investigations": [{
         "id": str(row.id), "department": row.department, "chain": row.chain, "token_address": row.token_address,
-        "title": row.title, "status": row.status, "scenario_id": row.scenario_id,
+        "title": row.title, "status": row.status,
         "confidence": float(row.confidence) if row.confidence is not None else None,
         "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat(),
         "completed_at": row.completed_at.isoformat() if row.completed_at else None,
@@ -1674,9 +1851,11 @@ async def trading_message(body: MessageInput, session: BrowserSession = Depends(
     # Natural Makto instructions can create an order only when the user names
     # Makto, gives an explicit trade intent, and the app can resolve an exact
     # network/asset/amount. Free-form market discussion remains advisory.
-    action_match = re.search(r"\b(buy|purchase|sell|swap|exchange|close|exit)\b", body.content, re.IGNORECASE)
+    action_match = re.search(r"(?i)(?<![a-z0-9_])(@opentrade|@closetrade|buy|purchase|sell|swap|exchange|close|exit)\b", body.content)
     asks_for_advice = bool(re.search(r"(?i)\b(?:should we|what should|would you|do you think)\b", body.content))
-    makto_direct = bool(re.search(r"(?i)(?:@makto\b|\bmakto\b)", body.content) and action_match and not asks_for_advice)
+    explicit_trade_command = bool(action_match and action_match.group(1).lower() in {"@opentrade", "@closetrade"})
+    makto_direct = bool((re.search(r"(?i)(?:@makto\b|\bmakto\b)", body.content) or explicit_trade_command)
+                        and action_match and not asks_for_advice)
     chain_aliases = {
         "ethereum": "ethereum", "eth": "ethereum", "bsc": "bsc", "bnb": "bsc",
         "bnb smart chain": "bsc", "binance smart chain": "bsc", "base": "base",
@@ -1696,7 +1875,8 @@ async def trading_message(body: MessageInput, session: BrowserSession = Depends(
     currency_amount = re.search(r"(?i)\$\s*(\d+(?:\.\d+)?)|\b(\d+(?:\.\d+)?)\s*(?:USDC|USD|dollars?)\b", body.content)
     numeric_amount = re.search(r"(?i)\b(?:buy|purchase|sell|swap|exchange)\s+(?:all\s+|my\s+)?(?:of\s+)?(\d+(?:\.\d+)?)\b", body.content)
     percentage_amount = re.search(r"\b(\d+(?:\.\d+)?)\s*%", body.content)
-    is_full_exit = bool(re.search(r"(?i)\b(?:all|entire|whole|close|exit)\b", body.content))
+    is_full_exit = bool((action_match and action_match.group(1).lower() == "@closetrade")
+                        or re.search(r"(?i)\b(?:all|entire|whole|close|exit)\b", body.content))
 
     async def makto_reply(answer: str, result: dict | None = None):
         reply = ConversationMessage(session_id=session.id, chat_id=chat.id, department="trading",
@@ -1711,7 +1891,8 @@ async def trading_message(body: MessageInput, session: BrowserSession = Depends(
         return payload
 
     if makto_direct:
-        action = "swap" if action_match.group(1).lower() in {"swap", "exchange"} else action_match.group(1).lower()
+        raw_action = action_match.group(1).lower()
+        action = ({"@opentrade": "buy", "@closetrade": "close", "exchange": "swap"}.get(raw_action, raw_action))
         chain = mentioned_chains[0] if mentioned_chains else None
         if not chain:
             return await makto_reply("Sure, I can set that up. Which network is the token on? Please include its contract or mint address so I can check the right market.")
@@ -1730,11 +1911,47 @@ async def trading_message(body: MessageInput, session: BrowserSession = Depends(
         if action in {"buy", "purchase"}:
             token_address = addresses[-1] if addresses else (source_position.token_address if source_position else None)
             if not token_address or amount_usd is None:
-                return await makto_reply("I can buy it. Send me the network, exact token contract or mint, and how much USDC you want to spend, for example: ‘Makto, buy $25 USDC of <address> on Base.’")
+                return await makto_reply("I can open a virtual position. Send the network, exact token contract or mint, and USDC amount, for example: ‘@opentrade $25 of <address> on Base.’")
+            # Warn on measurable risk conditions before the virtual fill. A repeat
+            # command must explicitly acknowledge the risk before proceeding.
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(12, connect=4)) as client:
+                    risk_observation = await fetch_token_observation(client, token_address, settings, chain)
+            except (httpx.HTTPError, ValueError, TypeError):
+                risk_observation = None
+            risk_flags = []
+            if risk_observation and str(risk_observation.get("chain", "")).lower() == chain:
+                try:
+                    liquidity = Decimal(str(risk_observation.get("liquidity_usd")))
+                    if not liquidity.is_finite() or liquidity < Decimal("10000"):
+                        risk_flags.append("reported pool liquidity is below $10,000")
+                except (ArithmeticError, TypeError, ValueError):
+                    risk_flags.append("pool liquidity is unavailable")
+                try:
+                    move_24h = abs(Decimal(str(risk_observation.get("price_change_24h_pct"))))
+                    if move_24h >= Decimal("50"):
+                        risk_flags.append("reported 24-hour price movement is at least 50%")
+                except (ArithmeticError, TypeError, ValueError):
+                    pass
+                if risk_observation.get("pair_age_days") is not None:
+                    try:
+                        if Decimal(str(risk_observation["pair_age_days"])) < 1:
+                            risk_flags.append("the indexed pool is less than one day old")
+                    except (ArithmeticError, TypeError, ValueError):
+                        pass
+            accepted_risk = bool(re.search(r"(?i)\b(?:insist|proceed anyway|accept(?:ing)? the risk|open it anyway)\b", body.content))
+            if risk_flags and not accepted_risk:
+                return await makto_reply(
+                    "Risk warning: " + "; ".join(risk_flags) +
+                    ". I have not opened the virtual trade. If you still want it, repeat @opentrade with ‘I insist’; "
+                    "the paper ledger will use a provider mark, not an executable route."
+                )
             order_result = await create_paper_order(PaperOrderInput(chain=chain, token_address=token_address,
                 side="buy", amount_usd=amount_usd, idempotency_key=str(uuid4())), session, db)
             order = order_result["order"]
-            answer = f"Done. I recorded a buy of {order['symbol']} on {chain} for ${Decimal(order['amount_usd']):,.2f} USDC at the latest provider mark."
+            answer = f"Done. I recorded a virtual buy of {order['symbol']} on {chain} for ${Decimal(order['amount_usd']):,.2f} USDC at the latest provider mark."
+            if risk_flags and accepted_risk:
+                answer += " You acknowledged the measured risk. The ledger opened it anyway—your paper wallet is braver than your spreadsheet."
             return await makto_reply(answer, {"paper_order": order})
 
         if action in {"sell", "close", "exit"} or (action == "swap" and re.search(r"(?i)\b(?:for|to|into)\s+USDC\b", body.content)):
@@ -1800,10 +2017,30 @@ async def trading_message(body: MessageInput, session: BrowserSession = Depends(
             Investigation.chat_id == chat.id,
         ).order_by(Investigation.updated_at.desc()).limit(1))
         if latest_investigation:
-            evidence = await db.scalar(select(Evidence).where(
-                Evidence.investigation_id == latest_investigation.id,
-            ).order_by(Evidence.observed_at.desc()).limit(1))
-            if evidence:
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(12, connect=4)) as client:
+                    observation = await fetch_token_observation(
+                        client, latest_investigation.token_address, settings, latest_investigation.chain,
+                    )
+            except (httpx.HTTPError, ValueError, TypeError):
+                observation = None
+            if not observation or str(observation.get("chain", "")).lower() != latest_investigation.chain.lower():
+                evidence = Evidence(
+                    department="trading", session_id=session.id, chain=latest_investigation.chain,
+                    token_address=latest_investigation.token_address, source="market provider unavailable",
+                    data_kind="unavailable", fields={},
+                    limitations="No fresh exact-address observation was available for this recheck.",
+                )
+            else:
+                evidence = Evidence(
+                    department="trading", session_id=session.id,
+                    chain=latest_investigation.chain, token_address=latest_investigation.token_address,
+                    source=str(observation.get("source") or "market provider"),
+                    data_kind=str(observation.get("data_kind") or "live"),
+                    fields={key: value for key, value in observation.items()
+                            if key not in {"source", "data_kind", "limitations"}},
+                    limitations=observation.get("limitations"),
+                )
                 named_agent = re.search(r"(?i)\b(nova|atlas|vega|echo|orion|makto)\b", body.content)
                 target_agent = mention.group(1).lower() if mention else (named_agent.group(1).lower() if named_agent else "")
                 if target_agent not in {"nova", "atlas", "vega", "echo", "makto"}:
@@ -1962,194 +2199,6 @@ async def trading_events(after: int = 0, session: BrowserSession = Depends(tradi
 @app.get("/api/trading/portfolio")
 async def portfolio(session: BrowserSession = Depends(trading_session), db: AsyncSession = Depends(get_db)):
     raise HTTPException(410, "Use /api/paper/portfolio for the account-scoped USD paper ledger.")
-
-
-# Controlled, clearly simulated fixtures. No external market value is implied.
-DEMO_MARKETS = {
-    ("demo", "demo:claw"): {"symbol": "CLAW", "price_near": Decimal("0.050000000000"), "source": "deterministic fixture"},
-    ("demo", "demo:signal"): {"symbol": "SIGNAL", "price_near": Decimal("0.120000000000"), "source": "deterministic fixture"},
-}
-
-
-@app.post("/api/trading/quotes")
-async def make_quote(body: QuoteInput, session: BrowserSession = Depends(trading_session), db: AsyncSession = Depends(get_db)):
-    raise HTTPException(410, "Fixture quotes were retired. Use /api/paper/orders with a live exact-address observation.")
-    fixture = DEMO_MARKETS.get((body.chain.lower(), body.token_address.lower()))
-    if not fixture:
-        raise HTTPException(404, "No quote available for this token in the deterministic demo fixtures")
-    if body.side == "buy":
-        wallet = await db.scalar(select(DemoWallet).where(DemoWallet.session_id == session.id).with_for_update())
-        if wallet is None or wallet.near_balance < body.amount_near:
-            raise HTTPException(422, "Insufficient demo NEAR balance")
-        price = fixture["price_near"]
-    else:
-        position = await db.scalar(select(Position).where(
-            Position.session_id == session.id, Position.chain == body.chain.lower(),
-            Position.token_address == body.token_address.lower(),
-        ))
-        if position is None or position.quantity <= 0:
-            raise HTTPException(422, "No demo position is available to sell")
-        price = position.current_price or position.average_price
-        if body.amount_near > position.quantity * price:
-            raise HTTPException(422, "Sell value exceeds the open demo position")
-    quote = DemoQuote(session_id=session.id, chain=body.chain.lower(), token_address=body.token_address.lower(),
-                      side=body.side, amount_near=body.amount_near, price=price,
-                      expires_at=datetime.now(timezone.utc) + timedelta(seconds=30))
-    db.add(quote)
-    await db.commit()
-    return {"quote_id": str(quote.id), "simulated": True, "source": fixture["source"], "symbol": fixture["symbol"],
-            "chain": quote.chain, "token_address": quote.token_address, "side": quote.side,
-            "amount_near": str(quote.amount_near), "price_near_per_token": str(quote.price),
-            "estimated_quantity": str(quote.amount_near / quote.price), "fee_near": str((quote.amount_near * Decimal("0.003")).quantize(Decimal("0.00000001"))),
-            "expires_at": quote.expires_at.isoformat()}
-
-
-@app.post("/api/trading/approve")
-async def approve_trade(body: ApproveInput, session: BrowserSession = Depends(trading_session), db: AsyncSession = Depends(get_db)):
-    raise HTTPException(410, "Fixture approvals were retired. Use /api/paper/orders with a live exact-address observation.")
-    # Serialize approvals per browser wallet before checking idempotency or balance.
-    wallet_connected = await db.scalar(select(BrowserSession.wallet_connected).where(BrowserSession.id == session.id).with_for_update())
-    if not wallet_connected:
-        raise HTTPException(403, "Connect the demo wallet to approve trades")
-    existing = await db.scalar(select(Trade).where(Trade.session_id == session.id, Trade.idempotency_key == body.idempotency_key))
-    if existing:
-        return {"status": existing.status, "trade_id": str(existing.id), "idempotent_replay": True}
-    quote = await db.scalar(select(DemoQuote).where(DemoQuote.id == body.quote_id, DemoQuote.session_id == session.id).with_for_update())
-    if not quote:
-        raise HTTPException(404, "Quote not found")
-    if quote.consumed:
-        raise HTTPException(409, "Quote already used")
-    if quote.expires_at <= datetime.now(timezone.utc):
-        raise HTTPException(409, "Quote expired; request a new quote")
-    quote.consumed = True
-    trade = Trade(session_id=session.id, idempotency_key=body.idempotency_key, chain=quote.chain,
-                  token_address=quote.token_address, side=quote.side, amount_near=quote.amount_near,
-                  quote_price=quote.price, status="rejected" if not body.approved else "confirmed_demo")
-    db.add(trade)
-    if body.approved and quote.side == "buy":
-        wallet = await db.scalar(select(DemoWallet).where(DemoWallet.session_id == session.id).with_for_update())
-        fee = (quote.amount_near * Decimal("0.003")).quantize(Decimal("0.00000001"))
-        if not wallet or wallet.near_balance < quote.amount_near + fee:
-            await db.rollback()
-            raise HTTPException(422, "Demo balance no longer covers amount and fee")
-        wallet.near_balance -= quote.amount_near + fee
-        position = await db.scalar(select(Position).where(Position.session_id == session.id, Position.chain == quote.chain,
-                                                           Position.token_address == quote.token_address).with_for_update())
-        quantity = quote.amount_near / quote.price
-        if position:
-            old_cost = position.quantity * position.average_price
-            position.quantity += quantity
-            position.average_price = (old_cost + quote.amount_near) / position.quantity
-        else:
-            db.add(Position(session_id=session.id, chain=quote.chain, token_address=quote.token_address,
-                            quantity=quantity, average_price=quote.price, current_price=quote.price))
-    elif body.approved:
-        position = await db.scalar(select(Position).where(
-            Position.session_id == session.id, Position.chain == quote.chain,
-            Position.token_address == quote.token_address,
-        ).with_for_update())
-        quantity = quote.amount_near / quote.price
-        if position is None or position.quantity < quantity:
-            await db.rollback()
-            raise HTTPException(422, "Demo position changed and no longer covers this sell quote")
-        fee = (quote.amount_near * Decimal("0.003")).quantize(Decimal("0.00000001"))
-        position.quantity -= quantity
-        wallet = await db.scalar(select(DemoWallet).where(DemoWallet.session_id == session.id).with_for_update())
-        if wallet is None:
-            await db.rollback()
-            raise HTTPException(409, "Demo wallet is unavailable")
-        wallet.near_balance += quote.amount_near - fee
-        if position.quantity == 0:
-            await db.delete(position)
-    await db.commit()
-    await persist_event(db, "trading", "TRADE_CONFIRMED" if body.approved else "TRADE_REJECTED",
-                        {"trade_id": str(trade.id), "simulated": True}, session.id, "makto")
-    return {"status": trade.status, "trade_id": str(trade.id), "simulated": True, "idempotent_replay": False}
-
-
-@app.post("/api/trading/scenarios/market-shift")
-async def simulate_market_shift(session: BrowserSession = Depends(trading_session), db: AsyncSession = Depends(get_db)):
-    raise HTTPException(410, "Deterministic portfolio marks were retired. Portfolio valuation requires fresh provider data.")
-    """Scenario E: mark open demo positions 25% higher, then alert via Makto and Orion."""
-    positions = (await db.scalars(select(Position).where(Position.session_id == session.id).with_for_update())).all()
-    eligible = [position for position in positions if (position.chain, position.token_address) in DEMO_MARKETS]
-    if not eligible:
-        raise HTTPException(409, "Scenario E needs an open demo position. Complete a simulated buy first.")
-    shift = Decimal("1.25")
-    changes = [{
-        "chain": item.chain, "token_address": item.token_address,
-        "old_price_near": str(item.current_price or item.average_price),
-        "new_price_near": str((item.current_price or item.average_price) * shift),
-        "quantity": str(item.quantity),
-    } for item in eligible]
-    scenario_context = json.dumps({"simulated": True, "change_percent": 25, "positions": changes}, sort_keys=True)
-    try:
-        makto_text, makto_usage = await generate(
-            "trading", "makto",
-            "Scenario E: Review these deterministic simulated mark-price changes. Alert the trader that position values changed. "
-            "State that this is a simulation and not an executable market quote. Do not claim any transaction occurred. " + scenario_context,
-        )
-        orion_text, orion_usage = await generate(
-            "trading", "orion",
-            "Discuss the portfolio change with Makto. State what changed, its simulated nature, and what remains unknown. "
-            "Do not recommend a real trade or claim execution.\nMakto alert: " + makto_text + "\nScenario facts: " + scenario_context,
-        )
-    except ProviderUnavailable as exc:
-        raise HTTPException(503, str(exc))
-    for item in eligible:
-        item.current_price = (item.current_price or item.average_price) * shift
-    for agent_id, answer, usage in (("makto", makto_text, makto_usage), ("orion", orion_text, orion_usage)):
-        db.add(ConversationMessage(session_id=session.id, department="trading", agent_id=agent_id,
-                                   role="assistant", content=answer, simulated=True))
-        counts = usage.get("usage") or {}
-        db.add(LLMUsage(department="trading", session_id=session.id, agent_id=agent_id,
-                        provider=usage["provider"], model=usage["model"],
-                        input_tokens=counts.get("promptTokenCount", counts.get("prompt_tokens", counts.get("input_tokens"))),
-                        output_tokens=counts.get("candidatesTokenCount", counts.get("completion_tokens", counts.get("output_tokens"))),
-                        cost_usd=_reported_cost(usage)))
-    await db.commit()
-    await persist_event(db, "trading", "MARKET_ALERT", {"scenario": "market-shift", "simulated": True,
-                        "change_percent": 25, "positions": changes, "alert": makto_text}, session.id, "makto")
-    await persist_event(db, "trading", "AGENT_MESSAGE", {"content": makto_text, "simulated": True}, session.id, "makto")
-    await persist_event(db, "trading", "AGENT_MESSAGE", {"content": orion_text, "simulated": True}, session.id, "orion")
-    return {"scenario": "market-shift", "simulated": True, "change_percent": 25, "positions": changes,
-            "messages": [makto_text, orion_text]}
-
-
-@app.get("/api/scenarios")
-async def scenarios():
-    return {"scenarios": [
-        {"id": "suspicious-token", "title": "Suspicious token", "kind": "simulated", "description": "Controlled market, contract and deployer evidence drives a debate."},
-        {"id": "potential-opportunity", "title": "Potential opportunity", "kind": "simulated", "description": "A balanced opportunity case with explicit execution and verification limits."},
-    ]}
-
-
-@app.post("/api/scenarios/{scenario_id}/run")
-async def run_scenario(scenario_id: str, db: AsyncSession = Depends(get_db)):
-    if scenario_id not in {"suspicious-token", "potential-opportunity"}:
-        raise HTTPException(404, "Unknown deterministic scenario")
-    suspicious = scenario_id == "suspicious-token"
-    token = "demo:claw" if suspicious else "demo:signal"
-    title = "Suspicious token" if suspicious else "Potential opportunity"
-    evidence_fields = ({"fixture": "simulated", "volume_change_pct": 410, "liquidity_change_pct": -62, "verified_contract_source": False}
-                       if suspicious else {"fixture": "simulated", "volume_change_pct": 185, "liquidity_usd": None, "verified_contract_source": False})
-    evidence = Evidence(department="autonomous", chain="demo", token_address=token,
-                        source="deterministic scenario fixture", data_kind="simulated", fields=evidence_fields,
-                        limitations="Controlled demo data. Not a live market observation or a contract audit.")
-    result = await run_investigation(
-        db,
-        evidence,
-        title=title,
-        scenario_id=scenario_id,
-        simulated=True,
-    )
-    if result["status"] != "completed":
-        raise HTTPException(503, detail={
-            "message": "Scenario evidence was stored, but no complete agent debate was produced. Check provider configuration and retry.",
-            "evidence_id": result["evidence_id"],
-            "investigation_id": result["investigation_id"],
-        })
-    return {"scenario": scenario_id, "simulated": True, **result}
 
 
 @app.websocket("/ws/{department}")

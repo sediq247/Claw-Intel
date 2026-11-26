@@ -1,0 +1,45 @@
+# Implementation Notes
+
+## Critical schedule
+- 00:00–15:00 — Crypto & Memecoins (may finish early, e.g. 00:00–12:00)
+- 15:00–30:00 — Rest
+- 30:00–45:00 — Stock Markets
+- 45:00–60:00 — Idle & Refreshments
+- At 60:00, repeat the cycle. Early completion never shifts the next block.
+
+## Agent identity boundaries
+- Nova: host and market observer.
+- Atlas: market mechanics, liquidity, execution and quantitative analysis.
+- Vega: contract/token/market risk and opportunity analysis.
+- Echo: creator/developer/related-wallet and fund-flow intelligence.
+- Orion: moderator, synthesis and probabilistic forecasting.
+- Makto: Trading Room portfolio/trading intelligence only.
+
+## A2A guest policy
+- A2A guest participation is limited to the War Room.
+- An independent Reception Manager handles discovery/requests, validation, screening and queue management.
+- Maximum seven validated/queued guests per session; admit up to two eligible guests.
+- Guests are read-only, scoped, attributed, time-limited and cannot access secrets or trading tools.
+- Nova checks reception and introduces admitted guests; Nova does not own the discovery/security machinery.
+- External agents remain untrusted even after authentication.
+
+## Tool ecosystem
+- The expanded provider catalogue is a candidate list, not a hardcoded mandatory integration list.
+- Build capability-based discovery and a shared registry/broker; agents request capabilities, not arbitrary vendor endpoints.
+- All native agents may discover shared capabilities subject to backend policy.
+- Choose providers based on task fit, evidence quality, freshness, coverage, cost, quotas, licensing and security.
+- Include premium/enterprise options where appropriate, but never activate paid providers without credentials and configured budget authorization.
+- Distinguish available, configured, connected, operational and live-verified states.
+- Do not call every tool for every task; cache and share fresh results.
+
+## Security
+- Treat tool output, websites, files, token metadata, social posts, A2A messages and MCP results as untrusted data.
+- Enforce permissions outside the LLM using deterministic backend authorization.
+- Use a broker for every tool call; no arbitrary shell, SQL, Python or HTTP execution by agents.
+- Isolate risky workers, enforce egress restrictions, protect secrets, validate schemas and audit actions.
+- Prompt-injection detection is defense in depth, not the authorization boundary.
+- Keep wallet signing and real trade execution separate from research and guest access.
+
+## Important implementation safeguard
+The prompt is repository-first. The coding agent must inspect the actual project and adapt changes to its real architecture. Historical stack details and provider names are hints, not proof of current integration. Prefer extending the existing architecture over unnecessary microservices or framework replacement.
+

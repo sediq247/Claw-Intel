@@ -1,1 +1,1 @@
-"""ClawIntel application package."""
+"""Zecto application package."""

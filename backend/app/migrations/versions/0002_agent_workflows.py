@@ -23,7 +23,6 @@ def upgrade():
         sa.Column("token_address", sa.String(160), nullable=False),
         sa.Column("title", sa.String(200), nullable=False),
         sa.Column("status", sa.String(24), nullable=False),
-        sa.Column("scenario_id", sa.String(48)),
         sa.Column("confidence", sa.Numeric(5, 2)),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
@@ -41,7 +40,6 @@ def upgrade():
         sa.Column("round_number", sa.Integer(), nullable=False),
         sa.Column("phase", sa.String(24), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
-        sa.Column("evidence_ids", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'[]'::jsonb")),
         sa.Column("confidence", sa.Numeric(5, 2)),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
@@ -89,18 +87,9 @@ def upgrade():
 
     op.add_column("conversation_messages", sa.Column("investigation_id", postgresql.UUID(as_uuid=True), nullable=True))
     op.create_foreign_key("fk_message_investigation", "conversation_messages", "investigations", ["investigation_id"], ["id"], ondelete="SET NULL")
-    op.add_column("conversation_messages", sa.Column("simulated", sa.Boolean(), nullable=False, server_default=sa.false()))
-    op.alter_column("conversation_messages", "simulated", server_default=None)
-
-    op.add_column("evidence", sa.Column("investigation_id", postgresql.UUID(as_uuid=True), nullable=True))
-    op.create_foreign_key("fk_evidence_investigation", "evidence", "investigations", ["investigation_id"], ["id"], ondelete="SET NULL")
-
 
 def downgrade():
-    op.drop_constraint("fk_evidence_investigation", "evidence", type_="foreignkey")
-    op.drop_column("evidence", "investigation_id")
     op.drop_constraint("fk_message_investigation", "conversation_messages", type_="foreignkey")
-    op.drop_column("conversation_messages", "simulated")
     op.drop_column("conversation_messages", "investigation_id")
     op.drop_index("ix_llm_usage_dept_created", table_name="llm_usage")
     op.drop_table("llm_usage")

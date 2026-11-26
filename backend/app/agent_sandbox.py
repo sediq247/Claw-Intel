@@ -42,7 +42,7 @@ class AgentSandbox:
     """Create isolated per-agent directories that are deleted on exit."""
 
     def __init__(self):
-        self._temporary = tempfile.TemporaryDirectory(prefix="clawintel-agent-work-")
+        self._temporary = tempfile.TemporaryDirectory(prefix="zecto-agent-work-")
         self.root = Path(self._temporary.name).resolve()
 
     def workspace(self, agent_id: str) -> AgentWorkspace:

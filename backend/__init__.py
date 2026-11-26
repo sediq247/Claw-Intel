@@ -1,1 +1,1 @@
-"""ClawIntel backend package."""
+"""Zecto backend package."""

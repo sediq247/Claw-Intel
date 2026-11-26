@@ -1,4 +1,4 @@
-"""Share API rate-limit windows across ClawIntel app replicas."""
+"""Share API rate-limit windows across Zecto app replicas."""
 from alembic import op
 import sqlalchemy as sa
 

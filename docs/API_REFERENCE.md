@@ -11,9 +11,13 @@ All JSON endpoints are same-origin by default. Browser requests carry an HttpOnl
 | GET | `/api/agents` | Public | Returns the six role descriptions. |
 | GET | `/api/settings/status` | Public | Returns provider readiness and configured model names, without credentials. |
 | GET | `/api/autonomous/messages?limit=100` | Public | Read-only autonomous message feed. There is intentionally no POST route. |
-| GET | `/api/autonomous/evidence` | Public | Evidence records with source, observation time, status, fields and limitations. |
+| GET | `/api/autonomous/forecasts?limit=30` | Public | Latest immutable forecast versions with the exact source snapshot and supporting evidence references. |
+| GET | `/api/autonomous/forecasts/{id}/history` | Public | Prior versions for the selected asset; old forecasts are not overwritten. |
 | GET | `/api/autonomous/events?after=0` | Public | Ordered persisted event replay for the public War Room channel. |
 | GET | `/ws/autonomous?after=0` | Public | War Room real-time feed; accepts only ping messages. |
+| GET | `/api/autonomous/a2a/agents` | Verified wallet account | Discovers only operator-configured HTTPS Agent Cards. |
+| POST | `/api/autonomous/a2a/delegate` | Verified wallet account | Delegates a bounded public-research question to one discovered agent. No private wallet, portfolio, or Trading Room context is sent; responses are untrusted and logged as War Room events. |
+| GET | `/api/market/stocks/{symbol}/daily` | Verified wallet account | Returns cached, normalized Alpha Vantage daily OHLCV for a validated ticker. Historical daily data only, not an executable or real-time quote. |
 
 ## Wallet-authenticated Trading Room and paper ledger
 

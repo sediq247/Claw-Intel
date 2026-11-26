@@ -4,10 +4,12 @@ import json
 import re
 from uuid import UUID
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from .config import get_settings
-from .models import DurableEvent
+from .database import SessionFactory
+from .models import DurableEvent, ProviderDailyBudget
 from .realtime import hub
 
 
@@ -23,6 +25,37 @@ AGENTS = {
 
 class ProviderUnavailable(RuntimeError):
     pass
+
+
+async def reserve_provider_budget(department: str, agent_id: str, provider: str, settings) -> tuple[bool, str | None]:
+    """Atomically reserve global, provider, department, and agent daily request budgets."""
+    now = datetime.now(timezone.utc)
+    limits = (
+        ("llm_global", settings.llm_global_daily_call_budget),
+        (f"llm_{provider}", settings.llm_provider_daily_call_budget),
+        (f"llm_{department}", settings.llm_department_daily_call_budget),
+        (f"llm_{department}_{agent_id}", settings.llm_agent_daily_call_budget),
+    )
+    try:
+        async with SessionFactory() as db:
+            await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+                             {"key": f"llm-budget:{now.date().isoformat()}"})
+            for budget_provider, limit in limits:
+                insert = pg_insert(ProviderDailyBudget).values(
+                    provider=budget_provider, budget_date=now.date(), request_count=1, updated_at=now,
+                )
+                statement = insert.on_conflict_do_update(
+                    index_elements=["provider", "budget_date"],
+                    set_={"request_count": ProviderDailyBudget.request_count + 1, "updated_at": now},
+                    where=ProviderDailyBudget.request_count < limit,
+                ).returning(ProviderDailyBudget.request_count)
+                if await db.scalar(statement) is None:
+                    await db.rollback()
+                    return False, budget_provider
+            await db.commit()
+            return True, None
+    except Exception as exc:
+        raise ProviderUnavailable("Provider budget enforcement is unavailable; the model request was not sent") from exc
 
 
 async def post_with_retry(client: httpx.AsyncClient, url: str, **kwargs):
@@ -86,6 +119,11 @@ async def generate(
         if not key or not models:
             continue
         for model in models[: getattr(settings, "llm_max_model_attempts", 3)]:
+            reserved, exhausted_budget = await reserve_provider_budget(department, agent_id, provider, settings)
+            if not reserved:
+                raise ProviderUnavailable(
+                    f"Configured daily model-call budget reached ({exhausted_budget}); no provider fallback was sent."
+                )
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=8.0)) as client:
                     system_text = _system_prompt(agent_id, department, natural_chat)
@@ -170,6 +208,11 @@ async def generate_stream(
         if not key or not models:
             continue
         for model in models[:settings.llm_max_model_attempts]:
+            reserved, exhausted_budget = await reserve_provider_budget(department, agent_id, provider, settings)
+            if not reserved:
+                raise ProviderUnavailable(
+                    f"Configured daily model-call budget reached ({exhausted_budget}); no provider fallback was sent."
+                )
             emitted = False
             result_parts: list[str] = []
             usage: dict = {}
@@ -252,6 +295,15 @@ async def generate_stream(
 
 async def persist_event(db: AsyncSession, department: str, event_type: str, payload: dict,
                         session_id: UUID | None = None, agent_id: str | None = None) -> dict:
+    def without_evidence_refs(value):
+        if isinstance(value, dict):
+            return {key: without_evidence_refs(item) for key, item in value.items()
+                    if key not in {"evidence_id", "evidence_ids"}}
+        if isinstance(value, list):
+            return [without_evidence_refs(item) for item in value]
+        return value
+
+    payload = without_evidence_refs(payload)
     row = DurableEvent(department=department, session_id=session_id, event_type=event_type,
                        agent_id=agent_id, payload=payload)
     db.add(row)

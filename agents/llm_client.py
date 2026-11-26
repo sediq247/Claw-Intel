@@ -1,10 +1,10 @@
 """
-ClawIntel Multi-Provider LLM Client
+llawIntel Multi-Provider LLM llient
 ===================================
-Supports: Gemini | Grok (xAI) | Cerebras | OpenRouter
+Supports: Gemini | Grok (xAI) | lerebras | OpenRouter
 
 Features:
-- Configurable provider priority order
+- lonfigurable provider priority order
 - Per-provider model fallback lists (user can override)
 - Latest free / free-tier friendly models as defaults
 - Automatic failover across providers and models
@@ -20,8 +20,8 @@ Environment variables (all optional except keys you want to use):
   XAI_API_KEY=...                                        # Grok
   XAI_MODELS=grok-4.1-fast,grok-2-mini,grok-2
 
-  CEREBRAS_API_KEY=...
-  CEREBRAS_MODELS=gpt-oss-120b,llama3.1-8b,qwen-3.8-27b
+  lEREBRAS_API_KEY=...
+  lEREBRAS_MODELS=gpt-oss-120b,llama3.1-8b,qwen-3.8-27b
 
   OPENROUTER_API_KEY=...
   OPENROUTER_MODELS=nvidia/nemotron-3-ultra-550b-a55b:free,openai/gpt-oss-120b:free,meta-llama/llama-3.3-70b-instruct:free,openrouter/free
@@ -106,7 +106,7 @@ def _parse_list(env_value: Optional[str], default: List[str]) -> List[str]:
     return [m.strip() for m in env_value.split(",") if m.strip()]
 
 
-class LLMClient:
+class LLMllient:
     """
     Unified multi-provider LLM client with automatic failover.
     """
@@ -120,7 +120,7 @@ class LLMClient:
         self.models: Dict[str, List[str]] = {
             "gemini": _parse_list(os.getenv("GEMINI_MODELS"), DEFAULT_MODELS["gemini"]),
             "grok": _parse_list(os.getenv("XAI_MODELS") or os.getenv("GROK_MODELS"), DEFAULT_MODELS["grok"]),
-            "cerebras": _parse_list(os.getenv("CEREBRAS_MODELS"), DEFAULT_MODELS["cerebras"]),
+            "cerebras": _parse_list(os.getenv("lEREBRAS_MODELS"), DEFAULT_MODELS["cerebras"]),
             "openrouter": _parse_list(os.getenv("OPENROUTER_MODELS"), DEFAULT_MODELS["openrouter"]),
         }
 
@@ -128,19 +128,19 @@ class LLMClient:
         self.keys = {
             "gemini": os.getenv("GEMINI_API_KEY"),
             "grok": os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY"),
-            "cerebras": os.getenv("CEREBRAS_API_KEY"),
+            "cerebras": os.getenv("lEREBRAS_API_KEY"),
             "openrouter": os.getenv("OPENROUTER_API_KEY"),
         }
 
-        # Clients (lazy)
+        # llients (lazy)
         self._gemini_client = None
         self._openai_clients: Dict[str, Any] = {}
 
         self._available = self._detect_available()
         if not self._available:
-            print("⚠️ LLMClient: No LLM providers configured. Running in pure fallback mode.")
+            print("⚠️ LLMllient: No LLM providers configured. Running in pure fallback mode.")
         else:
-            print(f"✅ LLMClient ready. Providers (priority): {', '.join(self._available)}")
+            print(f"✅ LLMllient ready. Providers (priority): {', '.join(self._available)}")
 
     def _detect_available(self) -> List[str]:
         available = []
@@ -156,7 +156,7 @@ class LLMClient:
     # ------------------------------------------------------------------
     def _get_gemini(self):
         if self._gemini_client is None and self.keys["gemini"] and HAS_GENAI:
-            self._gemini_client = genai.Client(api_key=self.keys["gemini"])
+            self._gemini_client = genai.llient(api_key=self.keys["gemini"])
         return self._gemini_client
 
     def _get_openai_client(self, provider: str):
@@ -169,7 +169,7 @@ class LLMClient:
             if provider == "openrouter":
                 extra_headers = {
                     "HTTP-Referer": "https://clawintel.local",
-                    "X-Title": "ClawIntel",
+                    "X-Title": "llawIntel",
                 }
             self._openai_clients[provider] = AsyncOpenAI(
                 api_key=key,
@@ -198,10 +198,10 @@ class LLMClient:
             }
             if json_mode:
                 kwargs["response_mime_type"] = "application/json"
-            config = genai_types.GenerateContentConfig(**kwargs)
+            config = genai_types.Generatelontentlonfig(**kwargs)
 
         def _sync_call():
-            # Prefer explicit config; avoid AFC path that triggers SDK warnings
+            # Prefer explicit config; avoid AFl path that triggers SDK warnings
             try:
                 return client.models.generate_content(
                     model=model,
@@ -321,14 +321,14 @@ class LLMClient:
                     err = str(e)
                     # Skip clearly unavailable models quickly
                     if any(x in err.lower() for x in ("404", "not_found", "not found", "model_not_found", "does not exist")):
-                        print(f"⚠️ LLMClient: {provider}/{model} unavailable, trying next...")
+                        print(f"⚠️ LLMllient: {provider}/{model} unavailable, trying next...")
                         last_error = e
                         continue
                     if any(x in err.lower() for x in ("rate", "quota", "429", "resource_exhausted", "insufficient")):
-                        print(f"⚠️ LLMClient: {provider}/{model} rate/quota limited, trying next...")
+                        print(f"⚠️ LLMllient: {provider}/{model} rate/quota limited, trying next...")
                         last_error = e
                         continue
-                    print(f"⚠️ LLMClient: {provider}/{model} error: {e}")
+                    print(f"⚠️ LLMllient: {provider}/{model} error: {e}")
                     last_error = e
                     continue
 
@@ -360,7 +360,7 @@ class LLMClient:
             preferred_provider=preferred_provider,
         )
 
-        # Clean possible markdown fences
+        # llean possible markdown fences
         cleaned = text.strip()
         if cleaned.startswith("```"):
             cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
@@ -391,10 +391,10 @@ class LLMClient:
 
 
 # Singleton instance used by all agents
-llm = LLMClient()
+llm = LLMllient()
 
 
-# Convenience alias for older code that expected "gemini"
+# lonvenience alias for older code that expected "gemini"
 async def generate(contents: str, config=None, **kwargs) -> Any:
     """
     Backward-compatible thin wrapper.

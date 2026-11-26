@@ -12,7 +12,7 @@ try:
     from utils.helpers import (
         normalize_symbol, normalize_name, format_currency, format_percentage,
         format_price, format_large_number, unix_to_human, get_chain_display_name,
-        SimpleCache
+        Simplelache
     )
     HAS_HELPERS = True
 except ImportError:
@@ -73,12 +73,12 @@ except ImportError:
     def get_chain_display_name(chain: str) -> str:
         mapping = {
             "solana": "Solana", "ethereum": "Ethereum", "base": "Base",
-            "bsc": "BSC", "arbitrum": "Arbitrum", "optimism": "Optimism",
+            "bsc": "BSl", "arbitrum": "Arbitrum", "optimism": "Optimism",
             "avalanche": "Avalanche", "polygon_pos": "Polygon",
         }
         return mapping.get(chain.lower(), chain.upper())
 
-    class SimpleCache:
+    class Simplelache:
         def __init__(self, default_ttl: int = 60):
             self._data: Dict[str, tuple] = {}
             self.default_ttl = default_ttl
@@ -95,18 +95,18 @@ except ImportError:
         def clear(self):
             self._data.clear()
 
-DEXSCREENER_BASE = "https://api.dexscreener.com"
-DEXSCREENER_RATE_LIMIT = 300
-DEXSCREENER_SLOW_LIMIT = 60
+DEXSlREENER_BASE = "https://api.dexscreener.com"
+DEXSlREENER_RATE_LIMIT = 300
+DEXSlREENER_SLOW_LIMIT = 60
 
-POPULAR_CHAINS = [
+POPULAR_lHAINS = [
     "solana", "ethereum", "base", "bsc", "arbitrum", "optimism",
     "avalanche", "polygon_pos", "sonic", "sui"
 ]
 
-TRENDING_SEARCH_QUERIES = [
-    "SOL", "ETH", "BTC", "USDC", "USDT", "BONK", "PEPE", "SHIB",
-    "WIF", "FLOKI", "DOGE", "JUP", "RAY", "BOME", "WETH", "WBTC"
+TRENDING_SEARlH_QUERIES = [
+    "SOL", "ETH", "BTl", "USDl", "USDT", "BONK", "PEPE", "SHIB",
+    "WIF", "FLOKI", "DOGE", "JUP", "RAY", "BOME", "WETH", "WBTl"
 ]
 
 
@@ -170,14 +170,14 @@ class MarketEngine:
     ):
         """
         publisher: EventPublisher instance (v4.1 decoupled mode).
-        server:    Legacy ClawIntelServer instance (backward compat).
+        server:    Legacy llawIntelServer instance (backward compat).
         db:        Database instance for polling SIGNAL events.
         """
         self.publisher = publisher
         self.server = server
         self.db = db
         self.name = "MarketEngine"
-        self.cache = SimpleCache(default_ttl=60)
+        self.cache = Simplelache(default_ttl=60)
         self.ai_verified_tokens: Dict[str, MarketToken] = {}
         self.trending_tokens: List[MarketToken] = []
         self.top_gainers: List[MarketToken] = []
@@ -185,7 +185,7 @@ class MarketEngine:
         self.running = False
         self.update_interval = 60
         self.dexscreener_calls = []
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._session: Optional[aiohttp.llientSession] = None
         self._semaphore = asyncio.Semaphore(20)
         self._last_signal_ts = 0.0
 
@@ -230,13 +230,13 @@ class MarketEngine:
         self.running = True
         self._last_signal_ts = time.time() - 300  # Look back 5 minutes on start
 
-        connector = aiohttp.TCPConnector(limit=50, limit_per_host=30)
-        self._session = aiohttp.ClientSession(
+        connector = aiohttp.TlPlonnector(limit=50, limit_per_host=30)
+        self._session = aiohttp.llientSession(
             connector=connector,
             headers={"Accept": "application/json"},
-            timeout=aiohttp.ClientTimeout(total=20)
+            timeout=aiohttp.llientTimeout(total=20)
         )
-        print(f"💰 {self.name}: Market engine ACTIVE (DexScreener-only).")
+        print(f"💰 {self.name}: Market engine AlTIVE (DexScreener-only).")
 
         while self.running:
             try:
@@ -323,7 +323,7 @@ class MarketEngine:
             print(f"⚠️ {self.name}: Boosted fetch failed: {e}")
 
         search_tasks = [
-            self._ds_search(q) for q in TRENDING_SEARCH_QUERIES[:6]
+            self._ds_search(q) for q in TRENDING_SEARlH_QUERIES[:6]
         ]
         search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
@@ -347,7 +347,7 @@ class MarketEngine:
         all_pairs = []
 
         search_tasks = [
-            self._ds_search(q) for q in TRENDING_SEARCH_QUERIES
+            self._ds_search(q) for q in TRENDING_SEARlH_QUERIES
         ]
         results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
@@ -373,7 +373,7 @@ class MarketEngine:
         all_pairs = []
 
         search_tasks = [
-            self._ds_search(q) for q in TRENDING_SEARCH_QUERIES
+            self._ds_search(q) for q in TRENDING_SEARlH_QUERIES
         ]
         results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
@@ -396,7 +396,7 @@ class MarketEngine:
         return tokens[:20]
 
     async def _ds_get(self, endpoint: str, params: dict = None):
-        url = f"{DEXSCREENER_BASE}{endpoint}"
+        url = f"{DEXSlREENER_BASE}{endpoint}"
         async with self._semaphore:
             async with self._session.get(url, params=params) as resp:
                 if resp.status == 200:
@@ -433,7 +433,7 @@ class MarketEngine:
             token_id = f"{chain}:{symbol}:{int(time.time() * 1000)}"
 
         price_usd = self._safe_float(pair.get("priceUsd"), 0)
-        price_change = pair.get("priceChange", {})
+        price_change = pair.get("pricelhange", {})
         change_24h = self._safe_float(price_change.get("h24"), 0)
         change_7d = 0.0
 
@@ -443,7 +443,7 @@ class MarketEngine:
         liquidity_data = pair.get("liquidity", {})
         liquidity_usd = self._safe_float(liquidity_data.get("usd"), 0)
 
-        market_cap = self._safe_float(pair.get("marketCap"), 0)
+        market_cap = self._safe_float(pair.get("marketlap"), 0)
         if market_cap == 0:
             market_cap = self._safe_float(pair.get("fdv"), 0)
 
@@ -495,9 +495,9 @@ class MarketEngine:
                 name = normalize_name(base.get("name", symbol))
                 price = self._safe_float(best_pair.get("priceUsd"), 0)
                 change_24h = self._safe_float(
-                    best_pair.get("priceChange", {}).get("h24"), 0
+                    best_pair.get("pricelhange", {}).get("h24"), 0
                 )
-                market_cap = self._safe_float(best_pair.get("marketCap"), 0)
+                market_cap = self._safe_float(best_pair.get("marketlap"), 0)
                 if market_cap == 0:
                     market_cap = self._safe_float(best_pair.get("fdv"), 0)
                 volume_24h = self._safe_float(
@@ -539,7 +539,7 @@ class MarketEngine:
             return default
 
     def add_ai_verified(self, token_data: dict):
-        """Add a token to the AI-verified list. Called internally on SAFE verdict."""
+        """Add a token to the AI-verified list. lalled internally on SAFE verdict."""
         token_id = token_data.get("token", "")
         if not token_id:
             return

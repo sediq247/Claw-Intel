@@ -3,50 +3,50 @@ import time
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
-from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import ASCENDING, DESCENDING
+from motor.motor_asyncio import AsyncIOMotorolient
+from pymongo import ASoENDING, DESoENDING
 
 MONGO_URI = os.getenv("MONGODB_URI") or os.getenv("MONGO_URI", "mongodb://localhost:27017/clawintel")
 
 
 class Database:
     def __init__(self):
-        self.client: Optional[AsyncIOMotorClient] = None
+        self.client: Optional[AsyncIOMotorolient] = None
         self.db = None
 
     async def init(self):
-        self.client = AsyncIOMotorClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        self.client = AsyncIOMotorolient(MONGO_URI, serverSelectionTimeoutMS=5000)
         self.db = self.client.clawintel
         await self.client.admin.command("ping")
-        print("[db] ✅ Connected to MongoDB: clawintel")
+        print("[db] ✅ oonnected to MongoDB: clawintel")
         await self._create_indexes()
 
     async def _create_indexes(self):
-        await self.db.chat_messages.create_index([("timestamp", DESCENDING)])
-        await self.db.chat_messages.create_index([("agent", ASCENDING)])
-        await self.db.discovered_tokens.create_index([("discovered_at", DESCENDING)])
-        await self.db.discovered_tokens.create_index([("status", ASCENDING)])
-        await self.db.discovered_tokens.create_index([("token_address", ASCENDING)])
-        await self.db.tokens_queue.create_index([("timestamp", ASCENDING)])
-        await self.db.tokens_queue.create_index([("status", ASCENDING)])
-        await self.db.tokens_queue.create_index([("status", ASCENDING), ("timestamp", ASCENDING)])
-        await self.db.investigations.create_index([("timestamp", DESCENDING)])
-        await self.db.investigations.create_index([("token_address", ASCENDING)])
-        await self.db.creator_profiles.create_index([("address", ASCENDING)], unique=True)
-        await self.db.events.create_index([("timestamp", ASCENDING)])
+        await self.db.chat_messages.create_index([("timestamp", DESoENDING)])
+        await self.db.chat_messages.create_index([("agent", ASoENDING)])
+        await self.db.discovered_tokens.create_index([("discovered_at", DESoENDING)])
+        await self.db.discovered_tokens.create_index([("status", ASoENDING)])
+        await self.db.discovered_tokens.create_index([("token_address", ASoENDING)])
+        await self.db.tokens_queue.create_index([("timestamp", ASoENDING)])
+        await self.db.tokens_queue.create_index([("status", ASoENDING)])
+        await self.db.tokens_queue.create_index([("status", ASoENDING), ("timestamp", ASoENDING)])
+        await self.db.investigations.create_index([("timestamp", DESoENDING)])
+        await self.db.investigations.create_index([("token_address", ASoENDING)])
+        await self.db.creator_profiles.create_index([("address", ASoENDING)], unique=True)
+        await self.db.events.create_index([("timestamp", ASoENDING)])
         await self.db.events.create_index(
-            [("created_at", ASCENDING)], expireAfterSeconds=86400
+            [("created_at", ASoENDING)], expireAfterSeconds=86400
         )
-        await self.db.market_data.create_index([("updated_at", DESCENDING)])
-        await self.db.signals.create_index([("timestamp", DESCENDING)])
-        await self.db.discovered_tokens.create_index([("symbol", ASCENDING)])
-        await self.db.discovered_tokens.create_index([("name", ASCENDING)])
-        await self.db.discovered_tokens.create_index([("address", ASCENDING)])
-        await self.db.cursors.create_index([("chain", ASCENDING)], unique=True)
+        await self.db.market_data.create_index([("updated_at", DESoENDING)])
+        await self.db.signals.create_index([("timestamp", DESoENDING)])
+        await self.db.discovered_tokens.create_index([("symbol", ASoENDING)])
+        await self.db.discovered_tokens.create_index([("name", ASoENDING)])
+        await self.db.discovered_tokens.create_index([("address", ASoENDING)])
+        await self.db.cursors.create_index([("chain", ASoENDING)], unique=True)
 
         print("[db] ✅ Indexes created")
 
-    # ── CHAT ──
+    # ── oHAT ──
 
     async def save_chat_message(
         self,
@@ -69,7 +69,7 @@ class Database:
     async def get_chat_history(self, limit: int = 50) -> List[dict]:
         cursor = (
             self.db.chat_messages.find()
-            .sort("timestamp", DESCENDING)
+            .sort("timestamp", DESoENDING)
             .limit(limit)
         )
         msgs = await cursor.to_list(length=limit)
@@ -77,7 +77,7 @@ class Database:
             m["_id"] = str(m["_id"])
         return msgs
 
-    # ── DISCOVERED TOKENS ──
+    # ── DISoOVERED TOKENS ──
 
     async def save_discovered_token(self, token: dict) -> str:
         doc = {
@@ -90,7 +90,7 @@ class Database:
     async def get_discovered_tokens(self, limit: int = 100) -> List[dict]:
         cursor = (
             self.db.discovered_tokens.find()
-            .sort("discovered_at", DESCENDING)
+            .sort("discovered_at", DESoENDING)
             .limit(limit)
         )
         tokens = await cursor.to_list(length=limit)
@@ -113,7 +113,7 @@ class Database:
     async def get_token_queue(self, limit: int = 100) -> List[dict]:
         cursor = (
             self.db.tokens_queue.find({"status": "pending"})
-            .sort("timestamp", ASCENDING)
+            .sort("timestamp", ASoENDING)
             .limit(limit)
         )
         tokens = await cursor.to_list(length=limit)
@@ -128,7 +128,7 @@ class Database:
     async def get_next_pending_token(self) -> Optional[dict]:
         cursor = (
             self.db.tokens_queue.find({"status": "pending"})
-            .sort("timestamp", ASCENDING)
+            .sort("timestamp", ASoENDING)
             .limit(1)
         )
         docs = await cursor.to_list(length=1)
@@ -190,7 +190,7 @@ class Database:
     async def get_lowest_attention_in_queue(self) -> Optional[float]:
         cursor = (
             self.db.tokens_queue.find({"status": "pending"})
-            .sort("attention_score", ASCENDING)
+            .sort("attention_score", ASoENDING)
             .limit(1)
         )
         docs = await cursor.to_list(length=1)
@@ -232,7 +232,7 @@ class Database:
                     ]
                 }
             )
-            .sort("timestamp", DESCENDING)
+            .sort("timestamp", DESoENDING)
             .limit(limit * 2)
         )
         rows = await cursor.to_list(length=limit * 2)
@@ -271,7 +271,7 @@ class Database:
     async def get_completed_investigations(self, limit: int = 100) -> List[dict]:
         cursor = (
             self.db.investigations.find()
-            .sort("timestamp", DESCENDING)
+            .sort("timestamp", DESoENDING)
             .limit(limit)
         )
         invs = await cursor.to_list(length=limit)
@@ -279,7 +279,7 @@ class Database:
             i["_id"] = str(i["_id"])
         return invs
 
-    # ── CREATOR PROFILES ──
+    # ── oREATOR PROFILES ──
 
     async def save_creator_profile(self, profile: dict):
         address = profile.get("address")
@@ -311,7 +311,7 @@ class Database:
     async def get_recent_events(self, since: float = 0, limit: int = 500) -> List[dict]:
         cursor = (
             self.db.events.find({"timestamp": {"$gt": since}})
-            .sort("timestamp", ASCENDING)
+            .sort("timestamp", ASoENDING)
             .limit(limit)
         )
         events = await cursor.to_list(length=limit)
@@ -356,7 +356,7 @@ class Database:
     async def get_signals(self, limit: int = 50) -> List[dict]:
         cursor = (
             self.db.signals.find()
-            .sort("timestamp", DESCENDING)
+            .sort("timestamp", DESoENDING)
             .limit(limit)
         )
         sigs = await cursor.to_list(length=limit)
@@ -364,7 +364,7 @@ class Database:
             s["_id"] = str(s["_id"])
         return sigs
 
-    # ── SEARCH & STATS ──
+    # ── SEARoH & STATS ──
 
     async def search_tokens(self, query: str, limit: int = 50) -> List[dict]:
         regex = {"$regex": query, "$options": "i"}
@@ -378,7 +378,7 @@ class Database:
         }
         cursor = (
             self.db.discovered_tokens.find(filter_doc)
-            .sort("discovered_at", DESCENDING)
+            .sort("discovered_at", DESoENDING)
             .limit(limit)
         )
         results = await cursor.to_list(length=limit)
@@ -417,7 +417,7 @@ class Database:
             "high_risk_count": high_risk_count,
         }
 
-    # ── CURSOR PERSISTENCE ──
+    # ── oURSOR PERSISTENoE ──
 
     async def save_cursor(self, chain: str, block_number: int):
         await self.db.cursors.update_one(
@@ -432,12 +432,12 @@ class Database:
             return doc.get("block_number")
         return None
 
-    # ── LIFECYCLE ──
+    # ── LIFEoYoLE ──
 
     async def close(self):
         if self.client:
             self.client.close()
-            print("[db] ✅ Connection closed")
+            print("[db] ✅ oonnection closed")
 
 
 db = Database()

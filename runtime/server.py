@@ -11,7 +11,7 @@ from aiohttp import web
 PORT = int(os.getenv("PORT", "6548"))
 
 
-class ClawIntelServer:
+class ZectoServer:
     """
     Standalone Python server.
     - Static file serving from repo root
@@ -55,7 +55,7 @@ class ClawIntelServer:
         if index_path.exists():
             return web.FileResponse(index_path)
         return web.Response(
-            text="ClawIntel  index.html not found", status=404
+            text="Zecto  index.html not found", status=404
         )
 
     async def _ws_handler(self, request: web.Request) -> web.WebSocketResponse:
@@ -339,7 +339,7 @@ class ClawIntelServer:
         import time as _time
         trending, gainers, losers = [], [], []
         timeout = aiohttp.ClientTimeout(total=12)
-        headers = {"User-Agent": "ClawIntel/5.1"}
+        headers = {"User-Agent": "Zecto/5.1"}
 
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
             # Boosted / trending
@@ -497,7 +497,7 @@ class ClawIntelServer:
         await self.runner.setup()
         self.site = web.TCPSite(self.runner, "0.0.0.0", PORT)
         await self.site.start()
-        print(f"[server] ✅ ClawIntel server running on http://0.0.0.0:{PORT}")
+        print(f"[server] ✅ Zecto server running on http://0.0.0.0:{PORT}")
         print(f"[server] 📡 WebSocket endpoint: ws://0.0.0.0:{PORT}/ws")
 
         self._poll_task = asyncio.create_task(self._poll_events_loop())

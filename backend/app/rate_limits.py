@@ -20,7 +20,7 @@ UPSERT_RATE_LIMIT = text(
 def client_key(remote_host: str, secret: str | None = None) -> str:
     """Store a stable pseudonymous client key instead of a raw network address."""
     normalized = (remote_host or "unknown").strip().lower()
-    key = (secret or "ClawIntel development-only rate-limit key").encode("utf-8")
+    key = (secret or "Zecto development-only rate-limit key").encode("utf-8")
     return hmac.new(key, normalized.encode("utf-8"), hashlib.sha256).hexdigest()
 
 

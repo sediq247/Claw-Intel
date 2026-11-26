@@ -1,4 +1,4 @@
-# ClawIntel
+# Zecto
 
 ### An AI-Powered Cryptocurrency Intelligence Organization
 
@@ -11,11 +11,11 @@
 ## Table of Contents
 
 - [The Vision](#the-vision)
-- [What Is ClawIntel?](#what-is-clawintel)
-- [The ClawIntel Organization](#the-clawintel-organization)
+- [What Is Zecto?](#what-is-zecto)
+- [The Zecto Organization](#the-zecto-organization)
 - [The Six AI Agents](#the-six-ai-agents)
 - [The Two Intelligence Environments](#the-two-intelligence-environments)
-- [How ClawIntel Works](#how-clawintel-works)
+- [How Zecto Works](#how-zecto-works)
 - [The Intelligence Architecture](#the-intelligence-architecture)
 - [Technology Stack](#technology-stack)
 - [Market Data and Blockchain Intelligence](#market-data-and-blockchain-intelligence)
@@ -55,19 +55,19 @@ But information alone is not intelligence.
 
 The real challenge is connecting the information, interpreting it from different perspectives, identifying disagreements, and understanding what the available evidence actually means.
 
-**ClawIntel approaches this problem through collaborative artificial intelligence.**
+**Zecto approaches this problem through collaborative artificial intelligence.**
 
 We envision a future where specialized AI agents operate as an intelligent organization: continuously observing, investigating, exchanging findings, questioning one another, and helping humans understand increasingly complex digital markets.
 
-ClawIntel is our step toward that future.
+Zecto is our step toward that future.
 
-# What Is ClawIntel?
-ClawIntel is an AI-powered, multi-agent cryptocurrency intelligence platform built around a simple idea: complex markets deserve more than a single perspective.
+# What Is Zecto?
+Zecto is an AI-powered, multi-agent cryptocurrency intelligence platform built around a simple idea: complex markets deserve more than a single perspective.
 
-Instead of relying on one AI model to interpret everything, ClawIntel brings together a team of specialized AI agents that observe market activity, investigate digital assets, analyze blockchain evidence, challenge assumptions, debate findings, and collaborate to develop a more complete understanding of the market.
+Instead of relying on one AI model to interpret everything, Zecto brings together a team of specialized AI agents that observe market activity, investigate digital assets, analyze blockchain evidence, challenge assumptions, debate findings, and collaborate to develop a more complete understanding of the market.
 
 It is designed as an intelligence organization, not just another crypto dashboard or token-scanning tool.
-ClawIntel is a multi-agent cryptocurrency intelligence workspace that combines autonomous market observation, specialized blockchain analysis, collaborative reasoning, and human interaction.
+Zecto is a multi-agent cryptocurrency intelligence workspace that combines autonomous market observation, specialized blockchain analysis, collaborative reasoning, and human interaction.
 
 The platform is organized into two environments:
 
@@ -75,9 +75,9 @@ The platform is organized into two environments:
 
 **Trading Room:** An interactive environment where humans participate directly alongside the agents, discuss market opportunities, investigate assets, explore portfolio workflows, and interact with simulated trading functionality.
 
-Both environments operate within the same broader ClawIntel organization while maintaining their own room-specific agent workers and context.
+Both environments operate within the same broader Zecto organization while maintaining their own room-specific agent workers and context.
 
-ClawIntel is designed around five principles:
+Zecto is designed around five principles:
 
 1. **Specialization:** Each agent brings a distinct area of expertise.
 2. **Collaboration:** Agents exchange findings rather than operating as isolated tools.
@@ -87,9 +87,9 @@ ClawIntel is designed around five principles:
 
 ---
 
-# The ClawIntel Organization
+# The Zecto Organization
 
-ClawIntel operates through six specialized AI agents.
+Zecto operates through six specialized AI agents.
 
 Every agent is a member of the same intelligence organization. Each has an individual identity, expertise, reasoning responsibilities, and contribution to the team's work.
 
@@ -211,7 +211,7 @@ Orion does not simply repeat what the other agents say. His responsibility is to
 
 ### 6. Makto — Trading and Portfolio Intelligence
 
-Makto contributes trading and portfolio expertise to the ClawIntel organization.
+Makto contributes trading and portfolio expertise to the Zecto organization.
 
 Makto works with the available wallet, portfolio, market, and trading information to help users understand their simulated trading activity and explore trading workflows.
 
@@ -231,13 +231,13 @@ Makto collaborates with the same team and follows the same evidence, permission,
 
 # The Two Intelligence Environments
 
-ClawIntel provides two different environments for experiencing its multi-agent organization.
+Zecto provides two different environments for experiencing its multi-agent organization.
 
 They serve different purposes but belong to the same platform.
 
 ## 1. War Room — Autonomous Intelligence
 
-The War Room is the autonomous intelligence environment of ClawIntel.
+The War Room is the autonomous intelligence environment of Zecto.
 
 It is designed for observation rather than direct conversation with the user.
 
@@ -278,7 +278,7 @@ The agents are allowed to have personalities. They can challenge one another, di
 
 However, personality never replaces evidence.
 
-**The War Room is where ClawIntel thinks together.**
+**The War Room is where Zecto thinks together.**
 
 ## 2. Trading Room — Human-AI Collaboration
 
@@ -322,13 +322,13 @@ For example, if a user proposes a paper order that exceeds the available virtual
 
 The objective is to create an engaging environment where users interact with an intelligent team rather than repeatedly asking isolated questions to a chatbot.
 
-**The Trading Room is where humans work alongside ClawIntel.**
+**The Trading Room is where humans work alongside Zecto.**
 
 ---
 
-# How ClawIntel Works
+# How Zecto Works
 
-ClawIntel combines market-data collection, specialized analysis, agent collaboration, and intelligence delivery.
+Zecto combines market-data collection, specialized analysis, agent collaboration, and intelligence delivery.
 
 At a high level, the workflow follows this structure:
 
@@ -369,7 +369,7 @@ The orchestrator manages the process; it does not replace the agents or become a
 
 # The Intelligence Architecture
 
-ClawIntel uses a modular architecture designed to separate the user interface, backend services, agent execution, data collection, AI providers, and persistent storage.
+Zecto uses a modular architecture designed to separate the user interface, backend services, agent execution, data collection, AI providers, and persistent storage.
 
 ## High-Level Architecture
 
@@ -377,7 +377,7 @@ ClawIntel uses a modular architecture designed to separate the user interface, b
 flowchart TD
     USER[Human User]
 
-    subgraph FRONTEND["ClawIntel Frontend"]
+    subgraph FRONTEND["Zecto Frontend"]
         WAR[War Room]
         TRADE[Trading Room]
         SETTINGS[Settings and Configuration]
@@ -476,7 +476,7 @@ Core technologies include:
 
 ## Database
 
-ClawIntel uses PostgreSQL as its current persistent database.
+Zecto uses PostgreSQL as its current persistent database.
 
 It supports the storage of application data, sessions, investigation events, agent activity, and simulated trading records.
 
@@ -515,7 +515,7 @@ The current architecture does not automatically migrate the historical MongoDB d
 
 # Market Data and Blockchain Intelligence
 
-ClawIntel is designed to combine information from different sources rather than depend on one data provider.
+Zecto is designed to combine information from different sources rather than depend on one data provider.
 
 ## Current Data Sources
 
@@ -544,7 +544,7 @@ The availability and depth of returned information depend on the configured prov
 
 ### Evidence and Limitations
 
-ClawIntel is designed to pass retrieved information to the relevant analysis processes as evidence.
+Zecto is designed to pass retrieved information to the relevant analysis processes as evidence.
 
 The AI agents should not invent unavailable information or present missing data as verified findings.
 
@@ -561,7 +561,7 @@ These distinctions are important to maintaining reliable intelligence.
 
 # AI Provider Architecture
 
-ClawIntel supports a modular LLM provider architecture.
+Zecto supports a modular LLM provider architecture.
 
 The current provider integrations include:
 
@@ -583,7 +583,7 @@ However, provider fallback must not be confused with guaranteed availability. If
 
 ## Provider Transparency
 
-ClawIntel aims to make provider failures visible.
+Zecto aims to make provider failures visible.
 
 When an LLM provider is unavailable or improperly configured, the application should report the issue.
 
@@ -608,7 +608,7 @@ For API and migration details, see [Wallet identity and paper trading](docs/WALL
 
 # Real-Time Communication
 
-ClawIntel uses persistent event records and WebSocket communication to deliver activity to the frontend.
+Zecto uses persistent event records and WebSocket communication to deliver activity to the frontend.
 
 This allows the application to publish:
 
@@ -666,7 +666,7 @@ Open `.env` and configure the credentials and settings you need.
 
 Do not commit your `.env` file or expose API keys publicly.
 
-## 3. Start ClawIntel
+## 3. Start Zecto
 
 From the project root:
 
@@ -797,7 +797,7 @@ Do not start multiple duplicate worker loops for the same application instance.
 
 # Current Implementation
 
-ClawIntel is an actively evolving project. Paper trades use virtual funds and provider price observations; they are not on-chain execution.
+Zecto is an actively evolving project. Paper trades use virtual funds and provider price observations; they are not on-chain execution.
 
 ## Implemented Foundation
 
@@ -822,7 +822,7 @@ The current rebuild includes:
 - Bounded autonomous DexScreener market scanning.
 - Optional CoinGecko enrichment.
 - Configured chain RPC enrichment.
-- Bounded, configurable debate challenges with evidence-linked findings, revision history, call timeouts, and output-token budgets.
+- Bounded, configurable debate challenges with findings based on transient provider observations, revision history, call timeouts, and output-token budgets. Raw observations are not retained.
 - Structured human challenges that re-open an investigation and ask the selected agent to reassess stored evidence before Orion revises the synthesis.
 - Resumable WebSocket event replay with paged catch-up and client-side sequence deduplication.
 - Bounded text attachments in Trading Room messages, stored with the message and passed to agents as untrusted context.
@@ -909,7 +909,7 @@ Our objective is to build an intelligence organization that becomes more capable
 
 Security and trustworthy information are important design principles.
 
-ClawIntel's architecture includes several safeguards:
+Zecto's architecture includes several safeguards:
 
 - Short-lived signed wallet authentication and account-owned Trading Room access.
 - User-scoped virtual cash, positions and paper order records.
@@ -958,7 +958,7 @@ These documents complement this README with deeper engineering details.
 
 # Contributing
 
-ClawIntel is an evolving project, and contributions that improve its reliability, intelligence capabilities, and user experience are welcome.
+Zecto is an evolving project, and contributions that improve its reliability, intelligence capabilities, and user experience are welcome.
 
 Areas where contributions may be valuable include:
 
@@ -988,11 +988,11 @@ When contributing:
 
 # Disclaimer
 
-ClawIntel is an experimental cryptocurrency intelligence and research platform.
+Zecto is an experimental cryptocurrency intelligence and research platform.
 
 Information and assessments generated by its AI agents are provided for informational and educational purposes only.
 
-Nothing produced by ClawIntel constitutes financial advice, investment advice, or a guarantee of future market performance.
+Nothing produced by Zecto constitutes financial advice, investment advice, or a guarantee of future market performance.
 
 Market data may be incomplete, delayed, inaccurate, or unavailable. AI-generated assessments may contain errors.
 
@@ -1026,10 +1026,10 @@ But specialized intelligence systems that observe, investigate, reason, challeng
 
 A team where different perspectives matter. Where conclusions can be questioned. Where evidence matters more than confidence. And where humans remain part of the process.
 
-That is the idea behind ClawIntel.
+That is the idea behind Zecto.
 
 **Six agents. Different minds. One intelligence organization.**
 
 *Built with precision. Operates with purpose. Never stops learning.*
 
-**ClawIntel © 2026**
+**Zecto © 2026**

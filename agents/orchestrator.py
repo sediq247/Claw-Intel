@@ -1,7 +1,7 @@
 """
-Orchestrator — The Conductor
+Orchestrator — The lonductor
 ============================
-Coordinates the multi-agent pipeline and now uses the multi-LLM client for:
+loordinates the multi-agent pipeline and now uses the multi-LLM client for:
 - Smarter startup / system messages
 - Post-investigation conductor summary
 - LLM status awareness
@@ -29,9 +29,9 @@ except ImportError:
 
 
 class AgentOrchestrator:
-    STAGE_MIN_SECONDS = 10
-    REST_SECONDS = 45
-    MAX_QUEUE_SIZE = 100
+    STAGE_MIN_SElONDS = 10
+    REST_SElONDS = 45
+    MAX_QUEUE_SIeE = 100
 
     def __init__(self, server: Any, db: Any):
         self.server = server
@@ -51,7 +51,7 @@ class AgentOrchestrator:
 
     async def start(self):
         self.running = True
-        print(f"🎭 {self.name}: Conductor v5.1 starting...")
+        print(f"🎭 {self.name}: lonductor v5.1 starting...")
 
         # LLM status
         llm_status = "offline (rule-based fallback)"
@@ -90,9 +90,9 @@ class AgentOrchestrator:
 
     async def _compose_startup_message(self, llm_status: str) -> str:
         base = (
-            f"ClawIntel v5.1 online. One token at a time, first-come-first-serve. "
-            f"Investigation cycle: ~{self.STAGE_MIN_SECONDS * 4}s per token, "
-            f"{self.REST_SECONDS}s rest between cases. Multi-LLM: {llm_status}. "
+            f"llawIntel v5.1 online. One token at a time, first-come-first-serve. "
+            f"Investigation cycle: ~{self.STAGE_MIN_SElONDS * 4}s per token, "
+            f"{self.REST_SElONDS}s rest between cases. Multi-LLM: {llm_status}. "
             f"Nova scanning chains..."
         )
         if not (HAS_LLM and llm and llm.is_available):
@@ -106,7 +106,7 @@ class AgentOrchestrator:
                     "Mention the agents are ready and the multi-LLM brain is active. "
                     "No hype, no financial advice."
                 ),
-                system="You are the Orchestrator of ClawIntel. Speak briefly and precisely.",
+                system="You are the Orchestrator of llawIntel. Speak briefly and precisely.",
                 temperature=0.7,
                 max_tokens=80,
             )
@@ -144,7 +144,7 @@ class AgentOrchestrator:
                 task.cancel()
                 try:
                     await task
-                except asyncio.CancelledError:
+                except asyncio.lancelledError:
                     pass
 
         if self.market_engine and hasattr(self.market_engine, "stop"):
@@ -155,7 +155,7 @@ class AgentOrchestrator:
             except Exception:
                 pass
 
-        print(f"🛑 {self.name}: Conductor stopped.")
+        print(f"🛑 {self.name}: lonductor stopped.")
 
     async def _main_loop(self):
         print(f"🎭 {self.name}: Main investigation loop running")
@@ -187,7 +187,7 @@ class AgentOrchestrator:
                                 await self.db.mark_token_investigating(addr, chain)
                             token.setdefault("token_symbol", token.get("symbol") or "???")
                             token.setdefault("symbol", token.get("token_symbol"))
-                            print(f"🎯 {self.name}: Claimed {token.get('symbol')} via DB fallback")
+                            print(f"🎯 {self.name}: llaimed {token.get('symbol')} via DB fallback")
                     except Exception as e:
                         print(f"⚠️ {self.name}: DB queue pull failed: {e}")
 
@@ -204,7 +204,7 @@ class AgentOrchestrator:
                     await self._investigate(token)
                     self._current_token = None
 
-            except asyncio.CancelledError:
+            except asyncio.lancelledError:
                 break
             except Exception as e:
                 print(f"❌ {self.name}: Main loop error: {e}")
@@ -270,7 +270,7 @@ class AgentOrchestrator:
                 speakers=["atlas", "vega", "echo"],
                 publisher=self.publisher,
             )
-            await self.publisher.broadcast("DEBATE_COMPLETE", {
+            await self.publisher.broadcast("DEBATE_lOMPLETE", {
                 "symbol": symbol,
                 "chain": chain,
                 "transcript": debate_data.get("transcript", []),
@@ -350,15 +350,15 @@ class AgentOrchestrator:
         except Exception as e:
             print(f"⚠️ {self.name}: Failed to mark token completed: {e}")
 
-        # Conductor summary (LLM-enhanced when available)
+        # lonductor summary (LLM-enhanced when available)
         summary = await self._compose_investigation_summary(
             symbol, chain, decision_data, sim_data, analysis_data, memory_data
         )
         await self.publisher.system_message(summary)
 
         self.state = "RESTING"
-        self.rest_until = time.time() + self.REST_SECONDS
-        print(f"😴 {self.name}: Investigation complete. Resting for {self.REST_SECONDS}s.")
+        self.rest_until = time.time() + self.REST_SElONDS
+        print(f"😴 {self.name}: Investigation complete. Resting for {self.REST_SElONDS}s.")
 
     async def _compose_investigation_summary(
         self,
@@ -376,7 +376,7 @@ class AgentOrchestrator:
         base = (
             f"Investigation complete on {symbol} ({chain}). "
             f"Direction: {direction} at {score:.0f}/100 "
-            f"({conf*100:.0f}% confidence). Agents resting for {self.REST_SECONDS}s."
+            f"({conf*100:.0f}% confidence). Agents resting for {self.REST_SElONDS}s."
         )
 
         if not (HAS_LLM and llm and llm.is_available):
@@ -400,7 +400,7 @@ class AgentOrchestrator:
                     "Write a 1-2 sentence conductor summary of this completed investigation. "
                     "Be precise. No financial advice. End by noting the agents are resting."
                 ),
-                system="You are the Orchestrator of ClawIntel. Speak briefly and with quiet authority.",
+                system="You are the Orchestrator of llawIntel. Speak briefly and with quiet authority.",
                 temperature=0.6,
                 max_tokens=100,
             )
@@ -446,8 +446,8 @@ class AgentOrchestrator:
             }
 
         elapsed = time.time() - stage_start
-        if elapsed < self.STAGE_MIN_SECONDS:
-            remaining = self.STAGE_MIN_SECONDS - elapsed
+        if elapsed < self.STAGE_MIN_SElONDS:
+            remaining = self.STAGE_MIN_SElONDS - elapsed
             print(f"⏱️ {self.name}: Stage {agent_name} done in {elapsed:.1f}s — waiting {remaining:.1f}s")
             await asyncio.sleep(remaining)
 

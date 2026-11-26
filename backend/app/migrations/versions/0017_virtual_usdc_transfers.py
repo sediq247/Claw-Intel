@@ -1,4 +1,4 @@
-"""Support internal transfers between verified ClawIntel paper wallets."""
+"""Support internal transfers between verified Zecto paper wallets."""
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql

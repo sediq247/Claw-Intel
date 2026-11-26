@@ -1,4 +1,4 @@
-# ClawIntel quick start
+# Zecto quick start
 
 ## War Room
 

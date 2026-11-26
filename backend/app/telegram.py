@@ -66,7 +66,7 @@ async def handle_update(update: dict, client: httpx.AsyncClient) -> None:
         return
     words = text_value.strip().split()
     if words and words[0].split("@", 1)[0] == "/start" and len(words) == 1:
-        await telegram_api(client, "sendMessage", {"chat_id": str(chat_id), "text": "To link this chat, create a one-time Telegram link from ClawIntel Settings."})
+        await telegram_api(client, "sendMessage", {"chat_id": str(chat_id), "text": "To link this chat, create a one-time Telegram link from Zecto Settings."})
         return
     if len(words) != 2 or words[0].split("@", 1)[0] != "/start":
         return
@@ -82,8 +82,8 @@ async def handle_update(update: dict, client: httpx.AsyncClient) -> None:
         ).with_for_update())
         if challenge is None:
             owner = await db.scalar(select(TelegramAccount).where(TelegramAccount.chat_id == str(chat_id)))
-            response = ("This Telegram chat is already linked to ClawIntel." if owner else
-                        "That link has expired or was already used. Create a fresh link in ClawIntel settings.")
+            response = ("This Telegram chat is already linked to Zecto." if owner else
+                        "That link has expired or was already used. Create a fresh link in Zecto settings.")
             user_id = owner.user_id if owner else None
         else:
             challenge.used_at = now
@@ -91,14 +91,14 @@ async def handle_update(update: dict, client: httpx.AsyncClient) -> None:
                 (TelegramAccount.user_id == challenge.user_id) | (TelegramAccount.chat_id == str(chat_id))
             ).with_for_update())
             if account and (account.user_id != challenge.user_id or account.chat_id != str(chat_id)):
-                response = "This Telegram chat or ClawIntel account is already linked elsewhere. Unlink it first."
+                response = "This Telegram chat or Zecto account is already linked elsewhere. Unlink it first."
                 user_id = None
             else:
                 if account is None:
                     account = TelegramAccount(user_id=challenge.user_id, chat_id=str(chat_id))
                     db.add(account)
                 account.username = (message.get("from") or {}).get("username")
-                response = "Your Telegram account is linked to ClawIntel. Price-alert notifications are enabled."
+                response = "Your Telegram account is linked to Zecto. Price-alert notifications are enabled."
                 user_id = challenge.user_id
             await db.commit()
         if user_id is not None:
@@ -114,7 +114,7 @@ async def queue_price_alert(db, user_id, price: str, chain: str, address: str, c
         direction = "reached or exceeded" if condition == "above" else "fell to or below"
         db.add(TelegramOutbox(
             user_id=user_id, chat_id=account.chat_id,
-            text=f"ClawIntel price alert: {chain} token {address} {direction} ${threshold}. Observed price: ${price}. This is informational only; no trade was executed.",
+            text=f"Zecto price alert: {chain} token {address} {direction} ${threshold}. Observed price: ${price}. This is informational only; no trade was executed.",
         ))
 
 

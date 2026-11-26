@@ -32,9 +32,11 @@ npm run dev
 - Check schema revision: `alembic current`.
 - Health: `GET /health`.
 - Automatic scan cadence: `AUTO_SCAN_INTERVAL_SECONDS`; turn off with `AUTO_SCAN_ENABLED=false`.
-- PostgreSQL data lives in the named Compose volume `clawintel_postgres`.
+- Optional external War Room agents: set `WARROOM_A2A_AGENT_CARDS` to a comma-separated list of trusted public HTTPS Agent Card URLs. The integration is disabled by default. Never add private/internal endpoints; A2A replies are untrusted input and cannot access the Trading Room.
+- Optional stock-history feed: set `ALPHA_VANTAGE_API_KEY`. Zecto keeps normalized daily OHLCV observations transiently in process memory and enforces a shared atomic daily provider budget (`ALPHA_VANTAGE_DAILY_CALL_BUDGET`, default 20) across app replicas. Set a budget within your provider plan's current quota. The endpoint does not provide real-time execution prices.
+- PostgreSQL data lives in the named Compose volume `clawintel_postgres` for migration compatibility. Migration `0027_clear_existing_data` clears its application rows at startup.
 - Back up PostgreSQL before any destructive action or schema migration. The legacy Mongo database is neither read nor deleted by this service.
 
 ## Release validation limits
 
-The checked-in runtime startup command is now the ASGI module, replacing the former nonexistent `main.py`. The Vite production build and initial Alembic offline SQL generation have been validated. This environment has no running Docker daemon or PostgreSQL server, so container build/startup, live migration, database integrity, and full deployment health remain unverified.
+The checked-in runtime startup command is now the ASGI module, replacing the former nonexistent `main.py`. Unit tests, Vite production builds, and Alembic offline SQL generation can be validated locally. A working Docker daemon and PostgreSQL server are required to verify container build/startup, live migration, database integrity, and full deployment health. Live A2A interoperability also requires a trusted external Agent Card endpoint; no partner endpoint is supplied by this repository.

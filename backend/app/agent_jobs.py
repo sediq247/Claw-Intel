@@ -9,9 +9,12 @@ from uuid import UUID, uuid4
 from sqlalchemy import case, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+import httpx
 
+from .config import get_settings
 from .database import SessionFactory
-from .models import AgentJob, AutonomousSchedule, Evidence, Investigation
+from .evidence import Evidence
+from .models import AgentJob, AutonomousSchedule, Investigation
 from .orchestration import run_investigation
 from .services import persist_event
 
@@ -37,23 +40,23 @@ async def enqueue_investigation_job(
     title: str,
     user_request: str,
     dedupe_key: str,
-    simulated: bool = False,
 ) -> AgentJob:
     job = AgentJob(
         job_type="investigation",
         dedupe_key=dedupe_key[:128],
         payload={
-            "evidence_id": str(evidence.id),
+            "chain": evidence.chain,
+            "token_address": evidence.token_address,
             "title": title[:200],
             "user_request": user_request[:2500],
-            "simulated": simulated,
         },
     )
     db.add(job)
     try:
         await db.commit()
         await persist_event(db, "autonomous", "AGENT_JOB_QUEUED", {
-            "job_id": str(job.id), "evidence_id": str(evidence.id), "title": title[:200],
+            "job_id": str(job.id), "chain": evidence.chain,
+            "token_address": evidence.token_address, "title": title[:200],
         })
         return job
     except IntegrityError:
@@ -78,11 +81,17 @@ async def _reclaim_expired_jobs(db: AsyncSession, now: datetime) -> None:
     )
 
 
-async def _claim_job(reclaim_expired: bool = False) -> tuple[UUID, str, dict, int, int] | None:
+async def _claim_job(reclaim_expired: bool = False) -> tuple[UUID, str, dict, int, int, datetime] | None:
     now = datetime.now(timezone.utc)
     async with SessionFactory() as db:
         schedule = await db.scalar(select(AutonomousSchedule).where(AutonomousSchedule.id == 1).with_for_update())
-        if schedule is not None and schedule.phase != "working":
+        # The durable investigation queue currently contains crypto-discovery
+        # jobs only. Do not let a queued/retried crypto job spill into the stock,
+        # rest, or idle blocks, and fail closed before the schedule is initialized.
+        if schedule is None or schedule.phase != "crypto":
+            await db.commit()
+            return None
+        if schedule.phase_ends_at <= now:
             await db.commit()
             return None
         if reclaim_expired:
@@ -101,27 +110,35 @@ async def _claim_job(reclaim_expired: bool = False) -> tuple[UUID, str, dict, in
         job.attempts += 1
         job.locked_at = now
         job.updated_at = now
-        claim = (job.id, job.job_type, dict(job.payload), job.attempts, job.max_attempts)
+        claim = (job.id, job.job_type, dict(job.payload), job.attempts, job.max_attempts, schedule.phase_ends_at)
         await db.commit()
         return claim
 
 
 async def _execute_investigation(payload: dict) -> dict:
-    evidence_id = UUID(str(payload["evidence_id"]))
+    chain = str(payload.get("chain") or "").lower()
+    token_address = str(payload.get("token_address") or "")
+    settings = get_settings()
+    from .market_data import fetch_token_observation
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(15, connect=5)) as client:
+        observation = await fetch_token_observation(client, token_address, settings, chain)
+    if not observation or str(observation.get("chain", "")).lower() != chain:
+        raise ValueError("Fresh exact-address market data is unavailable for the queued analysis")
+    evidence = Evidence(
+        department="autonomous", chain=chain, token_address=token_address,
+        source=str(observation.get("source") or "market provider"),
+        data_kind=str(observation.get("data_kind") or "live"),
+        fields={key: value for key, value in observation.items()
+                if key not in {"source", "data_kind", "limitations"}},
+        limitations=observation.get("limitations"),
+    )
     async with SessionFactory() as db:
-        evidence = await db.get(Evidence, evidence_id)
-        if evidence is None:
-            raise ValueError("Queued investigation evidence no longer exists")
-        if evidence.investigation_id:
-            prior = await db.get(Investigation, evidence.investigation_id)
-            if prior is not None and prior.status == "completed":
-                return {"investigation_id": str(prior.id), "status": "completed", "recovered": True}
         return await run_investigation(
             db,
             evidence,
             title=str(payload.get("title") or "Market investigation"),
             user_request=str(payload.get("user_request") or ""),
-            simulated=bool(payload.get("simulated", False)),
             reuse_active=True,
         )
 
@@ -135,7 +152,8 @@ async def _finish_job(job_id: UUID, attempts: int, max_attempts: int,
         job = await db.get(AgentJob, job_id)
         if job is None:
             return
-        job.result = result
+        job.result = ({key: value for key, value in result.items()
+                       if key not in {"evidence_id", "evidence_ids"}} if result else result)
         job.last_error = error_type or ("Investigation returned partial results" if partial else None)
         job.locked_at = None
         job.updated_at = now
@@ -187,13 +205,16 @@ async def agent_job_worker_loop(stop: asyncio.Event) -> None:
                 except asyncio.TimeoutError:
                     pass
                 continue
-            job_id, job_type, payload, attempts, max_attempts = claim
+            job_id, job_type, payload, attempts, max_attempts, phase_deadline = claim
             heartbeat_stop = asyncio.Event()
             heartbeat = asyncio.create_task(_heartbeat(job_id, heartbeat_stop))
             try:
                 if job_type != "investigation":
                     raise ValueError("Unsupported agent job type")
-                result = await _execute_investigation(payload)
+                remaining = max(0.0, (phase_deadline - datetime.now(timezone.utc)).total_seconds())
+                if remaining <= 0:
+                    raise asyncio.TimeoutError
+                result = await asyncio.wait_for(_execute_investigation(payload), timeout=remaining)
                 heartbeat_stop.set()
                 heartbeat.cancel()
                 await asyncio.gather(heartbeat, return_exceptions=True)

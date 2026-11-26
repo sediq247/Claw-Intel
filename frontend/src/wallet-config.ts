@@ -8,7 +8,7 @@ export const walletConfig = createConfig({
   chains: [mainnet, bsc, base],
   connectors: [
     metaMask(),
-    coinbaseWallet({ appName: 'ClawIntel' }),
+    coinbaseWallet({ appName: 'Zecto' }),
     injected(),
     ...(walletConnectProjectId ? [walletConnect({ projectId: walletConnectProjectId })] : []),
   ],

@@ -7,13 +7,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", case_sensitive=False, hide_input_in_errors=True)
 
-    app_name: str = "ClawIntel"
+    app_name: str = "Zecto"
     environment: str = "development"
     database_url: str = Field(default="postgresql+asyncpg://clawintel:clawintel@localhost:5432/clawintel")
     allowed_origins: str = "http://localhost:6548,http://127.0.0.1:6548"
     cookie_secure: bool = False
     auto_scan_enabled: bool = True
-    auto_scan_interval_seconds: int = Field(default=900, ge=300, le=86400)
+    auto_scan_interval_seconds: int = Field(default=300, ge=60, le=86400)
     price_alert_check_interval_seconds: int = Field(default=300, ge=60, le=3600)
     public_base_url: str = ""
     telegram_bot_token: str | None = None
@@ -24,16 +24,31 @@ class Settings(BaseSettings):
     trading_providers: str = "gemini,openrouter,cerebras"
     gemini_models: str = ""
     llm_max_model_attempts: int = Field(default=7, ge=1, le=8)
+    llm_global_daily_call_budget: int = Field(default=500, ge=1, le=100000)
+    llm_provider_daily_call_budget: int = Field(default=250, ge=1, le=100000)
+    llm_department_daily_call_budget: int = Field(default=300, ge=1, le=100000)
+    llm_agent_daily_call_budget: int = Field(default=150, ge=1, le=100000)
     debate_max_challenges: int = Field(default=4, ge=0, le=5)
     debate_output_token_budget: int = Field(default=6000, ge=400, le=12000)
     debate_call_timeout_seconds: int = Field(default=60, ge=5, le=180)
     auto_scan_revisit_change_pct: float = Field(default=15.0, ge=0, le=1000)
     auto_scan_min_revisit_seconds: int = Field(default=900, ge=60, le=86400)
     coingecko_api_key: str | None = None
+    exa_api_key: str | None = None
+    exa_daily_call_budget: int = Field(default=20, ge=1, le=100000)
+    alpha_vantage_api_key: str | None = None
+    alpha_vantage_daily_call_budget: int = Field(default=20, ge=1, le=100000)
+    alpha_vantage_license_status: str = Field(
+        default="disabled", pattern="^(disabled|personal_noncommercial|commercial_authorized)$",
+    )
+    warroom_stock_symbols: str = "SPY,QQQ,AAPL,MSFT,NVDA"
     eth_rpc_url: str | None = None
     bsc_rpc_url: str | None = None
     base_rpc_url: str | None = None
     solana_rpc_url: str | None = None
+    # Comma-separated operator-managed A2A Agent Card URLs. No user-supplied URLs.
+    warroom_a2a_agent_cards: str = ""
+    a2a_timeout_seconds: int = Field(default=12, ge=3, le=30)
     warroom_gemini_api_key: str | None = None
     warroom_gemini_model: str = ""
     warroom_openrouter_api_key: str | None = None

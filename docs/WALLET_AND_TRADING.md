@@ -8,7 +8,7 @@ The server creates five-minute, single-use challenges bound to the configured Or
 
 ### Wallet UI research and implementation choice
 
-The official [Wagmi connect-wallet guide](https://wagmi.sh/react/guides/connect-wallet) documents both a custom connector chooser and third-party UI libraries built on Wagmi. [RainbowKit](https://rainbowkit.com/docs/introduction) is one established customizable Wagmi/Viem UI option; [Viem's `signMessage`](https://viem.sh/docs/actions/wallet/signMessage) action uses EIP-191 message signing. ClawIntel uses Wagmi connectors with a product-matched in-app chooser so Phantom can be the primary Solana option while EVM connectors share the same backend challenge-verification flow. WalletConnect's Wagmi connector needs a Reown project ID, so it stays an explicit optional build-time integration rather than showing a nonfunctional connect action.
+The official [Wagmi connect-wallet guide](https://wagmi.sh/react/guides/connect-wallet) documents both a custom connector chooser and third-party UI libraries built on Wagmi. [RainbowKit](https://rainbowkit.com/docs/introduction) is one established customizable Wagmi/Viem UI option; [Viem's `signMessage`](https://viem.sh/docs/actions/wallet/signMessage) action uses EIP-191 message signing. Zecto uses Wagmi connectors with a product-matched in-app chooser so Phantom can be the primary Solana option while EVM connectors share the same backend challenge-verification flow. WalletConnect's Wagmi connector needs a Reown project ID, so it stays an explicit optional build-time integration rather than showing a nonfunctional connect action.
 
 The supported chain identity list and market-data coverage are separate. Wallet authentication does not mean market observations, RPC analysis, executable quotes, or trading are available on every network.
 
@@ -22,7 +22,7 @@ The supported chain identity list and market-data coverage are separate. Wallet 
 
 ## Paper account
 
-Each verified user has one `paper_accounts` row. The first portfolio read creates the initial $10,000 virtual USDC balance; the unique user constraint prevents reseeding on later sessions. Paper orders are entered in USD, use fresh exact-address token/USD observations, and debit or credit virtual USDC directly. The resulting order, position, and balance update is written in a single database transaction. The account is locked while validating and applying an order; an idempotency key cannot apply a fill twice, and reusing it for a different order returns a conflict.
+Each verified user has one `Zecto wallet` row. The first portfolio read creates the initial $10,000 virtual USDC balance; the unique user constraint prevents reseeding on later sessions. Paper orders are entered in USD, use fresh exact-address token/USD observations, and debit or credit virtual USDC directly. The resulting order, position, and balance update is written in a single database transaction. The account is locked while validating and applying an order; an idempotency key cannot apply a fill twice, and reusing it for a different order returns a conflict.
 
 Prices must be positive and no more than five minutes old. Only exact EVM contract addresses and Solana mint addresses on Ethereum, BNB Smart Chain, Base, or Solana are accepted. Ticker-only orders, stale or missing prices, unsupported chain/address pairs, overspending, and overselling are rejected. The user must explicitly confirm the order in the frontend; chat text alone can never alter the ledger.
 
@@ -30,12 +30,12 @@ Fills are virtual and use the last provider-reported price. Fees, slippage, late
 
 ### Internal virtual-USDC transfers
 
-Dashboard Send and Receive are limited to internal transfers between initialized ClawIntel paper accounts whose recipient has a verified wallet identity on the selected network. Transfers lock both accounts in stable order, debit and credit in one PostgreSQL transaction, and are idempotent per sender. The Receive address is an identity lookup hint only; it is not an on-chain deposit address. External deposits and blockchain transfers are unsupported.
+Dashboard Send and Receive are limited to internal transfers between initialized Zecto paper accounts whose recipient has a verified wallet identity on the selected network. Transfers lock both accounts in stable order, debit and credit in one PostgreSQL transaction, and are idempotent per sender. The Receive address is an identity lookup hint only; it is not an on-chain deposit address. External deposits and blockchain transfers are unsupported.
 
 Legacy `demo_wallets`, `demo_quotes`, `demo_trades`, and `demo_positions` tables remain for reversible schema compatibility. Their write APIs return `410 Gone`; the live product does not read them.
 
 ## Agent capability boundaries
 
-Nova, Atlas, Vega, Echo, Makto, and Orion operate on bounded, sanitized evidence records and persistent per-chat memory. Agents are instructed to name evidence sources and observation times, separate observations from interpretation, identify missing facts, and avoid fabricating contract, holder, deployer, or execution claims. The agent workspace is isolated per call, size-limited, temporary, and has no shell or code execution. Makto receives the authenticated account's virtual cash and positions as context, but can never execute an order; the user must confirm an order in the UI.
+Nova, Atlas, Vega, Echo, Makto, and Orion operate on bounded, sanitized provider observations held in memory only and persistent per-chat memory. Raw observations are discarded after each analysis; findings and forecast outputs remain available as analysis. Agents are instructed to name evidence sources and observation times, separate observations from interpretation, identify missing facts, and avoid fabricating contract, holder, deployer, or execution claims. The agent workspace is isolated per call, size-limited, temporary, and has no shell or code execution. Makto receives the authenticated account's virtual cash and positions as context, but can never execute an order; the user must confirm an order in the UI.
 
 Automated agent answers remain probabilistic. Provider/model quality, real wallet extension prompts, cross-device flows, and transaction execution are not covered by this paper trading feature.

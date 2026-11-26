@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from uuid import uuid4
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, Index
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, Index
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from .database import Base
@@ -73,25 +73,8 @@ class ConversationMessage(Base):
     attachments: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     chat_id: Mapped[object | None] = mapped_column(UUID(as_uuid=True), ForeignKey("trading_chats.id", ondelete="CASCADE"))
     investigation_id: Mapped[object | None] = mapped_column(UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="SET NULL"))
-    simulated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     __table_args__ = (Index("ix_message_session_department_created", "session_id", "department", "created_at"),)
-
-
-class Evidence(Base):
-    __tablename__ = "evidence"
-    id: Mapped[object] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    session_id: Mapped[object | None] = mapped_column(UUID(as_uuid=True), ForeignKey("browser_sessions.id", ondelete="SET NULL"))
-    investigation_id: Mapped[object | None] = mapped_column(UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="SET NULL"))
-    department: Mapped[str] = mapped_column(String(20), nullable=False)
-    chain: Mapped[str] = mapped_column(String(48), nullable=False)
-    token_address: Mapped[str] = mapped_column(String(160), nullable=False)
-    source: Mapped[str] = mapped_column(String(128), nullable=False)
-    data_kind: Mapped[str] = mapped_column(String(16), nullable=False)
-    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
-    fields: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
-    limitations: Mapped[str | None] = mapped_column(Text)
-    __table_args__ = (Index("ix_evidence_dept_kind_chain_address", "department", "data_kind", "chain", "token_address"),)
 
 
 class Investigation(Base):
@@ -105,7 +88,6 @@ class Investigation(Base):
     token_address: Mapped[str] = mapped_column(String(160), nullable=False)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     status: Mapped[str] = mapped_column(String(24), default="active", nullable=False)
-    scenario_id: Mapped[str | None] = mapped_column(String(48))
     confidence: Mapped[object | None] = mapped_column(Numeric(5, 2))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
@@ -123,10 +105,64 @@ class InvestigationFinding(Base):
     round_number: Mapped[int] = mapped_column(Integer, nullable=False)
     phase: Mapped[str] = mapped_column(String(24), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    evidence_ids: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     confidence: Mapped[object | None] = mapped_column(Numeric(5, 2))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     __table_args__ = (Index("ix_finding_investigation_round", "investigation_id", "round_number"),)
+
+
+class MarketForecast(Base):
+    """Append-only, versioned forecast tied to its source evidence."""
+    __tablename__ = "market_forecasts"
+    id: Mapped[object] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    investigation_id: Mapped[object] = mapped_column(UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False)
+    asset_class: Mapped[str] = mapped_column(String(24), nullable=False, default="crypto")
+    asset_key: Mapped[str] = mapped_column(String(240), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(64), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(160), nullable=False)
+    forecast: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    supersedes_id: Mapped[object | None] = mapped_column(UUID(as_uuid=True), ForeignKey("market_forecasts.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    __table_args__ = (
+        UniqueConstraint("asset_key", "version", name="uq_market_forecast_asset_version"),
+        Index("ix_market_forecast_asset_created", "asset_key", "created_at"),
+        Index("ix_market_forecast_investigation", "investigation_id"),
+    )
+
+
+class A2AReceptionRequest(Base):
+    """Validated, session-scoped external guest request held outside agent memory."""
+    __tablename__ = "a2a_reception_requests"
+    id: Mapped[object] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    session_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    requester_session_id: Mapped[object] = mapped_column(UUID(as_uuid=True), ForeignKey("browser_sessions.id", ondelete="CASCADE"), nullable=False)
+    configured_url: Mapped[str] = mapped_column(String(600), nullable=False)
+    endpoint: Mapped[str] = mapped_column(String(600), nullable=False)
+    guest_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    guest_description: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    capabilities: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    trust_state: Mapped[str] = mapped_column(String(40), nullable=False, default="operator_allowlisted_unverified")
+    screening: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    rejection_reason: Mapped[str | None] = mapped_column(String(200))
+    queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=now_utc)
+    admitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (
+        UniqueConstraint("session_started_at", "configured_url", name="uq_a2a_guest_per_session"),
+        Index("ix_a2a_reception_session_status_queued", "session_started_at", "status", "queued_at"),
+    )
+
+
+class ProviderDailyBudget(Base):
+    __tablename__ = "provider_daily_budgets"
+    provider: Mapped[str] = mapped_column(String(40), primary_key=True)
+    budget_date: Mapped[object] = mapped_column(Date, primary_key=True)
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
 
 
 class DebateRound(Base):
@@ -181,54 +217,6 @@ class DurableEvent(Base):
     payload: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     __table_args__ = (Index("ix_event_dept_session_sequence", "department", "session_id", "sequence"),)
-
-
-class DemoWallet(Base):
-    __tablename__ = "demo_wallets"
-    id: Mapped[object] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    session_id: Mapped[object] = mapped_column(UUID(as_uuid=True), ForeignKey("browser_sessions.id", ondelete="CASCADE"), unique=True, nullable=False)
-    near_balance: Mapped[object] = mapped_column(Numeric(24, 8), default=1000, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
-
-
-class Trade(Base):
-    __tablename__ = "demo_trades"
-    id: Mapped[object] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    session_id: Mapped[object] = mapped_column(UUID(as_uuid=True), ForeignKey("browser_sessions.id", ondelete="CASCADE"), nullable=False)
-    idempotency_key: Mapped[str] = mapped_column(String(96), nullable=False)
-    chain: Mapped[str] = mapped_column(String(48), nullable=False)
-    token_address: Mapped[str] = mapped_column(String(160), nullable=False)
-    side: Mapped[str] = mapped_column(String(8), nullable=False)
-    amount_near: Mapped[object] = mapped_column(Numeric(24, 8), nullable=False)
-    quote_price: Mapped[object] = mapped_column(Numeric(24, 12), nullable=False)
-    status: Mapped[str] = mapped_column(String(20), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
-    __table_args__ = (UniqueConstraint("session_id", "idempotency_key", name="uq_trade_idempotency_per_session"),)
-
-
-class DemoQuote(Base):
-    __tablename__ = "demo_quotes"
-    id: Mapped[object] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    session_id: Mapped[object] = mapped_column(UUID(as_uuid=True), ForeignKey("browser_sessions.id", ondelete="CASCADE"), nullable=False)
-    chain: Mapped[str] = mapped_column(String(48), nullable=False)
-    token_address: Mapped[str] = mapped_column(String(160), nullable=False)
-    side: Mapped[str] = mapped_column(String(8), nullable=False)
-    amount_near: Mapped[object] = mapped_column(Numeric(24, 8), nullable=False)
-    price: Mapped[object] = mapped_column(Numeric(24, 12), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    consumed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-
-
-class Position(Base):
-    __tablename__ = "demo_positions"
-    id: Mapped[object] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    session_id: Mapped[object] = mapped_column(UUID(as_uuid=True), ForeignKey("browser_sessions.id", ondelete="CASCADE"), nullable=False)
-    chain: Mapped[str] = mapped_column(String(48), nullable=False)
-    token_address: Mapped[str] = mapped_column(String(160), nullable=False)
-    quantity: Mapped[object] = mapped_column(Numeric(36, 12), nullable=False)
-    average_price: Mapped[object] = mapped_column(Numeric(24, 12), nullable=False)
-    current_price: Mapped[object | None] = mapped_column(Numeric(24, 12))
-    __table_args__ = (UniqueConstraint("session_id", "chain", "token_address", name="uq_position_token_per_session"),)
 
 
 class PaperAccount(Base):
